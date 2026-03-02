@@ -26,12 +26,12 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["hardware.difra*"]
-exclude = ["hardware.difra.tests*"]
+include = ["difra*"]
+exclude = ["difra.tests*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"hardware.difra" = [
+"difra" = [
   "*.md",
   "*.html",
   "bin/*",
@@ -41,3 +41,4 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["tests/upstream_snapshot", "tests/__pycache__"]

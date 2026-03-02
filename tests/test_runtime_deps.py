@@ -1,4 +1,4 @@
-from hardware.difra.runtime_deps import DEPENDENCIES
+from difra.runtime_deps import DEPENDENCIES
 
 
 def test_runtime_dependency_specs_are_declared():
