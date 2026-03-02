@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eosdx-difra"
+version = "0.1.0"
+description = "DiFRA GUI and workflow package for Eos-Dx"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+  "PyQt5",
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "pyfai",
+  "scikit-image",
+  "scikit-learn",
+  "seaborn",
+  "h5py",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["hardware.difra*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"hardware.difra" = [
+  "*.md",
+  "*.html",
+  "resources/**/*",
+]
