@@ -45,6 +45,10 @@ if "%GUI_ENV%"=="" (
 )
 if "%GUI_ENV%"=="" set GUI_ENV=eosdx13
 
+echo [INFO] Ensuring runtime dependencies in env: %GUI_ENV%
+%CONDA_CMD% run -n %GUI_ENV% python "%REPO_ROOT%\src\hardware\difra\scripts\ensure_runtime_dependencies.py" --require container --require protocol
+if errorlevel 1 exit /b 1
+
 if "%DIFRA_LEGACY_PYTHON%"=="" (
   if "%DIFRA_LEGACY_ENV%"=="" set DIFRA_LEGACY_ENV=ulster37
 

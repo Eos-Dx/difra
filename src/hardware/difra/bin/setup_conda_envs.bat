@@ -8,7 +8,7 @@ for %%I in ("%SCRIPT_DIR%..\..\..\..") do set REPO_ROOT=%%~fI
 set DIFRA_DIR=%REPO_ROOT%\src\hardware\difra
 set YAML_38=%DIFRA_DIR%\environment-ulster38.yml
 set YAML_311=%DIFRA_DIR%\environment-ulster311.yml
-set STUBS_SCRIPT=%REPO_ROOT%\src\hardware\protocol\scripts\generate_python_stubs.py
+set STUBS_SCRIPT=%REPO_ROOT%\src\hardware\difra\scripts\regenerate_protocol_stubs.py
 
 if not exist "%YAML_38%" (
   echo [ERROR] Missing YAML file: %YAML_38%
@@ -19,7 +19,7 @@ if not exist "%YAML_311%" (
   exit /b 1
 )
 if not exist "%STUBS_SCRIPT%" (
-  echo [ERROR] Missing stub generation script: %STUBS_SCRIPT%
+  echo [ERROR] Missing DiFRA stub generation script: %STUBS_SCRIPT%
   exit /b 1
 )
 
@@ -119,6 +119,11 @@ exit /b 0
 set ENV_NAME=%~1
 echo.
 echo [INFO] Regenerating protobuf/grpc stubs with %ENV_NAME%...
+%CONDA_CMD% run -n %ENV_NAME% python "%REPO_ROOT%\src\hardware\difra\scripts\ensure_runtime_dependencies.py" --require protocol
+if errorlevel 1 (
+  echo [ERROR] Failed to install protocol package in %ENV_NAME%
+  exit /b 1
+)
 %CONDA_CMD% run -n %ENV_NAME% python "%STUBS_SCRIPT%"
 if errorlevel 1 (
   echo [ERROR] Stub generation failed in %ENV_NAME%

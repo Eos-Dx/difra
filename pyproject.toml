@@ -27,11 +27,17 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["hardware.difra*"]
+exclude = ["hardware.difra.tests*"]
 namespaces = true
 
 [tool.setuptools.package-data]
 "hardware.difra" = [
   "*.md",
   "*.html",
+  "bin/*",
   "resources/**/*",
+  "scripts/*",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

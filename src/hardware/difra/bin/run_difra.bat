@@ -99,6 +99,13 @@ if "%GUI_PY_EXE%"=="" (
   exit /b 1
 )
 
+call :ensure_runtime_deps "%GUI_PY_EXE%" "%GUI_ENV%"
+if errorlevel 1 exit /b 1
+if /I not "%GRPC_ENV%"=="%GUI_ENV%" (
+  call :ensure_runtime_deps "%GRPC_PY_EXE%" "%GRPC_ENV%"
+  if errorlevel 1 exit /b 1
+)
+
 for %%I in ("%SIDECAR_PY_EXE%") do set "SIDECAR_ENV_ROOT=%%~dpI"
 for %%I in ("%GRPC_PY_EXE%") do set "GRPC_ENV_ROOT=%%~dpI"
 for %%I in ("%GUI_PY_EXE%") do set "GUI_ENV_ROOT=%%~dpI"
@@ -204,6 +211,19 @@ if defined ENV_PATH (
 )
 
 endlocal & set "%~2=" & exit /b 0
+
+:ensure_runtime_deps
+setlocal
+set "TARGET_PY=%~1"
+set "TARGET_ENV=%~2"
+if "%TARGET_PY%"=="" (
+  echo [ERROR] Cannot ensure runtime dependencies: missing python path for %TARGET_ENV%.
+  endlocal & exit /b 1
+)
+echo [INFO] Ensuring runtime dependencies in env=%TARGET_ENV%
+"%TARGET_PY%" "%REPO_ROOT%\src\hardware\difra\scripts\ensure_runtime_dependencies.py" --require container --require protocol
+set "DEP_EXIT=%ERRORLEVEL%"
+endlocal & exit /b %DEP_EXIT%
 
 :stop_local_listener
 setlocal
