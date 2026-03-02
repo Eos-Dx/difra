@@ -34,6 +34,8 @@ Managed runtime packages:
 - `protocol`
 - `xrdanalysis`
 
+By default, `xrdanalysis` is refreshed from the `dev_sad` branch.
+
 The refresh step uses `pip install --upgrade --force-reinstall --no-cache-dir`
 against the GitHub source archives by default.
 
