@@ -45,7 +45,7 @@ DEPENDENCIES = {
         name="xrdanalysis",
         import_name="xrdanalysis",
         env_var="DIFRA_XRDANALYSIS_PIP_SPEC",
-        default_spec="https://github.com/Eos-Dx/xrd-analysis/archive/refs/heads/main.zip",
+        default_spec="https://github.com/Eos-Dx/xrd-analysis/archive/refs/heads/dev_sad.zip",
     ),
 }
 
