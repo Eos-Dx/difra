@@ -36,6 +36,11 @@ if [ -z "$GUI_ENV" ]; then
   GUI_ENV="eosdx13"
 fi
 
+echo "[INFO] Ensuring runtime dependencies in env: $GUI_ENV"
+conda run --live-stream --no-capture-output -n "$GUI_ENV" \
+  python "$REPO_ROOT/src/hardware/difra/scripts/ensure_runtime_dependencies.py" \
+  --require container --require protocol
+
 if [ -z "${DIFRA_LEGACY_PYTHON:-}" ]; then
   if [ -z "${DIFRA_LEGACY_ENV:-}" ]; then
     CONDA_ENVS_JSON="$(conda env list --json)"

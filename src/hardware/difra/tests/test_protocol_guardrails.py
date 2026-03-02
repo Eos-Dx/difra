@@ -28,7 +28,16 @@ def test_difra_branch_parity_script_passes() -> None:
 
 
 def test_core_command_schema_files_exist() -> None:
-    cmd_dir = REPO_ROOT / "src/hardware/protocol/commands/v1"
+    cmd_dir = REPO_ROOT.parent / "protocol" / "src" / "hardware" / "protocol" / "commands" / "v1"
+    if not cmd_dir.is_dir():
+        try:
+            from hardware.protocol import commands_dir
+        except Exception as exc:  # pragma: no cover - depends on local setup
+            raise AssertionError(
+                "Protocol command directory not found. "
+                "Install eosdx-protocol or clone the sibling repo in ~/dev/protocol."
+            ) from exc
+        cmd_dir = commands_dir("v1")
     expected = {
         "initialize_detector.toml",
         "initialize_motion.toml",

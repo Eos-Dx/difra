@@ -15,6 +15,14 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
+ensure_runtime_deps_for_env() {
+  local env_name="$1"
+  echo "[INFO] Ensuring runtime dependencies in env: $env_name"
+  conda run --live-stream --no-capture-output -n "$env_name" \
+    python "$REPO_ROOT/src/hardware/difra/scripts/ensure_runtime_dependencies.py" \
+    --require container --require protocol
+}
+
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -68,6 +76,11 @@ except Exception:
 print(chosen)
 PY
   )
+fi
+
+ensure_runtime_deps_for_env "$GUI_ENV"
+if [ "$GRPC_ENV" != "$GUI_ENV" ]; then
+  ensure_runtime_deps_for_env "$GRPC_ENV"
 fi
 
 wait_for_port() {
