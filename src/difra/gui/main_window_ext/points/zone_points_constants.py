@@ -32,5 +32,6 @@ class ZonePointsConstants:
     # Colors
     POINT_COLOR_GENERATED = "red"
     POINT_COLOR_USER = "blue"
+    POINT_COLOR_MEASURED = "blue"
     POINT_COLOR_SELECTED = QColor(255, 255, 0)  # yellow
     ZONE_COLOR = "cyan"

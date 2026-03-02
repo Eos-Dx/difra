@@ -77,7 +77,29 @@ class DifraServiceState:
         self.detector_initialized = False
 
     def _protocol_command_dir(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "protocol" / "commands" / "v1"
+        try:
+            from difra._local_dependency_aliases import ensure_local_dependency
+
+            if ensure_local_dependency("protocol"):
+                from protocol import commands_dir
+
+                command_dir = Path(commands_dir("v1"))
+                if command_dir.is_dir():
+                    return command_dir
+        except Exception:
+            pass
+
+        repo_root = Path(__file__).resolve().parents[3]
+        candidates = (
+            repo_root.parent / "protocol" / "src" / "protocol" / "commands" / "v1",
+            repo_root.parent / "eosdx-protocol" / "commands" / "v1",
+            repo_root / "src" / "protocol" / "commands" / "v1",
+        )
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+
+        return candidates[0]
 
     def _load_command_descriptors(self) -> List[CoreCommandDescriptor]:
         command_dir = self._protocol_command_dir()

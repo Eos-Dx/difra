@@ -28,9 +28,14 @@ def test_difra_branch_parity_script_passes() -> None:
 
 
 def test_core_command_schema_files_exist() -> None:
-    sibling_protocol = REPO_ROOT.parent / "protocol" / "src" / "protocol" / "commands" / "v1"
-    if sibling_protocol.is_dir():
-        cmd_dir = sibling_protocol
+    candidates = (
+        REPO_ROOT.parent / "protocol" / "src" / "protocol" / "commands" / "v1",
+        REPO_ROOT.parent / "eosdx-protocol" / "commands" / "v1",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            cmd_dir = candidate
+            break
     else:
         from protocol import commands_dir
 

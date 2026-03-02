@@ -39,7 +39,7 @@ fi
 echo "[INFO] Ensuring runtime dependencies in env: $GUI_ENV"
 conda run --live-stream --no-capture-output -n "$GUI_ENV" \
   python "$REPO_ROOT/src/difra/scripts/ensure_runtime_dependencies.py" \
-  --require container --require protocol
+  --require container --require protocol --require xrdanalysis
 
 if [ -z "${DIFRA_LEGACY_PYTHON:-}" ]; then
   if [ -z "${DIFRA_LEGACY_ENV:-}" ]; then

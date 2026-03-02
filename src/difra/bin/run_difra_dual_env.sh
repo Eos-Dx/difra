@@ -20,7 +20,7 @@ ensure_runtime_deps_for_env() {
   echo "[INFO] Ensuring runtime dependencies in env: $env_name"
   conda run --live-stream --no-capture-output -n "$env_name" \
     python "$REPO_ROOT/src/difra/scripts/ensure_runtime_dependencies.py" \
-    --require container --require protocol
+    --require container --require protocol --require xrdanalysis
 }
 
 export PYTHONUNBUFFERED=1
