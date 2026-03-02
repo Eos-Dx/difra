@@ -347,6 +347,9 @@ class SessionWorkspaceMixin:
 
             # Rebuild per-point measurement history from session container datasets.
             self._restore_measurement_history_from_session(session_path)
+            refresh_point_visuals = getattr(self, "refresh_point_visual_states", None)
+            if callable(refresh_point_visuals):
+                refresh_point_visuals()
 
             logger.info(
                 f"Restored workspace from session container: session={session_path} "

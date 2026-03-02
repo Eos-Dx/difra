@@ -12,12 +12,11 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QHBoxLayout
 
 from difra.gui.container_api import get_container_version
-from xrdanalysis.data_processing.azimuthal_integration import (
+from difra.gui.technical.analysis_compat import (
+    create_mask,
     initialize_azimuthal_integrator_df,
     initialize_azimuthal_integrator_poni_text,
 )
-from xrdanalysis.data_processing.utility_functions import create_mask
-
 logger = logging.getLogger(__name__)
 
 

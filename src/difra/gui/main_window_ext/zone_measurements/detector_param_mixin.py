@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
 def _get_create_mask():
     """Lazy import of create_mask to avoid startup crashes."""
     try:
-        from xrdanalysis.data_processing.utility_functions import create_mask
+        from difra.gui.technical.analysis_compat import create_mask
         return create_mask
     except Exception as e:
         print(f"Warning: create_mask import failed: {e}")

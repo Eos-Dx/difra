@@ -221,7 +221,7 @@ if "%TARGET_PY%"=="" (
   endlocal & exit /b 1
 )
 echo [INFO] Ensuring runtime dependencies in env=%TARGET_ENV%
-"%TARGET_PY%" "%REPO_ROOT%\src\difra\scripts\ensure_runtime_dependencies.py" --require container --require protocol
+"%TARGET_PY%" "%REPO_ROOT%\src\difra\scripts\ensure_runtime_dependencies.py" --require container --require protocol --require xrdanalysis
 set "DEP_EXIT=%ERRORLEVEL%"
 endlocal & exit /b %DEP_EXIT%
 

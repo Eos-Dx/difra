@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from typing import Iterable, List
 
+from difra._local_dependency_aliases import ensure_local_dependency
+
 
 @dataclass(frozen=True)
 class RuntimeDependency:
@@ -39,6 +41,12 @@ DEPENDENCIES = {
         env_var="DIFRA_PROTOCOL_PIP_SPEC",
         default_spec="https://github.com/Eos-Dx/protocol/archive/refs/heads/main.zip",
     ),
+    "xrdanalysis": RuntimeDependency(
+        name="xrdanalysis",
+        import_name="xrdanalysis",
+        env_var="DIFRA_XRDANALYSIS_PIP_SPEC",
+        default_spec="https://github.com/Eos-Dx/xrd-analysis/archive/refs/heads/main.zip",
+    ),
 }
 
 
@@ -46,6 +54,14 @@ def _import_available(import_name: str) -> bool:
     try:
         importlib.import_module(import_name)
         return True
+    except ModuleNotFoundError as exc:
+        if exc.name != import_name:
+            return False
+    except Exception:
+        return False
+
+    try:
+        return ensure_local_dependency(import_name)
     except Exception:
         return False
 
@@ -55,10 +71,6 @@ def ensure_dependency(name: str, *, python_executable: str | None = None) -> boo
     if dep is None:
         raise KeyError(f"Unknown runtime dependency: {name}")
 
-    if _import_available(dep.import_name):
-        print(f"[INFO] Runtime dependency already available: {dep.import_name}")
-        return False
-
     python_exe = python_executable or sys.executable
     cmd = [
         python_exe,
@@ -66,10 +78,13 @@ def ensure_dependency(name: str, *, python_executable: str | None = None) -> boo
         "pip",
         "install",
         "--disable-pip-version-check",
+        "--no-cache-dir",
+        "--no-deps",
         "--upgrade",
+        "--force-reinstall",
         dep.pip_spec,
     ]
-    print(f"[INFO] Installing missing runtime dependency: {dep.import_name}")
+    print(f"[INFO] Refreshing runtime dependency from source: {dep.import_name}")
     print(f"[INFO] pip source: {dep.pip_spec}")
     subprocess.run(cmd, check=True)
     importlib.invalidate_caches()
@@ -79,7 +94,7 @@ def ensure_dependency(name: str, *, python_executable: str | None = None) -> boo
             f"Dependency installation completed but import still fails: {dep.import_name}"
         )
 
-    print(f"[INFO] Installed runtime dependency: {dep.import_name}")
+    print(f"[INFO] Runtime dependency ready: {dep.import_name}")
     return True
 
 
@@ -104,11 +119,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="required",
         action="append",
         choices=sorted(DEPENDENCIES.keys()),
-        help="Dependency key to require (default: container + protocol).",
+        help="Dependency key to require (default: container + protocol + xrdanalysis).",
     )
     args = parser.parse_args(argv)
 
-    required = args.required or ["container", "protocol"]
+    required = args.required or ["container", "protocol", "xrdanalysis"]
     ensure_dependencies(required)
     return 0
 

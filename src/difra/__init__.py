@@ -5,7 +5,12 @@ Maps to difra subpackages.
 
 import importlib
 
+from ._local_dependency_aliases import bootstrap_local_dependency_aliases
+
 __all__ = ["gui", "hardware", "utils"]
+
+
+bootstrap_local_dependency_aliases()
 
 
 def __getattr__(name):

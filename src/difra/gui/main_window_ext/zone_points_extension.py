@@ -324,10 +324,9 @@ class ZonePointsMixin:
         def reset_point_style(item, point_type: str):
             if sip.isdeleted(item):
                 return
-            color = (
-                ZonePointsConstants.POINT_COLOR_GENERATED
-                if point_type == "generated"
-                else ZonePointsConstants.POINT_COLOR_USER
+            color = self._default_point_color(
+                point_type=point_type,
+                point_uid=str(item.data(2) or "").strip(),
             )
             item.setBrush(QColor(color))
 
@@ -338,6 +337,20 @@ class ZonePointsMixin:
         # Reset user points
         for item in self.image_view.points_dict["user"]["points"]:
             reset_point_style(item, "user")
+
+    def _default_point_color(self, point_type: str, point_uid: Optional[str] = None) -> str:
+        point_uid = str(point_uid or "").strip()
+        if point_uid and self._point_has_measurements(point_uid):
+            return ZonePointsConstants.POINT_COLOR_MEASURED
+        if point_type == "generated":
+            return ZonePointsConstants.POINT_COLOR_GENERATED
+        return ZonePointsConstants.POINT_COLOR_USER
+
+    def refresh_point_visual_states(self):
+        """Reapply default point colors, preserving measured-point state."""
+        if not hasattr(self, "image_view") or not hasattr(self.image_view, "points_dict"):
+            return
+        self._reset_all_point_styles()
 
     def _highlight_selected_points(self):
         """Highlight points corresponding to selected table rows."""

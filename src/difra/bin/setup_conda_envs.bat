@@ -119,7 +119,7 @@ exit /b 0
 set ENV_NAME=%~1
 echo.
 echo [INFO] Regenerating protobuf/grpc stubs with %ENV_NAME%...
-%CONDA_CMD% run -n %ENV_NAME% python "%REPO_ROOT%\src\difra\scripts\ensure_runtime_dependencies.py" --require protocol
+%CONDA_CMD% run -n %ENV_NAME% python "%REPO_ROOT%\src\difra\scripts\ensure_runtime_dependencies.py" --require protocol --require xrdanalysis
 if errorlevel 1 (
   echo [ERROR] Failed to install protocol package in %ENV_NAME%
   exit /b 1
