@@ -34,7 +34,14 @@ Managed runtime packages:
 - `protocol`
 - `xrdanalysis`
 
-By default, `xrdanalysis` is refreshed from the `dev_sad` branch.
+By default, `xrdanalysis` is installed from the `v0.2` GitHub release wheel.
+
+For GitHub branch archive sources, DiFRA first performs a lightweight GitHub API
+check of the current branch HEAD SHA. If the branch tip is unchanged since the
+last successful refresh, the dependency is not downloaded again.
+
+For fixed wheel/release URLs, DiFRA skips the re-download once that exact URL
+has already been installed successfully.
 
 The refresh step uses `pip install --upgrade --force-reinstall --no-cache-dir`
 against the GitHub source archives by default.
