@@ -31,6 +31,7 @@ def test_finalize_session_container_locks_once(tmp_path):
     )
     assert changed is True
     assert container_manager.is_container_locked(session_path) is True
+    assert container_manager.get_transfer_status(session_path) == "unsent"
 
     changed_again = SessionLifecycleActions.finalize_session_container(
         session_path=session_path,
@@ -71,6 +72,10 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
     parent_names = {p.parent.name for p in result.archived_paths}
     assert any(name.startswith(f"{sid_a}_") for name in parent_names)
     assert any(name.startswith(f"{sid_b}_") for name in parent_names)
+    assert all(
+        container_manager.get_transfer_status(path) == "sent"
+        for path in result.archived_paths
+    )
 
 
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):

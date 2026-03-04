@@ -960,3 +960,56 @@ def test_restore_session_marks_incomplete_point_for_remeasure_on_user_choice(qap
         assert len([name for name in measurement_group.keys() if name.startswith("det_")]) == 0
         point_group = h5f[f"{schema.GROUP_POINTS}/pt_001"]
         assert point_group.attrs[schema.ATTR_POINT_STATUS] == schema.POINT_STATUS_PENDING
+
+
+def test_container_backed_aux_rows_open_on_single_click(qapp, tmp_path, monkeypatch):
+    config = {
+        "measurements_folder": str(tmp_path / "measurements"),
+        "detectors": [],
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "measurements")
+    harness.auxTable.insertRow(0)
+
+    file_item = technical_measurements.QTableWidgetItem("PRIMARY: from_container")
+    file_item.setData(
+        technical_measurements.Qt.UserRole,
+        "h5ref:///tmp/test_session.nxs.h5#/entry/measurements/meas_001",
+    )
+    harness.auxTable.setItem(0, harness.AUX_COL_FILE, file_item)
+
+    opened = []
+    monkeypatch.setattr(
+        harness,
+        "_open_measurement_from_table",
+        lambda row, col: opened.append((row, col)),
+    )
+
+    harness._handle_aux_table_cell_clicked(0, harness.AUX_COL_FILE)
+    harness._handle_aux_table_cell_double_clicked(0, harness.AUX_COL_FILE)
+
+    assert opened == [(0, harness.AUX_COL_FILE)]
+
+
+def test_file_backed_aux_rows_still_require_double_click(qapp, tmp_path, monkeypatch):
+    config = {
+        "measurements_folder": str(tmp_path / "measurements"),
+        "detectors": [],
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "measurements")
+    harness.auxTable.insertRow(0)
+
+    file_item = technical_measurements.QTableWidgetItem("PRIMARY: file.npy")
+    file_item.setData(technical_measurements.Qt.UserRole, str(tmp_path / "file.npy"))
+    harness.auxTable.setItem(0, harness.AUX_COL_FILE, file_item)
+
+    opened = []
+    monkeypatch.setattr(
+        harness,
+        "_open_measurement_from_table",
+        lambda row, col: opened.append((row, col)),
+    )
+
+    harness._handle_aux_table_cell_clicked(0, harness.AUX_COL_FILE)
+    harness._handle_aux_table_cell_double_clicked(0, harness.AUX_COL_FILE)
+
+    assert opened == [(0, harness.AUX_COL_FILE)]

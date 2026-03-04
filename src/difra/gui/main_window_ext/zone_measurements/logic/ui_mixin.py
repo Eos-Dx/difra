@@ -184,7 +184,7 @@ class ZoneMeasurementsUIMixin:
         currentPosLayout.addStretch()  # Push to the left
         meas_layout.addLayout(currentPosLayout)
 
-        # --- Integration ---
+        # --- Integration + Attenuation ---
         integrationLayout = QHBoxLayout()
         integrationLayout.setSpacing(4)  # Compact spacing
         integrationLabel = QLabel("Integration Time (sec):")
@@ -194,6 +194,32 @@ class ZoneMeasurementsUIMixin:
         self.integrationSpinBox.setValue(1)
         integrationLayout.addWidget(integrationLabel)
         integrationLayout.addWidget(self.integrationSpinBox)
+
+        # Keep attenuation controls in the Measurements tab. Only the old
+        # standalone Attenuation tab was removed.
+        self.attenuationCheckBox = QCheckBox("Attenuation")
+        atten_cfg = (
+            self.config.get("attenuation", {}) if hasattr(self, "config") else {}
+        )
+        enabled_default = bool(atten_cfg.get("enabled_default", False))
+        self.attenuationCheckBox.setChecked(enabled_default)
+        integrationLayout.addWidget(self.attenuationCheckBox)
+
+        integrationLayout.addWidget(QLabel("Frames:"))
+        self.attenFramesSpin = QSpinBox()
+        self.attenFramesSpin.setRange(1, 100000)
+        self.attenFramesSpin.setValue(int(atten_cfg.get("frames", 100)))
+        integrationLayout.addWidget(self.attenFramesSpin)
+
+        integrationLayout.addWidget(QLabel("Short t (s):"))
+        self.attenTimeSpin = QDoubleSpinBox()
+        self.attenTimeSpin.setDecimals(6)
+        self.attenTimeSpin.setRange(0.000001, 10.0)
+        self.attenTimeSpin.setValue(
+            float(atten_cfg.get("integration_time_s", 0.00005))
+        )
+        integrationLayout.addWidget(self.attenTimeSpin)
+
         meas_layout.addLayout(integrationLayout)
 
         # --- Folder selection ---

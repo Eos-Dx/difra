@@ -330,6 +330,26 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             RuntimeError: If no valid technical container found
             ValueError: If required session attributes are missing
         """
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        existing_sessions = sorted(
+            [
+                path
+                for path in folder.glob("session_*.nxs.h5")
+                if path.is_file()
+            ]
+        )
+        if existing_sessions:
+            existing_names = "\n".join(f"• {path.name}" for path in existing_sessions[:3])
+            if len(existing_sessions) > 3:
+                existing_names += f"\n• ... and {len(existing_sessions) - 3} more"
+            raise RuntimeError(
+                "A session container already exists in the measurements folder.\n\n"
+                f"{existing_names}\n\n"
+                "Close, send/archive, or explicitly clear the existing session container before creating a new one."
+            )
+
         schema = self.schema
         writer = self.writer
         find_active_technical_container = self.container_manager.find_active_technical_container
@@ -642,6 +662,14 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         """
         if not self.is_session_active():
             return {"active": False}
+
+        transfer_status = "unsent"
+        get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)
+        if callable(get_transfer_status):
+            try:
+                transfer_status = str(get_transfer_status(self.session_path) or "unsent")
+            except Exception:
+                transfer_status = "unsent"
         
         return {
             "active": True,
@@ -653,6 +681,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             "machine_name": self.machine_name,
             "beam_energy_kev": self.beam_energy_kev,
             "is_locked": self.is_locked(),
+            "transfer_status": transfer_status,
             "i0_recorded": self.i0_counter is not None,
             "i_recorded": self.i_counter is not None,
             "attenuation_complete": (

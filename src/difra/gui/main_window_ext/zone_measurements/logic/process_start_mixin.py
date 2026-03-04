@@ -827,6 +827,24 @@ class ZoneMeasurementsProcessStartMixin:
             self._set_measurement_controls_idle()
             return
 
+        self._reuse_existing_i0_from_session = False
+        try:
+            if hasattr(self, "attenuationCheckBox") and self.attenuationCheckBox.isChecked():
+                if self._session_has_i0_measurement():
+                    self._reuse_existing_i0_from_session = True
+                    pm.logger.info(
+                        "Skipping I0 background capture: session already contains I0 measurement",
+                        i0_counter=getattr(getattr(self, "session_manager", None), "i0_counter", None),
+                    )
+                    self._append_capture_log("I0 already recorded in session; reusing existing I0")
+                else:
+                    self._capture_attenuation_background()
+        except Exception as e:
+            pm.logger.warning(
+                "Failed to capture attenuation background; will continue without it",
+                error=str(e),
+            )
+
         self.state["measurement_points"] = measurement_points
         self.state["skipped_points"] = [
             {

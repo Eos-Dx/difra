@@ -144,11 +144,15 @@ class SessionLifecycleActions:
         lock_user: Optional[str] = None,
     ) -> bool:
         """Ensure session container is locked and ready for archive/upload."""
-        return SessionLifecycleService.lock_container_if_needed(
+        changed = SessionLifecycleService.lock_container_if_needed(
             container_path=Path(session_path),
             container_manager=container_manager,
             user_id=lock_user,
         )
+        mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+        if callable(mark_transferred):
+            mark_transferred(Path(session_path), sent=False)
+        return changed
 
     @classmethod
     def send_and_archive_session_containers(
@@ -213,6 +217,9 @@ class SessionLifecycleActions:
                     session_id=explicit_session_id,
                     archive_folder=archive_folder,
                 )
+                mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+                if callable(mark_transferred):
+                    mark_transferred(Path(archived_path), sent=True)
                 result.archived_paths.append(archived_path)
                 result.moved += 1
                 cls._archive_measurement_artifacts(

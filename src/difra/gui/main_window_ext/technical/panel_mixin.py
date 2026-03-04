@@ -140,7 +140,10 @@ class TechnicalPanelMixin:
             pass
         self.auxTable.setSelectionBehavior(self.auxTable.SelectRows)
         self.auxTable.setSelectionMode(self.auxTable.ExtendedSelection)
-        self.auxTable.cellDoubleClicked.connect(self._open_measurement_from_table)
+        self.auxTable.cellClicked.connect(self._handle_aux_table_cell_clicked)
+        self.auxTable.cellDoubleClicked.connect(
+            self._handle_aux_table_cell_double_clicked
+        )
         outer.addWidget(self.auxTable)
 
         actions_layout = tm.QHBoxLayout()

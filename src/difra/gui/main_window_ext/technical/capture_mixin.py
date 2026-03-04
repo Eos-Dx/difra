@@ -17,6 +17,30 @@ def _tm():
 
 
 class TechnicalCaptureMixin:
+    def _is_container_backed_aux_row(self, row: int) -> bool:
+        tm = _tm()
+        if row < 0:
+            return False
+        file_item = self.auxTable.item(row, self.AUX_COL_FILE)
+        if file_item is None:
+            return False
+        source_ref = str(file_item.data(tm.Qt.UserRole) or "").strip()
+        return source_ref.startswith("h5ref://")
+
+    def _handle_aux_table_cell_clicked(self, row: int, col: int):
+        """Open container-backed measurements on single-click of the file cell."""
+        if col != self.AUX_COL_FILE:
+            return
+        if not self._is_container_backed_aux_row(row):
+            return
+        self._open_measurement_from_table(row, col)
+
+    def _handle_aux_table_cell_double_clicked(self, row: int, col: int):
+        """Keep double-click open for regular files, without double-opening h5 refs."""
+        if col == self.AUX_COL_FILE and self._is_container_backed_aux_row(row):
+            return
+        self._open_measurement_from_table(row, col)
+
     def _start_capture(self, typ: str):
         tm = _tm()
         if not self._technical_imports_available():

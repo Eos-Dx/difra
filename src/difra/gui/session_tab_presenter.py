@@ -64,6 +64,8 @@ class SessionTabPresenter:
             "operator_id": "UNKNOWN",
             "created": "",
             "status": "UNKNOWN",
+            "lock_status": "UNKNOWN",
+            "transfer_status": "UNSENT",
             "session_id": "",
             "archived": "",
         }
@@ -90,7 +92,28 @@ class SessionTabPresenter:
                     cls.decode_attr(h5f.attrs.get(schema.ATTR_SESSION_ID, ""))
                 )
                 locked = container_manager.is_container_locked(path)
-                info["status"] = "LOCKED" if locked else "UNLOCKED"
+                info["lock_status"] = "LOCKED" if locked else "UNLOCKED"
+                transfer_status = ""
+                get_transfer_status = getattr(container_manager, "get_transfer_status", None)
+                if callable(get_transfer_status):
+                    try:
+                        transfer_status = str(get_transfer_status(path) or "")
+                    except Exception:
+                        transfer_status = ""
+                if not transfer_status:
+                    transfer_status = str(
+                        cls.decode_attr(
+                            h5f.attrs.get(
+                                getattr(schema, "ATTR_TRANSFER_STATUS", "transfer_status"),
+                                getattr(schema, "TRANSFER_STATUS_UNSENT", "unsent"),
+                            )
+                        )
+                        or getattr(schema, "TRANSFER_STATUS_UNSENT", "unsent")
+                    )
+                info["transfer_status"] = str(transfer_status).upper()
+                info["status"] = (
+                    f"{info['lock_status']} / {info['transfer_status']}"
+                )
         except Exception as exc:
             info["status"] = f"ERROR ({exc})"
 
@@ -210,13 +233,14 @@ class SessionTabPresenter:
     @staticmethod
     def format_active_session_info(info: Dict[str, Any]) -> str:
         """Format active session info as HTML for QLabel."""
+        transfer_status = str(info.get("transfer_status") or "unsent").upper()
         return (
             f"<b>Sample ID:</b> {info['sample_id']}<br>"
             f"<b>Study:</b> {info.get('study_name', 'UNSPECIFIED')}<br>"
             f"<b>Session ID:</b> {info['session_id']}<br>"
             f"<b>Operator:</b> {info['operator_id']}<br>"
             f"<b>Container:</b> {Path(info['session_path']).name}<br>"
-            f"<b>Status:</b> {'🔒 Locked' if info['is_locked'] else '🔓 Unlocked'}"
+            f"<b>Status:</b> {'🔒 Locked' if info['is_locked'] else '🔓 Unlocked'} / {transfer_status}"
         )
 
     @classmethod

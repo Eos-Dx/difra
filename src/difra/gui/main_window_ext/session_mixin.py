@@ -162,18 +162,16 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         self._append_session_log("New session requested")
         # Check if session already active
         if self.session_manager.is_session_active():
-            reply = QMessageBox.question(
+            QMessageBox.warning(
                 self,
-                "Close Current Session?",
-                f"Close current session '{self.session_manager.sample_id}' and create new session?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                "Session Already Open",
+                "A session container is already open.\n\n"
+                f"Sample ID: {self.session_manager.sample_id}\n"
+                f"Container: {Path(self.session_manager.session_path).name}\n\n"
+                "Close/finalize and send the current session from the Session controls before creating a new one.",
             )
-            
-            if reply == QMessageBox.No:
-                return
-            
-            self.session_manager.close_session()
+            self._append_session_log("New session blocked: active session is still open")
+            return
         
         # Show dialog to get session parameters
         dialog = NewSessionDialog(self.operator_manager, self)
@@ -283,6 +281,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         msg += f"Machine: {info['machine_name']}\n"
         msg += f"Beam Energy: {info['beam_energy_kev']} keV\n\n"
         msg += f"Container: {Path(info['session_path']).name}\n\n"
+        msg += f"Transfer Status: {str(info.get('transfer_status', 'unsent')).upper()}\n\n"
         msg += "Attenuation Status:\n"
         msg += f"  I₀ recorded: {'✓' if info['i0_recorded'] else '✗'}\n"
         msg += f"  I recorded: {'✓' if info['i_recorded'] else '✗'}\n"
@@ -349,7 +348,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         # Update status bar if present
         if hasattr(self, 'statusBar'):
             if info['active']:
-                status_msg = f"Session: {info['sample_id']}"
+                status_msg = f"Session: {info['sample_id']} [{str(info.get('transfer_status', 'unsent')).upper()}]"
                 if info['attenuation_complete']:
                     status_msg += " | Attenuation: Complete"
                 elif info['i0_recorded']:

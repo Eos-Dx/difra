@@ -34,8 +34,32 @@ class SessionFlowMixin:
         return session_path.parent
 
     def _sync_attenuation_controls_after_restore(self, session_info: dict) -> None:
-        """Attenuation controls were removed from Zone Measurements."""
-        return
+        """Enable attenuation checkbox when restored session already contains attenuation data."""
+        if not hasattr(self, "attenuationCheckBox"):
+            return
+
+        has_prior_attenuation = bool(
+            session_info.get("i0_recorded")
+            or session_info.get("i_recorded")
+            or session_info.get("attenuation_complete")
+        )
+        if not has_prior_attenuation:
+            return
+
+        try:
+            self.attenuationCheckBox.setChecked(True)
+        except Exception:
+            return
+
+        if hasattr(self, "_append_session_log"):
+            if session_info.get("i0_recorded"):
+                self._append_session_log(
+                    "Restored attenuation state: I0 already exists in session"
+                )
+            else:
+                self._append_session_log(
+                    "Restored attenuation state from existing session"
+                )
 
     def _handle_incomplete_measurements_after_restore(self, session_path: Path):
         """Recover in-progress measurements from on-disk files or mark for re-measurement."""
@@ -211,25 +235,18 @@ class SessionFlowMixin:
         
         # Show different dialogs based on status
         if is_locked:
-            # Container is locked - simple replacement
-            reply = QMessageBox.question(
+            QMessageBox.information(
                 self,
-                "Replace Finalized Session?",
-                f"Current session is finalized and locked:\n\n{status_str}\n\n"
-                f"Close this session and create new one for new sample?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                "Session Already Finalized",
+                "Current session is finalized and locked, but it is still the active session.\n\n"
+                f"{status_str}\n\n"
+                "Send/archive it from the Session queue first, then create a new session.",
             )
-            
-            if reply == QMessageBox.Yes:
-                self.session_manager.close_session()
-                if hasattr(self, "_append_session_log"):
-                    self._append_session_log(
-                        f"Closed finalized session {sample_id} before replacement"
-                    )
-                return True
-            else:
-                return False
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    f"Replacement blocked: finalized session {sample_id} must be sent/archived first"
+                )
+            return False
         
         # Unlocked container - potential error scenario
         msg = (
@@ -306,6 +323,21 @@ class SessionFlowMixin:
                     logger.info(f"Added error attributes to session container: {session_path.name}")
                 except Exception as e:
                     logger.warning(f"Failed to add error attributes: {e}")
+
+            try:
+                container_manager = get_container_manager(
+                    self.config if hasattr(self, "config") else None
+                )
+                lock_user = getattr(self.session_manager, "operator_id", None)
+                SessionLifecycleActions.finalize_session_container(
+                    session_path=session_path,
+                    container_manager=container_manager,
+                    lock_user=lock_user,
+                )
+            except Exception as lock_exc:
+                logger.warning(
+                    f"Failed to lock session before archive replacement: {lock_exc}"
+                )
             
             # Close session (this will keep the file in place)
             self.session_manager.close_session()

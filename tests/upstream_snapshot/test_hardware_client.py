@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,10 @@ if SRC_ROOT not in sys.path:
 
 from difra.hardware.hardware_client import (
     DirectHardwareClient,
-    DualPathHardwareClient,
     create_hardware_client,
 )
+from difra.hardware import hardware_client_factory as hardware_client_factory_module
+from difra.hardware import hardware_client_grpc as hardware_client_grpc_module
 
 
 def _dummy_config():
@@ -79,7 +81,18 @@ def test_direct_hardware_client_motion_and_detector_flow():
     assert state["locks"]["technical_container_locked"] is False
 
 
-def test_dual_path_client_falls_back_to_direct_when_grpc_unavailable():
+def test_factory_requires_grpc_when_runtime_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        hardware_client_factory_module,
+        "grpc_runtime_available",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        hardware_client_factory_module,
+        "grpc_import_error",
+        lambda: RuntimeError("grpc unavailable"),
+    )
+
     config = _dummy_config()
     config["hardware_protocol"] = {
         "client_mode": "dual",
@@ -88,18 +101,8 @@ def test_dual_path_client_falls_back_to_direct_when_grpc_unavailable():
         "grpc_timeout_s": 0.2,
     }
 
-    client = create_hardware_client(config)
-    assert isinstance(client, DualPathHardwareClient)
-
-    assert client.initialize_motion() is True
-    assert client.initialize_detector() is True
-    assert client.last_backend == "direct"
-
-    x, y = client.move_to(1.0, axis="x", timeout_s=1.0)
-    assert x == pytest.approx(1.0, abs=1e-6)
-    x, y = client.move_to(1.0, axis="y", timeout_s=1.0)
-    assert x == pytest.approx(1.0, abs=1e-6)
-    assert y == pytest.approx(1.0, abs=1e-6)
+    with pytest.raises(RuntimeError, match="grpcio/protobuf stubs unavailable"):
+        create_hardware_client(config)
 
 
 def test_direct_capture_exposure_runs_detectors_in_parallel():
@@ -125,3 +128,69 @@ def test_direct_capture_exposure_runs_detectors_in_parallel():
     assert set(outputs.keys()) == {"PRIMARY", "SECONDARY"}
     # Sequential would be close to ~1.6s; parallel should stay near single-detector time.
     assert elapsed < 1.35
+
+
+def test_grpc_init_uses_extended_timeout(monkeypatch):
+    class _ReadyFuture:
+        def result(self, timeout):
+            return None
+
+    class _FakeGrpc:
+        @staticmethod
+        def insecure_channel(target):
+            return object()
+
+        @staticmethod
+        def channel_ready_future(channel):
+            return _ReadyFuture()
+
+    class _InitRequest:
+        def __init__(self, ctx):
+            self.ctx = ctx
+
+    class _FakeHubPb2:
+        InitializeDetectorRequest = _InitRequest
+        InitializeMotionRequest = _InitRequest
+
+    class _DeviceInitializationStub:
+        def __init__(self, channel):
+            self.calls = []
+
+        def InitializeDetector(self, request, timeout):
+            self.calls.append(("detector", timeout))
+            return SimpleNamespace(initialized=True)
+
+        def InitializeMotion(self, request, timeout):
+            self.calls.append(("motion", timeout))
+            return SimpleNamespace(initialized=True)
+
+    class _NoopStub:
+        def __init__(self, channel):
+            self.channel = channel
+
+    class _FakeHubPb2Grpc:
+        AcquisitionStub = _NoopStub
+        MotionStub = _NoopStub
+        DeviceInitializationStub = _DeviceInitializationStub
+        StateMonitorStub = _NoopStub
+        CommandDiscoveryStub = _NoopStub
+
+    monkeypatch.setattr(hardware_client_grpc_module, "grpc", _FakeGrpc())
+    monkeypatch.setattr(
+        hardware_client_grpc_module,
+        "grpc_runtime_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(hardware_client_grpc_module, "hub_pb2", _FakeHubPb2)
+    monkeypatch.setattr(hardware_client_grpc_module, "hub_pb2_grpc", _FakeHubPb2Grpc)
+    monkeypatch.setattr(
+        hardware_client_grpc_module,
+        "_command_context",
+        lambda user, reason: {"user": user, "reason": reason},
+    )
+
+    client = hardware_client_grpc_module.GrpcHardwareClient(timeout_s=3.0)
+
+    assert client.initialize_motion() is True
+    assert client.initialize_detector() is True
+    assert client._device_init.calls == [("motion", 30.0), ("detector", 30.0)]
