@@ -86,6 +86,111 @@ class H5ManagementLoadingMixin:
             return None
         return Path(raw)
 
+    def _find_existing_technical_container_for_distance(
+        self,
+        storage_folder: Path,
+        distance_cm: float,
+    ):
+        active_path = self._active_technical_container_path_obj()
+        if active_path is not None and active_path.exists():
+            return active_path
+
+        container_manager = get_container_manager(
+            self.config if hasattr(self, "config") else None
+        )
+        try:
+            existing = container_manager.find_active_technical_container(
+                folder=storage_folder,
+                distance_cm=distance_cm,
+            )
+        except Exception:
+            return None
+        if not existing:
+            return None
+        return Path(existing)
+
+    def _prompt_existing_technical_container_resolution(
+        self,
+        existing_path: Path,
+        storage_folder: Path,
+    ):
+        container_manager = get_container_manager(
+            self.config if hasattr(self, "config") else None
+        )
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Technical Container Already Exists")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setText(
+            "A technical container already exists for the current setup.\n\n"
+            f"Container: {existing_path.name}\n\n"
+            "Choose whether to keep using the existing container or archive it and create a new one."
+        )
+        use_btn = msg_box.addButton("Use Existing", QMessageBox.AcceptRole)
+        new_btn = msg_box.addButton("Create New", QMessageBox.ActionRole)
+        cancel_btn = msg_box.addButton(QMessageBox.Cancel)
+        msg_box.setDefaultButton(cancel_btn)
+        msg_box.exec_()
+
+        clicked = msg_box.clickedButton()
+        if clicked == use_btn:
+            if self.load_technical_h5_from_path(str(existing_path), show_dialogs=False):
+                self._log_technical_event(
+                    f"Reusing existing technical container: {existing_path.name}"
+                )
+                return "use_existing"
+            QMessageBox.warning(
+                self,
+                "Technical Container",
+                f"Failed to load existing technical container:\n{existing_path}",
+            )
+            return "cancel"
+
+        if clicked == new_btn:
+            current_active = self._active_technical_container_path_obj()
+            if current_active is not None:
+                try:
+                    if current_active.resolve() == existing_path.resolve():
+                        if hasattr(self, "_sync_active_technical_container_from_table"):
+                            self._sync_active_technical_container_from_table(
+                                show_errors=True
+                            )
+                except Exception:
+                    pass
+
+            try:
+                if not container_manager.is_container_locked(existing_path):
+                    operator_id = None
+                    if hasattr(self, "config") and isinstance(self.config, dict):
+                        operator_id = self.config.get("operator_id")
+                    container_manager.lock_container(existing_path, user_id=operator_id)
+                archived = container_manager.archive_technical_container(
+                    folder=storage_folder,
+                    tech_file=existing_path,
+                    user_confirmed=True,
+                )
+                self._log_technical_event(
+                    f"Archived previous technical container: {existing_path.name} -> {archived.name}"
+                )
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "Archive Failed",
+                    f"Failed to archive existing technical container:\n{exc}",
+                )
+                return "cancel"
+
+            current_active = self._active_technical_container_path_obj()
+            try:
+                if current_active is not None and current_active.resolve() == existing_path.resolve():
+                    self._active_technical_container_path = ""
+                    self._active_technical_container_locked = False
+            except Exception:
+                pass
+            return "create_new"
+
+        return "cancel"
+
     def _create_new_active_technical_container(self, *, clear_table: bool = False):
         from .helpers import _get_technical_storage_folder
         from difra.gui.container_api import get_technical_container
@@ -107,6 +212,20 @@ class H5ManagementLoadingMixin:
         )
 
         root_distance_cm = float(next(iter(distances_by_alias.values())))
+        existing_path = self._find_existing_technical_container_for_distance(
+            storage_folder=storage_folder,
+            distance_cm=root_distance_cm,
+        )
+        if existing_path is not None and existing_path.exists():
+            decision = self._prompt_existing_technical_container_resolution(
+                existing_path=existing_path,
+                storage_folder=storage_folder,
+            )
+            if decision == "use_existing":
+                return existing_path
+            if decision != "create_new":
+                return None
+
         container_id, file_path = technical_container.create_technical_container(
             folder=storage_folder,
             distance_cm=root_distance_cm,

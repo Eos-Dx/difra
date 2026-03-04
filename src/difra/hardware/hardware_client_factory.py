@@ -74,6 +74,15 @@ def create_hardware_client(config: Dict[str, Any]) -> HardwareClient:
             os.environ.get("DIFRA_GRPC_TIMEOUT_S")
             or protocol_cfg.get("grpc_timeout_s", 3.0)
         )
+        raw_init_timeout_s = (
+            os.environ.get("DIFRA_GRPC_INIT_TIMEOUT_S")
+            or protocol_cfg.get("grpc_init_timeout_s")
+        )
+        init_timeout_s = (
+            None
+            if raw_init_timeout_s in (None, "")
+            else float(raw_init_timeout_s)
+        )
         user = str(
             os.environ.get("DIFRA_GRPC_USER") or protocol_cfg.get("grpc_user", "difra_gui")
         )
@@ -83,6 +92,7 @@ def create_hardware_client(config: Dict[str, Any]) -> HardwareClient:
                 host=host,
                 port=port,
                 timeout_s=timeout_s,
+                init_timeout_s=init_timeout_s,
                 user=user,
             )
         except Exception as exc:

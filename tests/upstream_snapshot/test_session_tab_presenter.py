@@ -59,8 +59,9 @@ def test_build_pending_rows_reads_metadata_and_lock_status(tmp_path):
 
     assert len(rows) == 2
     by_sample = {row["sample_id"]: row for row in rows}
-    assert by_sample["SAMPLE_A"]["status"] == "UNLOCKED"
-    assert by_sample["SAMPLE_B"]["status"] == "LOCKED"
+    assert by_sample["SAMPLE_A"]["status"] == "UNLOCKED / UNSENT"
+    assert by_sample["SAMPLE_B"]["status"] == "LOCKED / UNSENT"
+    assert by_sample["SAMPLE_A"]["transfer_status"] == "UNSENT"
     assert by_sample["SAMPLE_A"]["path"] == str(unlocked)
 
 
@@ -96,7 +97,7 @@ def test_presenter_populates_pending_and_archive_tables(qapp):
             "study_name": "STUDY_A",
             "operator_id": "sad",
             "created": "2026-02-13",
-            "status": "LOCKED",
+            "status": "LOCKED / UNSENT",
             "path": "/tmp/session_a.nxs.h5",
         }
     ]
@@ -152,6 +153,7 @@ def test_build_active_session_view_state():
     assert "SAMPLE_X" in active_unlocked.info_text
     assert active_unlocked.close_enabled is True
     assert active_unlocked.upload_enabled is False
+    assert "UNSENT" in active_unlocked.info_text
 
     active_locked = SessionTabPresenter.build_active_session_view_state(
         {
@@ -162,7 +164,9 @@ def test_build_active_session_view_state():
             "operator_id": "sad",
             "session_path": "/tmp/session_x.nxs.h5",
             "is_locked": True,
+            "transfer_status": "sent",
         }
     )
     assert active_locked.close_enabled is False
     assert active_locked.upload_enabled is True
+    assert "SENT" in active_locked.info_text

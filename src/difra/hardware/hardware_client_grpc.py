@@ -102,6 +102,7 @@ class GrpcHardwareClient(HardwareClient):
         host: str = "127.0.0.1",
         port: int = 50061,
         timeout_s: float = 3.0,
+        init_timeout_s: Optional[float] = None,
         user: str = "difra_gui",
     ):
         if not grpc_runtime_available():
@@ -113,6 +114,10 @@ class GrpcHardwareClient(HardwareClient):
         self._host = host
         self._port = int(port)
         self._timeout_s = float(timeout_s)
+        if init_timeout_s is None:
+            self._init_timeout_s = max(self._timeout_s, 30.0)
+        else:
+            self._init_timeout_s = max(self._timeout_s, float(init_timeout_s))
         self._user = user
         self._target = f"{self._host}:{self._port}"
         self._channel = grpc.insecure_channel(self._target)
@@ -132,7 +137,7 @@ class GrpcHardwareClient(HardwareClient):
             hub_pb2.InitializeDetectorRequest(
                 ctx=_command_context(self._user, "initialize_detector")
             ),
-            timeout=self._timeout_s,
+            timeout=self._init_timeout_s,
         )
         return bool(response.initialized)
 
@@ -142,7 +147,7 @@ class GrpcHardwareClient(HardwareClient):
             hub_pb2.InitializeMotionRequest(
                 ctx=_command_context(self._user, "initialize_motion")
             ),
-            timeout=self._timeout_s,
+            timeout=self._init_timeout_s,
         )
         return bool(response.initialized)
 

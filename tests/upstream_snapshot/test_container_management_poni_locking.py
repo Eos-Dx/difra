@@ -102,6 +102,12 @@ def test_container_initially_unlocked():
         
         # Should be unlocked initially
         assert not container_manager.is_container_locked(Path(tech_file))
+        with h5py.File(tech_file, "r") as f:
+            assert f.attrs.get(schema.ATTR_LOCK_STATUS) == schema.LOCK_STATUS_UNLOCKED
+            assert (
+                f.attrs.get(schema.ATTR_TRANSFER_STATUS)
+                == schema.TRANSFER_STATUS_UNSENT
+            )
 
 
 def test_lock_container():
@@ -206,3 +212,50 @@ def test_unlock_container():
         
         container_manager.unlock_container(tech_path)
         assert not container_manager.is_container_locked(tech_path)
+
+
+def test_transfer_status_defaults_and_updates():
+    """Containers should explicitly track sent/unsent state in v0.2."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        folder = Path(tmpdir)
+
+        poni_content = "Distance: 0.17\nPixelSize1: 7.5e-05"
+        poni_data = {"PRIMARY": (poni_content, "primary.poni")}
+        detector_config = [
+            {
+                "id": "PRIMARY",
+                "alias": "PRIMARY",
+                "type": "Pilatus",
+                "size": [256, 256],
+                "pixel_size_um": 172.0,
+            }
+        ]
+        aux_measurements = {"DARK": {"PRIMARY": str(folder / "dark.npy")}}
+        np.save(folder / "dark.npy", np.random.rand(256, 256).astype(np.float32))
+
+        _tech_id, tech_file = technical_container.generate_from_aux_table(
+            folder=folder,
+            aux_measurements=aux_measurements,
+            poni_data=poni_data,
+            detector_config=detector_config,
+            active_detector_ids=["PRIMARY"],
+            distances_cm=17.0,
+        )
+
+        tech_path = Path(tech_file)
+        assert (
+            container_manager.get_transfer_status(tech_path)
+            == schema.TRANSFER_STATUS_UNSENT
+        )
+
+        container_manager.mark_container_transferred(tech_path, sent=True)
+        assert (
+            container_manager.get_transfer_status(tech_path)
+            == schema.TRANSFER_STATUS_SENT
+        )
+
+        container_manager.mark_container_transferred(tech_path, sent=False)
+        assert (
+            container_manager.get_transfer_status(tech_path)
+            == schema.TRANSFER_STATUS_UNSENT
+        )
