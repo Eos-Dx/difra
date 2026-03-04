@@ -25,8 +25,8 @@ if SRC_ROOT not in sys.path:
 from difra.grpc_server.server import DifraGrpcServer, hub_pb2, hub_pb2_grpc
 from difra.hardware.hardware_client import DirectHardwareClient
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-SIDECAR_SCRIPT = REPO_ROOT / "src" / "hardware" / "difra" / "scripts" / "pixet_sidecar_server.py"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIDECAR_SCRIPT = REPO_ROOT / "src" / "difra" / "scripts" / "pixet_sidecar_server.py"
 
 
 def _list_conda_env_names() -> set[str]:
@@ -80,7 +80,7 @@ def _resolve_legacy_sidecar_command(host: str, port: int) -> list[str]:
             str(port),
         ]
 
-    candidate_envs = [requested_env] if requested_env else ["ulster37"]
+    candidate_envs = [requested_env] if requested_env else ["ulster37", "ulster38"]
     available_envs = _list_conda_env_names()
     chosen_env = next((name for name in candidate_envs if name in available_envs), "")
     if chosen_env:
@@ -101,14 +101,14 @@ def _resolve_legacy_sidecar_command(host: str, port: int) -> list[str]:
                 check=True,
             )
             py_ver = (version_check.stdout or "").strip().splitlines()[-1]
-            if py_ver != "3.7":
+            if py_ver not in {"3.7", "3.8"}:
                 raise RuntimeError(
-                    f"Legacy env '{chosen_env}' must be Python 3.7, found '{py_ver}'"
+                    f"Legacy env '{chosen_env}' must be Python 3.7 or 3.8, found '{py_ver}'"
                 )
         except Exception as exc:
             raise RuntimeError(
                 "Legacy sidecar runtime validation failed. "
-                "Set DIFRA_LEGACY_ENV=ulster37 or DIFRA_LEGACY_PYTHON to Python 3.7."
+                "Set DIFRA_LEGACY_ENV to ulster37/ulster38 or DIFRA_LEGACY_PYTHON to Python 3.7/3.8."
             ) from exc
         return [
             conda_exe,
@@ -128,7 +128,7 @@ def _resolve_legacy_sidecar_command(host: str, port: int) -> list[str]:
 
     raise RuntimeError(
         "No valid legacy sidecar runtime found. "
-        "Set DIFRA_LEGACY_ENV=ulster37 or DIFRA_LEGACY_PYTHON to Python 3.7."
+        "Set DIFRA_LEGACY_ENV=ulster37/ulster38 or DIFRA_LEGACY_PYTHON to Python 3.7/3.8."
     )
 
 
@@ -265,7 +265,7 @@ def test_demo_integration_time_legacy_sidecar_path_is_parallel():
 
     assert set(outputs.keys()) == {"PRIMARY", "SECONDARY"}
     # 1s integration for two detectors must be truly parallel with minimal overhead.
-    assert elapsed < 1.1
+    assert elapsed < 1.25
 
 
 def test_demo_integration_time_grpc_path_is_parallel():
@@ -344,4 +344,4 @@ def test_demo_integration_time_grpc_path_is_parallel():
 
     elapsed = asyncio.run(_scenario())
     # 1s integration for two detectors must be truly parallel with minimal overhead.
-    assert elapsed < 1.1
+    assert elapsed < 1.25

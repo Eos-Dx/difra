@@ -15,8 +15,8 @@ from difra.gui.main_window_ext.zone_measurements.logic.stage_control_mixin impor
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-SIDECAR_SCRIPT = REPO_ROOT / "src" / "hardware" / "difra" / "scripts" / "pixet_sidecar_server.py"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIDECAR_SCRIPT = REPO_ROOT / "src" / "difra" / "scripts" / "pixet_sidecar_server.py"
 
 
 def _free_tcp_port() -> int:

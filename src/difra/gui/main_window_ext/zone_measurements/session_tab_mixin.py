@@ -46,11 +46,19 @@ class SessionTabMixin:
         info_layout = QVBoxLayout(info_group)
         info_btn_row = QHBoxLayout()
         self.new_session_btn = QPushButton("Create Session...")
-        self.new_session_btn.clicked.connect(self.on_new_session)
+        on_new_session = getattr(self, "on_new_session", None)
+        if callable(on_new_session):
+            self.new_session_btn.clicked.connect(on_new_session)
+        else:
+            self.new_session_btn.setEnabled(False)
         info_btn_row.addWidget(self.new_session_btn)
 
         self.new_technical_btn = QPushButton("Create Technical...")
-        self.new_technical_btn.clicked.connect(self.on_new_technical_container)
+        on_new_technical_container = getattr(self, "on_new_technical_container", None)
+        if callable(on_new_technical_container):
+            self.new_technical_btn.clicked.connect(on_new_technical_container)
+        else:
+            self.new_technical_btn.setEnabled(False)
         info_btn_row.addWidget(self.new_technical_btn)
         info_btn_row.addStretch()
         info_layout.addLayout(info_btn_row)

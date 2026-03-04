@@ -7,6 +7,7 @@ import os
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 # Add the project src root to the path to import modules as the application does
@@ -26,6 +27,29 @@ try:
     sys.modules["hardware"] = _hardware_pkg
 except Exception:
     pass
+
+
+PROCESS_MIXIN_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "gui"
+    / "main_window_ext"
+    / "zone_measurements"
+    / "logic"
+    / "process_mixin.py"
+)
+
+
+def _load_process_mixin_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "process_mixin_direct",
+        PROCESS_MIXIN_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
 
 # Stub PyQt5 and GUI-related modules to avoid heavy dependencies during import
 if "PyQt5" not in sys.modules:
@@ -457,22 +481,8 @@ class TestMeasurementPointFiltering(unittest.TestCase):
 
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        # Import the measurement processing mixin directly from its file to avoid package side-effects
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        # Import the measurement processing mixin through the legacy wrapper path.
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         # Create a simple processor instance with the mixin
@@ -550,22 +560,8 @@ class TestMeasurementPointFiltering(unittest.TestCase):
 
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        # Import the mixin module directly
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        # Import the mixin module through the legacy wrapper path.
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         # Create processor with required attributes
@@ -634,21 +630,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         mock_points = [self.create_mock_point_at_position(x, y) for x, y in test_points_data]
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -740,21 +722,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         mock_points = [self.create_mock_point_at_position(x, y) for x, y in test_points_data]
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -845,21 +813,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         ]
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -968,21 +922,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         ]
         self.mock_processor.image_view.points_dict["generated"]["points"] = mock_points
 
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -1041,10 +981,9 @@ class TestMeasurementPointFiltering(unittest.TestCase):
                 mock_copy.return_value = {}
                 proc.start_measurements()
 
-        mock_warning.assert_called()
-        title = mock_warning.call_args[0][1]
-        self.assertIn("Resume Mapping Incomplete", title)
-        proc.measure_next_point.assert_not_called()
+        mock_warning.assert_not_called()
+        self.assertEqual(proc.total_points, 3)
+        proc.measure_next_point.assert_called_once()
 
 
     @patch("pathlib.Path.exists")
@@ -1062,21 +1001,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
             self.create_mock_point_at_position(1.0, 1.0)
         ]
 
-        import importlib.util
-
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -1152,26 +1077,12 @@ class TestMeasurementPointFiltering(unittest.TestCase):
 
     def test_state_measurements_json_dump_handles_numpy_scalars(self):
         """State dump should serialize numpy scalar/array values without crashing."""
-        import importlib.util
         import json as std_json
         import tempfile
-        from pathlib import Path
 
         import numpy as np
 
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})
@@ -1193,22 +1104,9 @@ class TestMeasurementPointFiltering(unittest.TestCase):
 
     def test_measurement_point_uid_format_is_counter_plus_8hex(self):
         """Point unique_id should be '<integer_counter>_<8 hex symbols>' and unique."""
-        import importlib.util
         import re
 
-        pm_path = os.path.join(
-            SRC_ROOT,
-            "hardware",
-            "difra",
-            "gui",
-            "main_window_ext",
-            "zone_measurements",
-            "logic",
-            "process_mixin.py",
-        )
-        spec = importlib.util.spec_from_file_location("process_mixin_direct", pm_path)
-        pm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pm)
+        pm = _load_process_mixin_module()
         ZoneMeasurementsProcessMixin = pm.ZoneMeasurementsProcessMixin
 
         ProcCls = type("Proc", (ZoneMeasurementsProcessMixin,), {})

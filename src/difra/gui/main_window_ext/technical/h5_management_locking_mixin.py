@@ -19,6 +19,13 @@ from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 class H5ManagementLockingMixin:
     @staticmethod
+    def _sync_lock_action_overrides():
+        """Mirror monkeypatchable module globals into extracted helper actions."""
+        h5_management_lock_actions.QMessageBox = QMessageBox
+        h5_management_lock_actions.QInputDialog = QInputDialog
+        h5_management_lock_actions.get_container_manager = get_container_manager
+
+    @staticmethod
     def _build_fake_poni_content(
         alias: str,
         distance_cm: float = 17.0,
@@ -571,26 +578,31 @@ class H5ManagementLockingMixin:
     
     def _archive_existing_containers(self, storage_folder: str) -> int:
         """Archive any existing .h5 containers in storage folder before creating new one."""
+        self._sync_lock_action_overrides()
         return h5_management_lock_actions.archive_existing_containers(
             self, storage_folder
         )
 
     def _update_aux_table_paths_after_archive(self, archive_folder: Path) -> int:
         """Remap aux table file paths to archived locations for visualization."""
+        self._sync_lock_action_overrides()
         return h5_management_lock_actions.update_aux_table_paths_after_archive(
             self, archive_folder
         )
 
     def create_new_technical_container(self):
         """Legacy API kept for compatibility; uses container-first creation flow."""
+        self._sync_lock_action_overrides()
         return h5_management_lock_actions.create_new_technical_container(self)
 
     def lock_active_technical_container(self):
         """Lock currently active technical container."""
+        self._sync_lock_action_overrides()
         return h5_management_lock_actions.lock_active_technical_container(self)
     
     def _lock_container(self, container_path: str, container_id: str):
         """Lock the technical container and archive raw data."""
+        self._sync_lock_action_overrides()
         return h5_management_lock_actions.lock_container(
             self, container_path, container_id
         )

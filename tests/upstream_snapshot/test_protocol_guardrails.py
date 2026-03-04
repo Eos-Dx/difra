@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run(script: str) -> subprocess.CompletedProcess[str]:
