@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
-from PyQt5.QtWidgets import QDialog
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from difra.gui import operator_manager as operator_manager_module
 from difra.gui.main_window_ext.new_session_dialog import NewSessionDialog
@@ -83,6 +84,44 @@ def _build_dialog_like(operator_manager) -> SimpleNamespace:
         distance_edit=_FakeLineEdit(),
         selected_operator_id=None,
     )
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
+
+
+def test_dialog_constructor_builds_widgets_and_applies_defaults(qapp):
+    operators = {
+        "op2": {
+            "name": "Beta",
+            "surname": "User",
+            "email": "beta@example.com",
+        },
+        "op1": {
+            "name": "Alpha",
+            "surname": "User",
+            "email": "alpha@example.com",
+            "institution": "Eos-Dx",
+        },
+    }
+    manager = _FakeOperatorManager(operators, current_id="op1")
+
+    dialog = NewSessionDialog(manager, default_distance=21.5)
+    try:
+        assert dialog.windowTitle() == "New Session"
+        assert dialog.isModal() is True
+        assert dialog.minimumWidth() == 500
+        assert dialog.distance_edit.text() == "21.5"
+        assert dialog.operator_combo.count() == 2
+        assert dialog.operator_combo.currentData() == "op1"
+        assert dialog.operator_details_label.text() == "Alpha User | alpha@example.com | Eos-Dx"
+    finally:
+        dialog.deleteLater()
 
 
 def test_populate_operator_combo_handles_empty_operator_list():
