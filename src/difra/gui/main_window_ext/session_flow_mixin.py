@@ -13,6 +13,7 @@ logger = _session_module.logger
 
 from difra.gui.session_lifecycle_service import SessionLifecycleService
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
+from difra.gui.main_window_ext import session_flow_actions
 
 
 class SessionFlowMixin:
@@ -391,124 +392,8 @@ class SessionFlowMixin:
             raise
     
     def _handle_new_sample_image(self, image_path: str):
-        """Handle loading/capturing a new sample image - auto-creates session.
-        
-        Prompts user about existing unfinalized sessions and handles archiving
-        with error marking if needed.
-        
-        Args:
-            image_path: Path to the loaded/captured image
-        """
-        from pathlib import Path
-        from difra.gui.main_window_ext.session_mixin import NewSessionDialog
-        
-        # Check if session already active - show detailed dialog
-        if self.session_manager.is_session_active():
-            if not self._handle_session_replacement():
-                # User cancelled replacement
-                if hasattr(self, "_append_session_log"):
-                    self._append_session_log("New sample load cancelled")
-                return
-        
-        # Show dialog to get sample information
-        default_distance = None
-        if hasattr(self, "_default_session_distance_cm"):
-            try:
-                default_distance = self._default_session_distance_cm()
-            except Exception:
-                default_distance = None
-        dialog = NewSessionDialog(
-            self.operator_manager,
-            self,
-            default_distance=default_distance,
-        )
-        
-        if dialog.exec_() == QDialog.Accepted:
-            params = dialog.get_parameters()
-            
-            # Get session folder from config or use image directory
-            session_folder = self.get_session_folder()
-            if not session_folder:
-                # Default to image directory
-                session_folder = Path(image_path).parent
-                logger.info(f"Using image directory as session folder: {session_folder}")
-            
-            try:
-                # Create session with schema-driven parameters
-                session_id, session_path = self.session_manager.create_session(
-                    folder=session_folder,
-                    distance_cm=params['distance_cm'],
-                    technical_container_path=getattr(
-                        self, "_active_technical_container_path", None
-                    ),
-                    sample_id=params['sample_id'],
-                    operator_id=params.get('operator_id'),
-                    # Pass all other schema attributes from params
-                    **{k: v for k, v in params.items() if k not in ['sample_id', 'operator_id', 'distance_cm']},
-                )
-                
-                # Add image to session container
-                try:
-                    image_array = None
-                    if hasattr(self, "_load_image_array_from_path"):
-                        image_array = self._load_image_array_from_path(image_path)
-
-                    if image_array is not None:
-                        self.session_manager.add_sample_image(
-                            image_data=image_array,
-                            image_index=1,
-                            image_type="sample",
-                        )
-                        logger.info(f"Added sample image to session container")
-                        if hasattr(self, "_append_session_log"):
-                            self._append_session_log("Sample image saved to session container")
-                    else:
-                        logger.warning(f"Failed to load image as array: {image_path}")
-                        
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to add image to session container: {e}",
-                        exc_info=True,
-                    )
-                
-                QMessageBox.information(
-                    self,
-                    "Session Created",
-                    f"Session created successfully!\n\n"
-                    f"Sample ID: {params['sample_id']}\n"
-                    f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
-                    f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
-                    f"Container: {session_path.name}\n\n"
-                    f"Sample image added to container.",
-                )
-                
-                logger.info(
-                    f"Created new session: {session_id} for sample {params['sample_id']} "
-                    f"with image: {image_path}"
-                )
-                if hasattr(self, "_append_session_log"):
-                    self._append_session_log(
-                        f"Created session {session_path.name} for sample {params['sample_id']}"
-                    )
-                
-                # Update UI
-                self.update_session_status()
-                
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Session Creation Failed",
-                    f"Failed to create session:\n\n{str(e)}",
-                )
-                logger.error(f"Failed to create session: {e}", exc_info=True)
-                if hasattr(self, "_append_session_log"):
-                    self._append_session_log(
-                        f"Session creation failed during new sample flow: {type(e).__name__}"
-                    )
-        else:
-            logger.info("User cancelled session creation")
-            if hasattr(self, "_append_session_log"):
-                self._append_session_log("Session creation cancelled by user")
+        """Handle loading/capturing a new sample image - auto-creates session."""
+        return session_flow_actions.handle_new_sample_image(self, image_path)
     
     def _add_zones_to_session(self):
         """Add zones from state to session container.
@@ -805,111 +690,7 @@ class SessionFlowMixin:
 
     def load_session_container_from_path(self, file_path: Path) -> bool:
         """Load a session container from an explicit path."""
-        file_path = Path(file_path)
-        if not file_path.exists():
-            QMessageBox.critical(
-                self,
-                "File Not Found",
-                f"Container file not found:\n{file_path}",
-            )
-            return False
-
-        if not self._prepare_for_session_container_switch(file_path):
-            return False
-
-        if hasattr(self, "_append_session_log"):
-            self._append_session_log(f"Opening existing session container: {file_path.name}")
-
-        try:
-            import h5py
-
-            schema = get_schema(self.config if hasattr(self, "config") else None)
-            container_manager = get_container_manager(self.config if hasattr(self, "config") else None)
-            is_locked = container_manager.is_container_locked(file_path)
-
-            with h5py.File(file_path, "r") as f:
-                sample_id = self._decode_attr(f.attrs.get(schema.ATTR_SAMPLE_ID, "Unknown"))
-                study_name = self._decode_attr(f.attrs.get(schema.ATTR_STUDY_NAME, "UNSPECIFIED"))
-                session_id = self._decode_attr(f.attrs.get(schema.ATTR_SESSION_ID, "Unknown"))
-                operator_id = self._decode_attr(f.attrs.get(schema.ATTR_OPERATOR_ID, "Unknown"))
-                distance_cm = f.attrs.get(schema.ATTR_DISTANCE_CM, None)
-                beam_energy_kev = f.attrs.get(schema.ATTR_BEAM_ENERGY_KEV, None)
-                num_points = len(f.get(schema.GROUP_POINTS, {}).keys())
-                meas_group = f.get(schema.GROUP_MEASUREMENTS, {})
-                num_measurements = 0
-                for point_group in meas_group.values():
-                    num_measurements += len(list(point_group.keys()))
-
-            lock_status = "🔒 LOCKED (read-only)" if is_locked else "🔓 Unlocked (editable)"
-            msg = (
-                f"Container Information:\n\n"
-                f"Sample ID: {sample_id}\n"
-                f"Study: {study_name}\n"
-                f"Session ID: {session_id}\n"
-                f"Operator: {operator_id}\n"
-                f"Status: {lock_status}\n\n"
-                f"Data Summary:\n"
-                f"  Points: {num_points}\n"
-                f"  Measurements: {num_measurements}\n\n"
-            )
-
-            if distance_cm is not None:
-                msg += f"Distance: {distance_cm} cm\n"
-            if beam_energy_kev is not None:
-                msg += f"Beam Energy: {beam_energy_kev} keV\n\n"
-
-            QMessageBox.information(self, "Session Container Opened", msg, QMessageBox.Ok)
-
-            session_info = self.session_manager.open_existing_session(file_path)
-            if not isinstance(session_info, dict):
-                session_info = {}
-            self._sync_attenuation_controls_after_restore(session_info)
-
-            logger.info(
-                "Opened existing session container: sample_id=%s locked=%s path=%s",
-                sample_id,
-                is_locked,
-                str(file_path),
-            )
-            if hasattr(self, "_append_session_log"):
-                mode = "read-only" if is_locked else "editable"
-                self._append_session_log(
-                    f"Opened session container {file_path.name} ({mode})"
-                )
-
-            self._handle_incomplete_measurements_after_restore(file_path)
-
-            self._restore_session_workspace_from_container(file_path)
-
-            if hasattr(self, "_populate_aux_table_from_h5"):
-                try:
-                    self._populate_aux_table_from_h5(str(file_path), set_active=False)
-                except Exception as tech_restore_error:
-                    logger.warning(
-                        f"Failed to restore technical table from session: {tech_restore_error}"
-                    )
-            self.update_session_status()
-
-            QMessageBox.information(
-                self,
-                "Container Ready",
-                f"Session container opened successfully!\n\n"
-                f"You can now analyze the data in DIFRA.\n\n"
-                f"Note: {'Read-only mode (locked)' if is_locked else 'Editable mode'}",
-            )
-            return True
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Failed to Open Container",
-                f"Failed to open session container:\n\n{str(e)}",
-            )
-            logger.error(f"Failed to open session container: {e}", exc_info=True)
-            if hasattr(self, "_append_session_log"):
-                self._append_session_log(
-                    f"Failed to open session container: {type(e).__name__}"
-                )
-            return False
+        return session_flow_actions.load_session_container_from_path(self, file_path)
 
     def on_restore_session(self):
         """Open an existing session container (including locked ones) for analysis."""

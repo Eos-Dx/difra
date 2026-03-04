@@ -27,6 +27,7 @@ from .points.zone_geometry import compute_ideal_radius, farthest_point_sampling
 from .points.zone_points_constants import ZonePointsConstants
 from .points.zone_points_renderer import ZonePointsRenderer, ZonePointsTableManager
 from .points.zone_points_ui_builder import ZonePointsGeometry, ZonePointsUIBuilder
+from . import zone_points_actions
 
 
 class ZonePointsMixin:
@@ -1090,99 +1091,11 @@ class ZonePointsMixin:
 
     def update_points_table_safe(self):
         """Minimal safe table update for restore operations (no widgets)."""
-        try:
-            if not hasattr(self, "pointsTable") or self.pointsTable is None:
-                print("Info: pointsTable not available for safe update")
-                return
-
-            # Guard against re-entrancy and selection signals
-            self._updating_points_table = True
-            try:
-                self.pointsTable.blockSignals(True)
-                points = self._build_points_snapshot()
-                self.pointsTable.setRowCount(len(points))
-
-                for idx, (x, y, ptype, point_id, point_uid) in enumerate(points):
-                    from PyQt5.QtWidgets import QTableWidgetItem
-
-                    id_item = QTableWidgetItem("" if point_id is None else str(point_id))
-                    if point_id is not None:
-                        id_item.setData(Qt.UserRole, int(point_id))
-                    id_item.setData(Qt.UserRole + 1, str(point_uid))
-                    self._set_table_item_editable(id_item, editable=False)
-                    self.pointsTable.setItem(
-                        idx,
-                        0,
-                        id_item,
-                    )
-                    x_item = QTableWidgetItem(f"{x:.2f}")
-                    y_item = QTableWidgetItem(f"{y:.2f}")
-                    x_mm_item = QTableWidgetItem("N/A")
-                    y_mm_item = QTableWidgetItem("N/A")
-                    self._set_table_item_editable(x_item, editable=True)
-                    self._set_table_item_editable(y_item, editable=True)
-                    self._set_table_item_editable(x_mm_item, editable=True)
-                    self._set_table_item_editable(y_mm_item, editable=True)
-                    self.pointsTable.setItem(idx, 1, x_item)
-                    self.pointsTable.setItem(idx, 2, y_item)
-                    self.pointsTable.setItem(idx, 3, x_mm_item)
-                    self.pointsTable.setItem(idx, 4, y_mm_item)
-            finally:
-                self.pointsTable.blockSignals(False)
-                self._updating_points_table = False
-
-            print(f"Safe table update completed with {len(points)} points")
-
-        except Exception as e:
-            print(f"Error in safe table update: {e}")
+        return zone_points_actions.update_points_table_safe(self)
 
     def update_points_table(self):
         """Update the points table with current point data and measurement widgets."""
-        try:
-            # Safety check - ensure we have the required attributes
-            if not hasattr(self, "pointsTable") or self.pointsTable is None:
-                print("Info: pointsTable is not initialized, skipping table update")
-                return
-
-            # Skip if zone points widget hasn't been created yet
-            if not hasattr(self, "zonePointsDock"):
-                print("Info: Zone points widget not created yet, using safe update")
-                self.update_points_table_safe()
-                return
-
-            # Check if we have the measurement_widgets attribute
-            if not hasattr(self, "measurement_widgets"):
-                self.measurement_widgets = {}
-
-            # Guard against re-entrancy and selection signals during updates
-            self._updating_points_table = True
-            try:
-                self.pointsTable.blockSignals(True)
-
-                # 1) Build the current points snapshot
-                points = self._build_points_snapshot()
-
-                # 3) Clean up deleted measurement widgets
-                self._cleanup_deleted_widgets(points)
-
-                # 4) Set the table row count and populate rows
-                self.pointsTable.setRowCount(len(points))
-
-                # 5) Populate table rows and reattach widgets
-                self._populate_table_rows(points)
-            finally:
-                self.pointsTable.blockSignals(False)
-                self._updating_points_table = False
-
-            print(
-                f"Updated table with {len(points)} points. Widget keys: {list(self.measurement_widgets.keys())}"
-            )
-
-        except Exception as e:
-            print(f"Error updating points table: {e}")
-            import traceback
-
-            traceback.print_exc()
+        return zone_points_actions.update_points_table(self)
 
     def _normalize_point_item_identity(
         self,
@@ -1446,83 +1359,10 @@ class ZonePointsMixin:
 
     def delete_selected_points(self):
         """Delete selected points, enforcing measured/skipped rules."""
-        selected_rows = sorted(
-            {ix.row() for ix in self.pointsTable.selectedIndexes()},
-            reverse=True,
-        )
-        if not selected_rows:
-            return
-
-        active_measurement = self._measurement_sequence_active()
-        skip_reason_for_measured = None
-        changed_any = False
-
-        for r in selected_rows:
-            point_uid, point_display_id = self._get_point_identity_from_row(r)
-            if not point_uid:
-                continue
-
-            measured = self._is_row_measured(row=r, point_uid=point_uid)
-            if measured:
-                if skip_reason_for_measured is None:
-                    skip_reason_for_measured = self._prompt_skip_reason(
-                        "Measured Point",
-                        "Measured points cannot be deleted.\n"
-                        "Provide reason to mark selected measured point(s) as SKIPPED:",
-                    )
-                    if skip_reason_for_measured is None:
-                        continue
-                changed_any = (
-                    self._skip_point_by_row(
-                        row=r,
-                        reason=skip_reason_for_measured,
-                    )
-                    or changed_any
-                )
-                continue
-
-            changed_any = (
-                self._delete_row_and_container_point(
-                    row=r,
-                    point_uid=point_uid,
-                    point_display_id=point_display_id,
-                )
-                or changed_any
-            )
-
-            # When measuring is active, removing any pending point from the plan
-            # effectively "deletes" it from upcoming sequence.
-            if active_measurement and hasattr(self, "_append_measurement_log"):
-                point_label = (
-                    f"#{point_display_id}"
-                    if point_display_id is not None
-                    else str(point_uid)
-                )
-                self._append_measurement_log(
-                    f"[CAPTURE] Point {point_label} deleted from pending plan"
-                )
-
-        if changed_any:
-            self.update_points_table()
+        return zone_points_actions.delete_selected_points(self)
 
     def delete_all_points(self):
-        for item in self.image_view.points_dict["generated"]["points"]:
-            self.safe_remove_item(item)
-        for item in self.image_view.points_dict["generated"]["zones"]:
-            self.safe_remove_item(item)
-        self.image_view.points_dict["generated"]["points"].clear()
-        self.image_view.points_dict["generated"]["zones"].clear()
-        for item in self.image_view.points_dict["user"]["points"]:
-            self.safe_remove_item(item)
-        for item in self.image_view.points_dict["user"]["zones"]:
-            self.safe_remove_item(item)
-        self.image_view.points_dict["user"]["points"].clear()
-        self.image_view.points_dict["user"]["zones"].clear()
-        # Clear measurement tree
-        for pid in list(getattr(self, "_measurement_items", {}).keys()):
-            self.remove_measurement_widget_from_panel(pid)
-        self.measurement_widgets = {}
-        self.next_point_id = 1
+        return zone_points_actions.delete_all_points(self)
         self.update_points_table()
 
     def _remove_point_items_by_uid(self, point_uid: str, point_display_id: Optional[int] = None):
