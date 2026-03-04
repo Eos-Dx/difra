@@ -63,7 +63,7 @@ class TechnicalCaptureMixin:
         setattr(self, counter_attr, count)
 
         validate_folder = self._get_technical_module("validate_folder")
-        folder = validate_folder(self.folderLE.text())
+        folder = validate_folder(self._current_technical_output_folder())
         base = self._file_base(typ)
         base_with_count = f"{base}_{count:03d}"
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -240,7 +240,7 @@ class TechnicalCaptureMixin:
         resolved_path = str(file_path or "").strip()
         is_h5_ref = resolved_path.startswith("h5ref://")
         if resolved_path and not is_h5_ref and not os.path.exists(resolved_path):
-            folder = (self.folderLE.text() or "").strip()
+            folder = self._current_technical_output_folder()
             candidate = os.path.join(folder, os.path.basename(resolved_path)) if folder else ""
             if candidate and os.path.exists(candidate):
                 resolved_path = candidate
@@ -297,14 +297,14 @@ class TechnicalCaptureMixin:
 
     def run_pyfai(self):
         self._log_technical_event("Starting PyFAI calibration...")
-        env = self.config.get("conda")
+        env = self.config.get("pyfai_conda") or self.config.get("conda")
         if not env:
             self._log_technical_event("Error: No conda environment configured")
-            print("No conda env set in self.config['conda']")
+            print("No conda env set in self.config['pyfai_conda'] or self.config['conda']")
             return
 
         validate_folder = self._get_technical_module("validate_folder")
-        folder = validate_folder(self.folderLE.text())
+        folder = validate_folder(self._current_technical_output_folder())
 
         if os.name == "nt":
             cmd = f"CALL conda activate {env} " f'&& cd /d "{folder}" ' f"&& pyfai-calib2"

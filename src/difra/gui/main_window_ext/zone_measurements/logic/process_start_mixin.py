@@ -488,7 +488,14 @@ class ZoneMeasurementsProcessStartMixin:
         pm = _pm()
 
         self.auto_save_state()
-        self.measurement_folder = Path(self.folderLineEdit.text().strip())
+        if hasattr(self, "_enforce_measurement_output_folder_lock"):
+            self._enforce_measurement_output_folder_lock(show_message=False)
+        if hasattr(self, "_current_measurement_output_folder"):
+            self.measurement_folder = Path(self._current_measurement_output_folder())
+        else:
+            self.measurement_folder = Path(self.folderLineEdit.text().strip())
+        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
+            self.folderLineEdit.setText(str(self.measurement_folder))
         self.state_path_measurements = self.measurement_folder / f"{self.fileNameLineEdit.text()}_state.json"
         pm.logger.info(
             "Measurement start requested",

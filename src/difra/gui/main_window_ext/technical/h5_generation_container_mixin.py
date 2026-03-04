@@ -43,7 +43,7 @@ class H5GenerationContainerMixin:
             return
 
         # Validate folder
-        folder = (self.folderLE.text() or "").strip()
+        folder = self._current_technical_output_folder()
         if not folder or not os.path.isdir(folder):
             QMessageBox.warning(self, "Invalid Folder", "Select a valid save folder.")
             return

@@ -44,6 +44,17 @@ class SessionTabMixin:
 
         info_group = QGroupBox("Active Session Information")
         info_layout = QVBoxLayout(info_group)
+        info_btn_row = QHBoxLayout()
+        self.new_session_btn = QPushButton("Create Session...")
+        self.new_session_btn.clicked.connect(self.on_new_session)
+        info_btn_row.addWidget(self.new_session_btn)
+
+        self.new_technical_btn = QPushButton("Create Technical...")
+        self.new_technical_btn.clicked.connect(self.on_new_technical_container)
+        info_btn_row.addWidget(self.new_technical_btn)
+        info_btn_row.addStretch()
+        info_layout.addLayout(info_btn_row)
+
         self.session_info_label = QLabel("No active session")
         self.session_info_label.setStyleSheet("padding: 10px;")
         info_layout.addWidget(self.session_info_label)

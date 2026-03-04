@@ -390,8 +390,16 @@ class ZoneMeasurementsUIMixin:
             logger.warning(f"Failed to update sample ID: {e}")
     
     def _on_folder_changed(self):
-        """Handle folder change - just log for now, actual path used at measurement time."""
+        """Validate manual folder edits unless the active session has locked the path."""
         try:
+            if (
+                hasattr(self, "_is_measurement_output_folder_locked")
+                and self._is_measurement_output_folder_locked()
+            ):
+                if hasattr(self, "_enforce_measurement_output_folder_lock"):
+                    self._enforce_measurement_output_folder_lock(show_message=False)
+                return
+
             new_folder = self.folderLineEdit.text().strip()
             if new_folder:
                 import logging
