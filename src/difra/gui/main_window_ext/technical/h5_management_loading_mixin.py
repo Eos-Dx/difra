@@ -7,6 +7,8 @@ import numpy as np
 from . import h5_management_mixin as _module
 
 os = _module.os
+shutil = _module.shutil
+time = _module.time
 logger = _module.logger
 QInputDialog = _module.QInputDialog
 QMessageBox = _module.QMessageBox
@@ -17,6 +19,14 @@ get_technical_validator = _module.get_technical_validator
 
 
 class H5ManagementLoadingMixin:
+    @staticmethod
+    def _safe_archive_token(value: str, fallback: str = "unknown") -> str:
+        token = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "_"
+            for ch in str(value or "")
+        ).strip("_")
+        return token or fallback
+
     def validate_technical_h5(self):
         """Deprecated: validation button workflow was removed."""
         QMessageBox.information(
@@ -109,6 +119,189 @@ class H5ManagementLoadingMixin:
             return None
         return Path(existing)
 
+    def _archive_existing_technical_container_for_replacement(
+        self,
+        existing_path: Path,
+    ) -> Path:
+        from .helpers import _get_technical_archive_folder
+
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        container_manager = get_container_manager(
+            self.config if hasattr(self, "config") else None
+        )
+        archive_base = Path(
+            _get_technical_archive_folder(self.config if hasattr(self, "config") else None)
+        )
+        archive_base.mkdir(parents=True, exist_ok=True)
+
+        operator_token = "unknown"
+        get_lock_info = getattr(container_manager, "get_lock_info", None)
+        if callable(get_lock_info):
+            try:
+                lock_info = get_lock_info(Path(existing_path)) or {}
+                operator_token = self._safe_archive_token(
+                    lock_info.get("locked_by") or cfg.get("operator_id", ""),
+                    fallback="unknown",
+                )
+            except Exception:
+                operator_token = "unknown"
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        archive_dir = archive_base / (
+            f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
+            f"{operator_token}_{timestamp}"
+        )
+        suffix = 1
+        while archive_dir.exists():
+            suffix += 1
+            archive_dir = archive_base / (
+                f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
+                f"{operator_token}_{timestamp}_{suffix}"
+            )
+        archive_dir.mkdir(parents=True, exist_ok=False)
+
+        destination = archive_dir / Path(existing_path).name
+        shutil.move(str(existing_path), str(destination))
+        return destination
+
+    def _attempt_forced_session_send(self, session_path: Path) -> None:
+        raise RuntimeError("Cloud session upload API is not available in this build.")
+
+    def _finalize_active_session_for_new_technical_container(self) -> bool:
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            return True
+        if not self.session_manager.is_session_active():
+            return True
+
+        try:
+            info = self.session_manager.get_session_info() or {}
+        except Exception:
+            info = {}
+
+        raw_session_path = str(getattr(self.session_manager, "session_path", "") or "").strip()
+        if not raw_session_path:
+            return False
+        session_path = Path(raw_session_path)
+        sample_id = info.get("sample_id") or getattr(self.session_manager, "sample_id", None) or "UNKNOWN"
+
+        reply = QMessageBox.question(
+            self,
+            "Active Session Will Be Closed",
+            "Creating a new technical container requires closing the active session.\n\n"
+            f"Sample ID: {sample_id}\n"
+            f"Session: {session_path.name}\n\n"
+            "The current session data will be saved, the session container will be "
+            "locked, a cloud-send attempt will be made, and if sending is unavailable "
+            "the session will be archived as LOCKED / UNSENT.\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+
+        try:
+            from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
+            from difra.gui.session_lifecycle_actions import SessionLifecycleActions
+
+            container_manager = get_container_manager(
+                self.config if hasattr(self, "config") else None
+            )
+            measurements_folder = session_path.parent
+            lock_user = getattr(self.session_manager, "operator_id", None)
+
+            readable_meta = SessionFinalizeWorkflow.ensure_human_readable_metadata(
+                session_path=session_path,
+                logger=logger,
+            )
+            SessionFinalizeWorkflow.store_json_state_in_container(
+                session_path=session_path,
+                measurements_folder=measurements_folder,
+                sample_id=sample_id,
+                logger=logger,
+            )
+            SessionLifecycleActions.finalize_session_container(
+                session_path=session_path,
+                container_manager=container_manager,
+                lock_user=lock_user,
+            )
+
+            send_error = None
+            try:
+                self._attempt_forced_session_send(session_path)
+            except Exception as exc:
+                send_error = exc
+
+            archive_dest, archived_count = SessionFinalizeWorkflow.archive_measurement_files(
+                measurements_folder=measurements_folder,
+                sample_id=readable_meta.get("sample_id") or sample_id,
+                session_id=readable_meta.get("session_id"),
+                study_name=readable_meta.get("study_name"),
+                project_id=readable_meta.get("project_id"),
+                operator_id=readable_meta.get("operator_id"),
+                config=self.config if hasattr(self, "config") else None,
+                logger=logger,
+            )
+            SessionFinalizeWorkflow.create_session_bundle_zip(
+                session_path=session_path,
+                archive_folder=archive_dest,
+                logger=logger,
+            )
+            archived_session_path = SessionFinalizeWorkflow.archive_session_container_into_folder(
+                session_path=session_path,
+                archive_folder=archive_dest,
+                logger=logger,
+            )
+            if send_error is None:
+                mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+                if callable(mark_transferred):
+                    mark_transferred(Path(archived_session_path), sent=True)
+
+            self.session_manager.close_session()
+            if hasattr(self, "update_session_status"):
+                self.update_session_status()
+
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    f"Forced session close before new technical container: {archived_session_path.name}"
+                )
+
+            if send_error is not None:
+                QMessageBox.warning(
+                    self,
+                    "Session Send Failed",
+                    "The active session was closed automatically before creating a new "
+                    "technical container.\n\n"
+                    f"Cloud send failed: {send_error}\n\n"
+                    "The session was archived as LOCKED / UNSENT.\n"
+                    f"Archived container: {archived_session_path.name}\n"
+                    f"Archive folder: {archive_dest}\n"
+                    f"Archived measurement files: {archived_count}",
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Session Archived",
+                    "The active session was closed and sent successfully before "
+                    "creating a new technical container.\n\n"
+                    f"Archived container: {archived_session_path.name}\n"
+                    f"Archive folder: {archive_dest}",
+                )
+            return True
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Session Close Failed",
+                "Could not close and archive the active session before creating a new "
+                f"technical container:\n\n{exc}",
+            )
+            logger.error(
+                "Failed to force-close active session before new technical container: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
     def _prompt_existing_technical_container_resolution(
         self,
         existing_path: Path,
@@ -147,6 +340,9 @@ class H5ManagementLoadingMixin:
             return "cancel"
 
         if clicked == new_btn:
+            if not self._finalize_active_session_for_new_technical_container():
+                return "cancel"
+
             current_active = self._active_technical_container_path_obj()
             if current_active is not None:
                 try:
@@ -164,10 +360,8 @@ class H5ManagementLoadingMixin:
                     if hasattr(self, "config") and isinstance(self.config, dict):
                         operator_id = self.config.get("operator_id")
                     container_manager.lock_container(existing_path, user_id=operator_id)
-                archived = container_manager.archive_technical_container(
-                    folder=storage_folder,
-                    tech_file=existing_path,
-                    user_confirmed=True,
+                archived = self._archive_existing_technical_container_for_replacement(
+                    existing_path=existing_path,
                 )
                 self._log_technical_event(
                     f"Archived previous technical container: {existing_path.name} -> {archived.name}"
@@ -224,6 +418,9 @@ class H5ManagementLoadingMixin:
             if decision == "use_existing":
                 return existing_path
             if decision != "create_new":
+                return None
+        else:
+            if not self._finalize_active_session_for_new_technical_container():
                 return None
 
         container_id, file_path = technical_container.create_technical_container(

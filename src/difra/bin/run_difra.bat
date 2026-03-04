@@ -116,6 +116,7 @@ set "GRPC_LAUNCH_PATH=%GRPC_ENV_ROOT%;%GRPC_ENV_ROOT%Library\mingw-w64\bin;%GRPC
 set "GUI_LAUNCH_PATH=%GUI_ENV_ROOT%;%GUI_ENV_ROOT%Library\mingw-w64\bin;%GUI_ENV_ROOT%Library\usr\bin;%GUI_ENV_ROOT%Library\bin;%GUI_ENV_ROOT%Scripts;%GUI_ENV_ROOT%bin;%ORIGINAL_PATH%"
 
 cd /d %REPO_ROOT%
+call :auto_update_repo
 set PYTHONPATH=%REPO_ROOT%\src;%PYTHONPATH%
 set PYTHONUNBUFFERED=1
 
@@ -193,6 +194,106 @@ call :stop_local_listener "%SIDECAR_HOST%" "%SIDECAR_PORT%" "Detector sidecar"
 call :stop_local_listener "%GRPC_HOST%" "%GRPC_PORT%" "DiFRA gRPC server"
 
 endlocal & exit /b %GUI_EXIT_CODE%
+
+:auto_update_repo
+setlocal
+set "AUTO_UPDATE=%DIFRA_AUTO_UPDATE%"
+if "%AUTO_UPDATE%"=="" set "AUTO_UPDATE=1"
+if /I "%AUTO_UPDATE%"=="0" (
+  echo [INFO] Automatic git update check disabled ^(DIFRA_AUTO_UPDATE=%AUTO_UPDATE%^).
+  endlocal & exit /b 0
+)
+if /I "%AUTO_UPDATE%"=="false" (
+  echo [INFO] Automatic git update check disabled ^(DIFRA_AUTO_UPDATE=%AUTO_UPDATE%^).
+  endlocal & exit /b 0
+)
+if /I "%AUTO_UPDATE%"=="no" (
+  echo [INFO] Automatic git update check disabled ^(DIFRA_AUTO_UPDATE=%AUTO_UPDATE%^).
+  endlocal & exit /b 0
+)
+
+where git >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] git is unavailable; skipping automatic update check.
+  endlocal & exit /b 0
+)
+
+git -C "%REPO_ROOT%" rev-parse --is-inside-work-tree >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] %REPO_ROOT% is not a git work tree; skipping automatic update check.
+  endlocal & exit /b 0
+)
+
+set "AUTO_UPDATE_REMOTE=%DIFRA_AUTO_UPDATE_REMOTE%"
+if "%AUTO_UPDATE_REMOTE%"=="" set "AUTO_UPDATE_REMOTE=origin"
+
+for /f "usebackq delims=" %%B in (`git -C "%REPO_ROOT%" rev-parse --abbrev-ref HEAD 2^>nul`) do set "AUTO_UPDATE_BRANCH=%%B"
+if "%AUTO_UPDATE_BRANCH%"=="" (
+  echo [WARN] Could not determine current git branch; skipping automatic update check.
+  endlocal & exit /b 0
+)
+if /I "%AUTO_UPDATE_BRANCH%"=="HEAD" (
+  echo [WARN] Repository is in detached HEAD state; skipping automatic update check.
+  endlocal & exit /b 0
+)
+
+git -C "%REPO_ROOT%" remote get-url "%AUTO_UPDATE_REMOTE%" >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] Git remote '%AUTO_UPDATE_REMOTE%' is not configured; skipping automatic update check.
+  endlocal & exit /b 0
+)
+
+echo [INFO] Checking for updates from %AUTO_UPDATE_REMOTE%/%AUTO_UPDATE_BRANCH%
+git -C "%REPO_ROOT%" fetch --quiet "%AUTO_UPDATE_REMOTE%" "%AUTO_UPDATE_BRANCH%"
+if errorlevel 1 (
+  echo [WARN] git fetch failed; continuing with local checkout.
+  endlocal & exit /b 0
+)
+
+set "LOCAL_HEAD="
+for /f "usebackq delims=" %%H in (`git -C "%REPO_ROOT%" rev-parse HEAD 2^>nul`) do set "LOCAL_HEAD=%%H"
+set "REMOTE_HEAD="
+for /f "usebackq delims=" %%H in (`git -C "%REPO_ROOT%" rev-parse "%AUTO_UPDATE_REMOTE%/%AUTO_UPDATE_BRANCH%" 2^>nul`) do set "REMOTE_HEAD=%%H"
+if "%LOCAL_HEAD%"=="" (
+  echo [WARN] Could not resolve local git revision; continuing with local checkout.
+  endlocal & exit /b 0
+)
+if "%REMOTE_HEAD%"=="" (
+  echo [WARN] Could not resolve remote git revision; continuing with local checkout.
+  endlocal & exit /b 0
+)
+
+if /I "%LOCAL_HEAD%"=="%REMOTE_HEAD%" (
+  echo [INFO] Repository is already up to date.
+  endlocal & exit /b 0
+)
+
+set "HAS_TRACKED_CHANGES="
+for /f "usebackq delims=" %%S in (`git -C "%REPO_ROOT%" status --porcelain --untracked-files=no 2^>nul`) do (
+  set "HAS_TRACKED_CHANGES=1"
+  goto :auto_update_repo_status_done
+)
+:auto_update_repo_status_done
+if defined HAS_TRACKED_CHANGES (
+  echo [WARN] Remote updates are available, but tracked local changes exist; skipping automatic pull.
+  endlocal & exit /b 0
+)
+
+git -C "%REPO_ROOT%" merge-base --is-ancestor HEAD "%AUTO_UPDATE_REMOTE%/%AUTO_UPDATE_BRANCH%" >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] Local branch is not behind %AUTO_UPDATE_REMOTE%/%AUTO_UPDATE_BRANCH% ^(ahead or diverged^); skipping automatic pull.
+  endlocal & exit /b 0
+)
+
+echo [INFO] Pulling latest fast-forward changes from %AUTO_UPDATE_REMOTE%/%AUTO_UPDATE_BRANCH%
+git -C "%REPO_ROOT%" pull --ff-only "%AUTO_UPDATE_REMOTE%" "%AUTO_UPDATE_BRANCH%"
+if errorlevel 1 (
+  echo [WARN] git pull --ff-only failed; continuing with existing checkout.
+  endlocal & exit /b 0
+)
+
+echo [INFO] Repository updated successfully.
+endlocal & exit /b 0
 
 :resolve_env_python
 setlocal

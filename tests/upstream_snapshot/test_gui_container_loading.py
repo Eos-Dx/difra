@@ -1013,3 +1013,96 @@ def test_file_backed_aux_rows_still_require_double_click(qapp, tmp_path, monkeyp
     harness._handle_aux_table_cell_double_clicked(0, harness.AUX_COL_FILE)
 
     assert opened == [(0, harness.AUX_COL_FILE)]
+
+
+def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_path):
+    technical_folder = tmp_path / "technical_replace"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+    lock_container(tech_path, user_id="sad")
+
+    harness = _TechnicalLoadHarness(
+        config={"technical_archive_folder": str(archive_folder)},
+        work_dir=technical_folder,
+    )
+
+    archived_path = harness._archive_existing_technical_container_for_replacement(
+        tech_path
+    )
+
+    assert not tech_path.exists()
+    assert archived_path.exists()
+    assert archived_path.parent.parent == archive_folder
+
+
+def test_new_technical_container_forces_active_session_archive_unsent(
+    qapp, tmp_path, monkeypatch
+):
+    technical_folder = tmp_path / "technical_force_close"
+    measurements_folder = tmp_path / "measurements_force_close"
+    measurements_archive = tmp_path / "archive" / "measurements"
+
+    tech_path = _make_technical_container(technical_folder)
+    lock_container(tech_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "measurements_folder": str(measurements_folder),
+        "measurements_archive_folder": str(measurements_archive),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+        "active_detectors": ["det_primary"],
+    }
+    harness = _SessionAwareTechnicalLoadHarness(config=config, work_dir=technical_folder)
+    warnings = []
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.Yes),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: warnings.append(a[2]) or QMessageBox.Ok),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *a, **k: QMessageBox.Ok),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda *a, **k: QMessageBox.Ok),
+    )
+
+    _session_id, session_path = harness.session_manager.create_session(
+        folder=measurements_folder,
+        distance_cm=17.0,
+        technical_container_path=str(tech_path),
+        sample_id="FORCED_CLOSE_SAMPLE",
+        study_name="FORCED_CLOSE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-03-04",
+    )
+    (measurements_folder / "FORCED_CLOSE_SAMPLE_state.json").write_text("{}")
+    (measurements_folder / "capture.npy").write_text("placeholder")
+
+    assert harness._finalize_active_session_for_new_technical_container() is True
+    assert harness.session_manager.is_session_active() is False
+    assert not session_path.exists()
+    assert warnings
+    assert "UNSENT" in warnings[-1]
+
+    archived_sessions = sorted(measurements_archive.rglob("session_*.nxs.h5"))
+    assert len(archived_sessions) == 1
+    archived_session = archived_sessions[0]
+    assert harness.session_manager.container_manager.get_transfer_status(archived_session) == "unsent"
+    assert harness.session_manager.container_manager.is_container_locked(archived_session)

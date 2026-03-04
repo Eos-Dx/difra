@@ -181,6 +181,15 @@ class ZonePointsMixin:
         self.pointsTable.customContextMenuRequested.connect(
             self._show_points_table_context_menu
         )
+        if hasattr(self, "refresh_stage_limit_overlays"):
+            if hasattr(self, "real_x_pos_mm") and self.real_x_pos_mm is not None:
+                self.real_x_pos_mm.valueChanged.connect(
+                    lambda _value: self.refresh_stage_limit_overlays()
+                )
+            if hasattr(self, "real_y_pos_mm") and self.real_y_pos_mm is not None:
+                self.real_y_pos_mm.valueChanged.connect(
+                    lambda _value: self.refresh_stage_limit_overlays()
+                )
 
     def update_conversion_label(self):
         self.conversionLabel.setText(f"Conversion: {self.pixel_to_mm_ratio:.2f} px/mm")

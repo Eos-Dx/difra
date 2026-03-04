@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QDockWidget,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
+    QGraphicsRectItem,
     QMenu,
     QTableWidget,
     QTableWidgetItem,
@@ -14,6 +15,81 @@ from PyQt5.QtWidgets import (
 
 
 class ShapeTableMixin:
+    def _remove_shape_overlay_items(self, shape_info):
+        for key in ("diagonals", "center_marker", "stage_limit_outline"):
+            extra_items = shape_info.get(key)
+            if isinstance(extra_items, list):
+                for extra_item in extra_items:
+                    try:
+                        self.image_view.scene.removeItem(extra_item)
+                    except Exception:
+                        pass
+            elif extra_items is not None:
+                try:
+                    self.image_view.scene.removeItem(extra_items)
+                except Exception:
+                    pass
+            shape_info.pop(key, None)
+
+    def _get_stage_reference_mm(self):
+        x_widget = getattr(self, "real_x_pos_mm", None)
+        y_widget = getattr(self, "real_y_pos_mm", None)
+        try:
+            ref_x = float(x_widget.value()) if x_widget is not None else 0.0
+            ref_y = float(y_widget.value()) if y_widget is not None else 0.0
+            return ref_x, ref_y
+        except Exception:
+            return 0.0, 0.0
+
+    def _draw_stage_limit_outline(self, shape_info, cx: float, cy: float) -> None:
+        if not hasattr(self, "_get_stage_limits"):
+            return
+
+        try:
+            limits = self._get_stage_limits()
+        except Exception:
+            limits = None
+        if not limits:
+            return
+
+        try:
+            px_per_mm = float(getattr(self, "pixel_to_mm_ratio", 0.0) or 0.0)
+        except Exception:
+            px_per_mm = 0.0
+        if px_per_mm <= 0.0:
+            return
+
+        ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
+        x_min, x_max = limits["x"]
+        y_min, y_max = limits["y"]
+
+        x_a = cx + (ref_x_mm - float(x_min)) * px_per_mm
+        x_b = cx + (ref_x_mm - float(x_max)) * px_per_mm
+        y_a = cy + (ref_y_mm - float(y_min)) * px_per_mm
+        y_b = cy + (ref_y_mm - float(y_max)) * px_per_mm
+
+        outline = QGraphicsRectItem(
+            min(x_a, x_b),
+            min(y_a, y_b),
+            abs(x_b - x_a),
+            abs(y_b - y_a),
+        )
+        outline.setPen(QPen(QColor("#C62828"), 4))
+        try:
+            outline.setBrush(QBrush(Qt.NoBrush))
+        except Exception:
+            pass
+        try:
+            outline.setZValue(10_000)
+        except Exception:
+            pass
+        self.image_view.scene.addItem(outline)
+        shape_info["stage_limit_outline"] = outline
+
+    def refresh_stage_limit_overlays(self):
+        for shape_info in getattr(self.image_view, "shapes", []):
+            if shape_info.get("role") == "sample holder":
+                self.apply_shape_role(shape_info)
 
     def create_shape_table(self):
         self.shapeDock = QDockWidget("Shapes", self)
@@ -70,13 +146,7 @@ class ShapeTableMixin:
         item = shape_info["item"]
 
         # Remove any previous extra items if present.
-        if "diagonals" in shape_info:
-            for line in shape_info["diagonals"]:
-                self.image_view.scene.removeItem(line)
-            shape_info.pop("diagonals")
-        if "center_marker" in shape_info:
-            self.image_view.scene.removeItem(shape_info["center_marker"])
-            shape_info.pop("center_marker")
+        self._remove_shape_overlay_items(shape_info)
 
         if role == "include":
             pen = QPen(QColor("green"), 2)
@@ -131,6 +201,7 @@ class ShapeTableMixin:
             self.pixel_to_mm_ratio = pixels_per_mm
             self.include_center = (cx, cy)
             self.update_conversion_label()
+            self._draw_stage_limit_outline(shape_info, cx, cy)
         else:
             pen = QPen(QColor("black"), 2)
             item.setPen(pen)
@@ -233,6 +304,8 @@ class ShapeTableMixin:
                         h = float(self.shapeTable.item(row, 5).text())
                         if hasattr(item, "setRect"):
                             item.setRect(x, y, w, h)
+                        if shape_info.get("role") == "sample holder":
+                            self.apply_shape_role(shape_info)
                         break
         except Exception as e:
             print("Error updating shape from table:", e)
@@ -278,11 +351,7 @@ class ShapeTableMixin:
                     shape_item = shape_info.get("item")
                     if shape_item is not None:
                         self.image_view.scene.removeItem(shape_item)
-                    for extra_item in shape_info.get("diagonals") or []:
-                        self.image_view.scene.removeItem(extra_item)
-                    center_marker = shape_info.get("center_marker")
-                    if center_marker is not None:
-                        self.image_view.scene.removeItem(center_marker)
+                    self._remove_shape_overlay_items(shape_info)
                     if shape_info in self.image_view.shapes:
                         self.image_view.shapes.remove(shape_info)
                     break
@@ -298,7 +367,7 @@ class ShapeTableMixin:
                     self.image_view.scene.removeItem(item)
                 except RuntimeError:
                     pass
-            for extra_key in ["diagonals", "center_marker"]:
+            for extra_key in ["diagonals", "center_marker", "stage_limit_outline"]:
                 extra_items = shape_info.get(extra_key)
                 if isinstance(extra_items, list):
                     for extra_item in extra_items:
