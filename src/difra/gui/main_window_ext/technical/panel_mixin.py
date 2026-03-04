@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from difra.gui.main_window_ext.technical.helpers import _get_default_folder
 
@@ -84,10 +85,12 @@ class TechnicalPanelMixin:
         self.folderLE = tm.QLineEdit()
         default_folder = _get_default_folder(self.config if hasattr(self, "config") else None)
         self.folderLE.setText(default_folder)
+        self.folderLE.editingFinished.connect(self._on_technical_folder_changed)
 
         fld.addWidget(self.folderLE, 1)
         b = tm.QPushButton("Browse…")
         b.clicked.connect(self._browse_folder)
+        self.folderBrowseBtn = b
         fld.addWidget(b)
         outer.addLayout(fld)
 
@@ -150,6 +153,11 @@ class TechnicalPanelMixin:
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(4)
         actions_layout.addWidget(tm.QLabel("Actions:"))
+
+        self.new_h5_btn = tm.QPushButton("Create Technical...")
+        self.new_h5_btn.setToolTip("Create a new technical container for the configured detector distances")
+        self.new_h5_btn.clicked.connect(self.on_new_technical_container)
+        actions_layout.addWidget(self.new_h5_btn)
 
         self.load_h5_btn = tm.QPushButton("Load Container…")
         self.load_h5_btn.setToolTip("Load an existing technical HDF5 container")
@@ -220,6 +228,8 @@ class TechnicalPanelMixin:
         ]
         if hasattr(self, "load_h5_btn"):
             self.load_h5_btn.setEnabled(True)
+        if hasattr(self, "new_h5_btn"):
+            self.new_h5_btn.setEnabled(True)
         if hasattr(self, "lock_h5_btn"):
             self.lock_h5_btn.setEnabled(True)
 
@@ -347,9 +357,105 @@ class TechnicalPanelMixin:
 
     def _browse_folder(self):
         tm = _tm()
+        if self._is_technical_output_folder_locked():
+            locked_folder = self._current_technical_output_folder()
+            tm.QMessageBox.information(
+                self,
+                "Technical Folder Locked",
+                "Technical output folder is locked to the active technical container.\n\n"
+                f"Folder: {locked_folder}",
+            )
+            self._refresh_technical_output_folder_lock()
+            return
         f = tm.QFileDialog.getExistingDirectory(self, "Select Folder")
         if f:
             self.folderLE.setText(f)
+            self._on_technical_folder_changed()
+
+    def _current_technical_output_folder(self) -> str:
+        active_path = None
+        if hasattr(self, "_active_technical_container_path_obj"):
+            try:
+                active_path = self._active_technical_container_path_obj()
+            except Exception:
+                active_path = None
+        if active_path is not None and active_path.exists():
+            return str(active_path.parent)
+
+        locked = str(getattr(self, "_technical_output_folder_locked_path", "") or "").strip()
+        if locked:
+            return locked
+        return str((self.folderLE.text() or "").strip())
+
+    def _is_technical_output_folder_locked(self) -> bool:
+        active_path = None
+        if hasattr(self, "_active_technical_container_path_obj"):
+            try:
+                active_path = self._active_technical_container_path_obj()
+            except Exception:
+                active_path = None
+        return bool(active_path is not None and active_path.exists())
+
+    def _refresh_technical_output_folder_lock(self):
+        locked_folder = ""
+        active_path = None
+        if hasattr(self, "_active_technical_container_path_obj"):
+            try:
+                active_path = self._active_technical_container_path_obj()
+            except Exception:
+                active_path = None
+
+        if active_path is not None and active_path.exists():
+            locked_folder = str(active_path.parent)
+
+        self._technical_output_folder_locked_path = locked_folder
+
+        if hasattr(self, "folderLE") and self.folderLE is not None:
+            if locked_folder:
+                self.folderLE.setText(locked_folder)
+            try:
+                self.folderLE.setReadOnly(bool(locked_folder))
+            except Exception:
+                pass
+            try:
+                self.folderLE.setToolTip(
+                    "Locked to the active technical container folder."
+                    if locked_folder
+                    else "Technical output folder for technical files and container work."
+                )
+            except Exception:
+                pass
+
+        if hasattr(self, "folderBrowseBtn") and self.folderBrowseBtn is not None:
+            self.folderBrowseBtn.setEnabled(not bool(locked_folder))
+            try:
+                self.folderBrowseBtn.setToolTip(
+                    "Cannot change folder while an active technical container exists."
+                    if locked_folder
+                    else "Browse for technical output folder."
+                )
+            except Exception:
+                pass
+
+    def _on_technical_folder_changed(self):
+        if not hasattr(self, "folderLE") or self.folderLE is None:
+            return
+
+        if self._is_technical_output_folder_locked():
+            self._refresh_technical_output_folder_lock()
+            return
+
+        folder = str((self.folderLE.text() or "").strip())
+        if not folder:
+            return
+
+        try:
+            folder_path = Path(folder)
+            folder_path.mkdir(parents=True, exist_ok=True)
+            self.folderLE.setText(str(folder_path))
+            self._technical_output_folder_locked_path = ""
+        except Exception as exc:
+            logger.warning("Failed to update technical folder %s: %s", folder, exc)
 
     def initialize_hardware(self):
         pass

@@ -1,5 +1,6 @@
 {
     "conda": "eosdx13",
+    "pyfai_conda": "ulster38",
     "container_version": "0.2",
     "default_setup": "Ulster (Xena)",
     "DEV": true,

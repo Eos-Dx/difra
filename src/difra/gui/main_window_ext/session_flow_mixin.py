@@ -411,7 +411,17 @@ class SessionFlowMixin:
                 return
         
         # Show dialog to get sample information
-        dialog = NewSessionDialog(self.operator_manager, self)
+        default_distance = None
+        if hasattr(self, "_default_session_distance_cm"):
+            try:
+                default_distance = self._default_session_distance_cm()
+            except Exception:
+                default_distance = None
+        dialog = NewSessionDialog(
+            self.operator_manager,
+            self,
+            default_distance=default_distance,
+        )
         
         if dialog.exec_() == QDialog.Accepted:
             params = dialog.get_parameters()
@@ -467,6 +477,7 @@ class SessionFlowMixin:
                     f"Session created successfully!\n\n"
                     f"Sample ID: {params['sample_id']}\n"
                     f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
+                    f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
                     f"Container: {session_path.name}\n\n"
                     f"Sample image added to container.",
                 )

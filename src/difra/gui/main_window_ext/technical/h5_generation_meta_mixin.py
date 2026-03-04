@@ -157,7 +157,7 @@ Wavelength: {wavelength}
         safe_name = name.replace(" ", "_")
         # Use the explicit folder path for meta generation.
         # (Do not auto-fallback to CWD; if the folder is invalid/unwritable we should stop.)
-        folder = (self.folderLE.text() or "").strip()
+        folder = self._current_technical_output_folder()
         if not folder or not os.path.isdir(folder):
             message_box.warning(self, "Invalid Folder", "Select a valid save folder.")
             return

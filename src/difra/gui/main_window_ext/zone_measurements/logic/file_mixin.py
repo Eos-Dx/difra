@@ -14,6 +14,27 @@ class ZoneMeasurementsFileMixin:
         """
         Open a dialog to choose the save folder and set it in the UI.
         """
+        if (
+            hasattr(self, "_is_measurement_output_folder_locked")
+            and self._is_measurement_output_folder_locked()
+        ):
+            locked_folder = ""
+            if hasattr(self, "_current_measurement_output_folder"):
+                try:
+                    locked_folder = str(self._current_measurement_output_folder())
+                except Exception:
+                    locked_folder = ""
+            from PyQt5.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Measurement Folder Locked",
+                "Measurement output folder is locked to the active session container.\n\n"
+                f"Folder: {locked_folder}",
+            )
+            if hasattr(self, "_refresh_measurement_output_folder_lock"):
+                self._refresh_measurement_output_folder_lock()
+            return
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder:
             self.folderLineEdit.setText(folder)

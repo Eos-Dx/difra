@@ -58,6 +58,109 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
 
     def _append_technical_log(self, message: str):
         self._append_compact_log("TECH", message)
+
+    def _default_session_distance_cm(self):
+        try:
+            distances = getattr(self, "_detector_distances", {}) or {}
+            if distances:
+                return float(next(iter(distances.values())))
+        except Exception:
+            pass
+        return None
+
+    def _current_measurement_output_folder(self) -> Path:
+        if (
+            hasattr(self, "session_manager")
+            and self.session_manager is not None
+            and self.session_manager.is_session_active()
+        ):
+            session_path = getattr(self.session_manager, "session_path", None)
+            if session_path:
+                try:
+                    session_parent = Path(session_path).parent
+                    if Path(session_path).exists():
+                        return session_parent
+                except Exception:
+                    pass
+
+        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
+            folder_text = str(self.folderLineEdit.text() or "").strip()
+            if folder_text:
+                return Path(folder_text)
+
+        return self.get_session_folder()
+
+    def _is_measurement_output_folder_locked(self) -> bool:
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            return False
+        if not self.session_manager.is_session_active():
+            return False
+        session_path = getattr(self.session_manager, "session_path", None)
+        if not session_path:
+            return False
+        try:
+            return Path(session_path).exists()
+        except Exception:
+            return False
+
+    def _refresh_measurement_output_folder_lock(self):
+        locked_folder = ""
+        if self._is_measurement_output_folder_locked():
+            try:
+                locked_folder = str(Path(self.session_manager.session_path).parent)
+            except Exception:
+                locked_folder = ""
+
+        self._measurement_output_folder_locked_path = locked_folder
+
+        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
+            if locked_folder:
+                self.folderLineEdit.setText(locked_folder)
+            try:
+                self.folderLineEdit.setReadOnly(bool(locked_folder))
+            except Exception:
+                pass
+            try:
+                self.folderLineEdit.setToolTip(
+                    "Locked to the active session container folder."
+                    if locked_folder
+                    else "Measurement output folder for the current session workflow."
+                )
+            except Exception:
+                pass
+
+        if hasattr(self, "browseBtn") and self.browseBtn is not None:
+            self.browseBtn.setEnabled(not bool(locked_folder))
+            try:
+                self.browseBtn.setToolTip(
+                    "Cannot change folder while an active session container exists."
+                    if locked_folder
+                    else "Browse for measurement output folder."
+                )
+            except Exception:
+                pass
+
+    def _enforce_measurement_output_folder_lock(self, show_message: bool = False) -> bool:
+        if not self._is_measurement_output_folder_locked():
+            return True
+
+        locked_folder = str(getattr(self, "_measurement_output_folder_locked_path", "") or "").strip()
+        if not locked_folder:
+            self._refresh_measurement_output_folder_lock()
+            locked_folder = str(getattr(self, "_measurement_output_folder_locked_path", "") or "").strip()
+
+        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
+            current_folder = str(self.folderLineEdit.text() or "").strip()
+            if current_folder != locked_folder:
+                self.folderLineEdit.setText(locked_folder)
+                if show_message:
+                    QMessageBox.information(
+                        self,
+                        "Measurement Folder Locked",
+                        "Measurement output folder is locked to the active session container.\n\n"
+                        f"Folder: {locked_folder}",
+                    )
+        return True
     
     def init_session_manager(self):
         """Initialize SessionManager and add UI actions."""
@@ -102,10 +205,16 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         # Add separator
         file_menu.addSeparator()
         
+        # New Technical Container action
+        new_technical_action = QAction("Create New Technical Container...", self)
+        new_technical_action.triggered.connect(self.on_new_technical_container)
+        new_technical_action.setStatusTip("Create or reuse the technical container for the current distances")
+        file_menu.addAction(new_technical_action)
+
         # New Session action
-        new_session_action = QAction("New Session...", self)
+        new_session_action = QAction("Create New Session Container...", self)
         new_session_action.triggered.connect(self.on_new_session)
-        new_session_action.setStatusTip("Create a new measurement session")
+        new_session_action.setStatusTip("Create a new measurement session container")
         file_menu.addAction(new_session_action)
         
         # Close Session action
@@ -174,7 +283,11 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             return
         
         # Show dialog to get session parameters
-        dialog = NewSessionDialog(self.operator_manager, self)
+        dialog = NewSessionDialog(
+            self.operator_manager,
+            self,
+            default_distance=self._default_session_distance_cm(),
+        )
         
         if dialog.exec_() == QDialog.Accepted:
             params = dialog.get_parameters()
@@ -205,6 +318,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     f"Session created successfully!\n\n"
                     f"Sample ID: {params['sample_id']}\n"
                     f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
+                    f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
                     f"Container: {session_path.name}",
                 )
                 
@@ -226,6 +340,61 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 )
                 logger.error(f"Failed to create session: {e}", exc_info=True)
                 self._append_session_log(f"Session creation failed: {type(e).__name__}")
+
+    def on_new_technical_container(self):
+        """Handle Create New Technical Container action."""
+        self._append_technical_log("New technical container requested")
+
+        if not hasattr(self, "_create_new_active_technical_container"):
+            QMessageBox.warning(
+                self,
+                "Technical Container",
+                "Technical container workflow is not available in this build.",
+            )
+            return
+
+        distances = getattr(self, "_detector_distances", {}) or {}
+        if not distances and hasattr(self, "configure_detector_distances"):
+            self.configure_detector_distances()
+            distances = getattr(self, "_detector_distances", {}) or {}
+            if not distances:
+                return
+
+            active_after_config = str(
+                getattr(self, "_active_technical_container_path", "") or ""
+            ).strip()
+            if active_after_config:
+                QMessageBox.information(
+                    self,
+                    "Technical Container Ready",
+                    f"Technical container ready:\n{Path(active_after_config).name}",
+                )
+            return
+
+        try:
+            technical_path = self._create_new_active_technical_container(clear_table=False)
+            if technical_path is None:
+                return
+
+            QMessageBox.information(
+                self,
+                "Technical Container Ready",
+                f"Technical container ready:\n{Path(technical_path).name}",
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to create technical container from session action: %s",
+                exc,
+                exc_info=True,
+            )
+            QMessageBox.critical(
+                self,
+                "Technical Container Failed",
+                f"Failed to prepare technical container:\n\n{exc}",
+            )
+            self._append_technical_log(
+                f"Technical container preparation failed: {type(exc).__name__}"
+            )
     
     def on_close_session(self):
         """Handle Close Session action."""
@@ -276,6 +445,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         # Build info message
         msg = f"Sample ID: {info['sample_id']}\n"
         msg += f"Study: {info.get('study_name', 'UNSPECIFIED')}\n"
+        msg += f"Project: {info.get('project_id', info.get('study_name', 'UNSPECIFIED'))}\n"
         msg += f"Session ID: {info['session_id']}\n"
         msg += f"Operator: {info['operator_id']}\n"
         msg += f"Machine: {info['machine_name']}\n"
@@ -297,7 +467,8 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         """Get session (measurements) folder from config.
         
         Reads measurements_folder from global.json config.
-        User can change this later from Zone Measurements panel.
+        The Zone Measurements panel may override this before a session starts.
+        Once a session container exists, the measurements path is locked to that container's folder.
         
         Returns:
             Path to measurements folder from config
@@ -338,6 +509,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
     def update_session_status(self):
         """Update UI to reflect current session status."""
         info = self.session_manager.get_session_info()
+        self._refresh_measurement_output_folder_lock()
         
         # Update window title
         if info['active']:
@@ -472,6 +644,11 @@ class NewSessionDialog(QDialog):
         self.study_name_edit = QLineEdit()
         self.study_name_edit.setPlaceholderText("e.g. STUDY_2026_A")
         form_layout.addRow("Study*:", self.study_name_edit)
+
+        # Project (defaults to study if omitted)
+        self.project_id_edit = QLineEdit()
+        self.project_id_edit.setPlaceholderText("e.g. PROJECT_2026_A")
+        form_layout.addRow("Project:", self.project_id_edit)
         
         # Distance (required) - with explicit prompt
         distance_label = QLabel(
@@ -518,7 +695,8 @@ class NewSessionDialog(QDialog):
         info_label = QLabel(
             "* Required fields\n\n"
             "Beam energy: Read from global config\n"
-            "<b>Note:</b> Distance must match technical container distance."
+            "<b>Note:</b> Distance must match technical container distance.\n"
+            "If Project is left blank, Study will be used."
         )
         info_label.setStyleSheet("color: gray; font-style: italic;")
         info_label.setWordWrap(True)
@@ -658,6 +836,7 @@ class NewSessionDialog(QDialog):
         params = {
             'sample_id': self.sample_id_edit.text().strip(),
             'study_name': self.study_name_edit.text().strip(),
+            'project_id': self.project_id_edit.text().strip() or self.study_name_edit.text().strip(),
             'distance_cm': float(self.distance_edit.text()),
             'operator_id': self.selected_operator_id,
         }

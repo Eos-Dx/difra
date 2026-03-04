@@ -38,10 +38,6 @@ class H5ManagementLoadingMixin:
         self._log_technical_event("Validate action removed from technical workflow")
 
     @staticmethod
-    def _make_h5ref(container_path: str, dataset_path: str) -> str:
-        return f"h5ref://{container_path}#{dataset_path}"
-
-    @staticmethod
     def _parse_h5ref(value: str):
         raw = str(value or "")
         if not raw.startswith("h5ref://"):
@@ -89,6 +85,11 @@ class H5ManagementLoadingMixin:
             )
         except Exception:
             self._active_technical_container_locked = False
+        if hasattr(self, "_refresh_technical_output_folder_lock"):
+            try:
+                self._refresh_technical_output_folder_lock()
+            except Exception:
+                pass
 
     def _active_technical_container_path_obj(self):
         raw = str(getattr(self, "_active_technical_container_path", "") or "").strip()
@@ -96,28 +97,112 @@ class H5ManagementLoadingMixin:
             return None
         return Path(raw)
 
-    def _find_existing_technical_container_for_distance(
-        self,
-        storage_folder: Path,
-        distance_cm: float,
-    ):
-        active_path = self._active_technical_container_path_obj()
-        if active_path is not None and active_path.exists():
-            return active_path
+    @staticmethod
+    def _paths_same(left: Path, right: Path) -> bool:
+        try:
+            return Path(left).resolve() == Path(right).resolve()
+        except Exception:
+            return str(Path(left)) == str(Path(right))
 
+    @staticmethod
+    def _distance_matches(
+        actual_cm,
+        expected_cm: float,
+        tolerance_cm: float = 0.5,
+    ) -> bool:
+        try:
+            if actual_cm is None:
+                return False
+            return abs(float(actual_cm) - float(expected_cm)) <= float(tolerance_cm)
+        except Exception:
+            return False
+
+    def _read_technical_container_distance_cm(self, container_path: Path):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                distance_attr = h5f.attrs.get(schema.ATTR_DISTANCE_CM)
+                if distance_attr is not None:
+                    return float(distance_attr)
+
+                tech_group = h5f.get(schema.GROUP_TECHNICAL)
+                if tech_group is None:
+                    tech_group = h5f.get(f"{schema.GROUP_CALIBRATION_SNAPSHOT}/events")
+                if tech_group is not None:
+                    for event_name in sorted(tech_group.keys()):
+                        event_group = tech_group[event_name]
+                        for detector_name in sorted(event_group.keys()):
+                            detector_group = event_group[detector_name]
+                            distance_attr = detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
+                            if distance_attr is not None:
+                                return float(distance_attr)
+
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is not None:
+                    for ds_name in sorted(poni_group.keys()):
+                        distance_attr = poni_group[ds_name].attrs.get(schema.ATTR_DISTANCE_CM)
+                        if distance_attr is not None:
+                            return float(distance_attr)
+        except Exception:
+            return None
+
+        return None
+
+    def _list_storage_technical_containers(self, storage_folder: Path):
+        storage_folder = Path(storage_folder)
+        if not storage_folder.exists():
+            return []
+
+        candidates = []
+        seen = set()
+        for pattern in ("technical_*.nxs.h5", "technical_*.h5"):
+            for tech_path in storage_folder.glob(pattern):
+                if not tech_path.is_file():
+                    continue
+                try:
+                    resolved = str(tech_path.resolve())
+                except Exception:
+                    resolved = str(tech_path)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                candidates.append(tech_path)
+
+        candidates.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+            reverse=True,
+        )
+        return candidates
+
+    def _lock_and_archive_technical_container(self, existing_path: Path) -> Path:
         container_manager = get_container_manager(
             self.config if hasattr(self, "config") else None
         )
-        try:
-            existing = container_manager.find_active_technical_container(
-                folder=storage_folder,
-                distance_cm=distance_cm,
-            )
-        except Exception:
-            return None
-        if not existing:
-            return None
-        return Path(existing)
+        existing_path = Path(existing_path)
+
+        if not container_manager.is_container_locked(existing_path):
+            operator_id = None
+            if hasattr(self, "config") and isinstance(self.config, dict):
+                operator_id = self.config.get("operator_id")
+            container_manager.lock_container(existing_path, user_id=operator_id)
+
+        archived = self._archive_existing_technical_container_for_replacement(
+            existing_path=existing_path,
+        )
+
+        current_active = self._active_technical_container_path_obj()
+        if current_active is not None and self._paths_same(current_active, existing_path):
+            self._active_technical_container_path = ""
+            self._active_technical_container_locked = False
+            if hasattr(self, "_refresh_technical_output_folder_lock"):
+                try:
+                    self._refresh_technical_output_folder_lock()
+                except Exception:
+                    pass
+
+        return archived
 
     def _archive_existing_technical_container_for_replacement(
         self,
@@ -305,12 +390,7 @@ class H5ManagementLoadingMixin:
     def _prompt_existing_technical_container_resolution(
         self,
         existing_path: Path,
-        storage_folder: Path,
     ):
-        container_manager = get_container_manager(
-            self.config if hasattr(self, "config") else None
-        )
-
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Technical Container Already Exists")
         msg_box.setIcon(QMessageBox.Warning)
@@ -343,26 +423,15 @@ class H5ManagementLoadingMixin:
             if not self._finalize_active_session_for_new_technical_container():
                 return "cancel"
 
-            current_active = self._active_technical_container_path_obj()
-            if current_active is not None:
-                try:
-                    if current_active.resolve() == existing_path.resolve():
-                        if hasattr(self, "_sync_active_technical_container_from_table"):
-                            self._sync_active_technical_container_from_table(
-                                show_errors=True
-                            )
-                except Exception:
-                    pass
-
             try:
-                if not container_manager.is_container_locked(existing_path):
-                    operator_id = None
-                    if hasattr(self, "config") and isinstance(self.config, dict):
-                        operator_id = self.config.get("operator_id")
-                    container_manager.lock_container(existing_path, user_id=operator_id)
-                archived = self._archive_existing_technical_container_for_replacement(
-                    existing_path=existing_path,
-                )
+                current_active = self._active_technical_container_path_obj()
+                if current_active is not None and self._paths_same(current_active, existing_path):
+                    if hasattr(self, "_sync_active_technical_container_from_table"):
+                        self._sync_active_technical_container_from_table(
+                            show_errors=True
+                        )
+
+                archived = self._lock_and_archive_technical_container(existing_path)
                 self._log_technical_event(
                     f"Archived previous technical container: {existing_path.name} -> {archived.name}"
                 )
@@ -374,13 +443,6 @@ class H5ManagementLoadingMixin:
                 )
                 return "cancel"
 
-            current_active = self._active_technical_container_path_obj()
-            try:
-                if current_active is not None and current_active.resolve() == existing_path.resolve():
-                    self._active_technical_container_path = ""
-                    self._active_technical_container_locked = False
-            except Exception:
-                pass
             return "create_new"
 
         return "cancel"
@@ -406,21 +468,66 @@ class H5ManagementLoadingMixin:
         )
 
         root_distance_cm = float(next(iter(distances_by_alias.values())))
-        existing_path = self._find_existing_technical_container_for_distance(
-            storage_folder=storage_folder,
-            distance_cm=root_distance_cm,
+        storage_containers = self._list_storage_technical_containers(storage_folder)
+        active_path = self._active_technical_container_path_obj()
+
+        matching_candidates = [
+            path
+            for path in storage_containers
+            if self._distance_matches(
+                self._read_technical_container_distance_cm(path),
+                root_distance_cm,
+            )
+        ]
+        stale_paths = [
+            path
+            for path in storage_containers
+            if not any(self._paths_same(path, match) for match in matching_candidates)
+        ]
+
+        if (
+            active_path is not None
+            and active_path.exists()
+            and not any(self._paths_same(active_path, path) for path in storage_containers)
+        ):
+            active_distance = self._read_technical_container_distance_cm(active_path)
+            if self._distance_matches(active_distance, root_distance_cm):
+                matching_candidates.insert(0, active_path)
+
+        matching_path = matching_candidates[0] if matching_candidates else None
+        active_is_stale = bool(
+            active_path is not None
+            and any(self._paths_same(active_path, path) for path in stale_paths)
         )
-        if existing_path is not None and existing_path.exists():
+
+        if active_is_stale:
+            if not self._finalize_active_session_for_new_technical_container():
+                return None
+
+        for stale_path in stale_paths:
+            try:
+                archived = self._lock_and_archive_technical_container(stale_path)
+                self._log_technical_event(
+                    f"Archived stale technical container: {stale_path.name} -> {archived.name}"
+                )
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "Archive Failed",
+                    f"Failed to archive outdated technical container:\n{exc}",
+                )
+                return None
+
+        if matching_path is not None and matching_path.exists():
             decision = self._prompt_existing_technical_container_resolution(
-                existing_path=existing_path,
-                storage_folder=storage_folder,
+                existing_path=matching_path,
             )
             if decision == "use_existing":
-                return existing_path
+                return matching_path
             if decision != "create_new":
                 return None
         else:
-            if not self._finalize_active_session_for_new_technical_container():
+            if not active_is_stale and not self._finalize_active_session_for_new_technical_container():
                 return None
 
         container_id, file_path = technical_container.create_technical_container(
@@ -771,7 +878,8 @@ class H5ManagementLoadingMixin:
             return False
 
     def _on_detector_distances_updated(self):
-        if not self._ensure_active_technical_container_available(for_edit=True, prompt_on_locked=False):
+        active_path = self._create_new_active_technical_container(clear_table=False)
+        if active_path is None:
             return
         self._sync_active_technical_container_from_table(show_errors=False)
 
@@ -893,7 +1001,7 @@ class H5ManagementLoadingMixin:
         """Load technical H5 container selected by user."""
         from .helpers import _get_default_folder
 
-        folder = (self.folderLE.text() or "").strip()
+        folder = self._current_technical_output_folder()
         if not folder:
             folder = _get_default_folder(self.config if hasattr(self, "config") else None)
 
