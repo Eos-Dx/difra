@@ -47,6 +47,12 @@ class ZonePointsMixin:
 
         self.zonePointsDock = QDockWidget("Zone Points", self)
         self.zonePointsDock.setObjectName("ZonePointsDock")
+        self.zonePointsDock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.zonePointsDock.setFeatures(
+            QDockWidget.DockWidgetClosable
+            | QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+        )
         container = QWidget()
         
         # Set smaller font for all controls to fit smaller screens
@@ -67,7 +73,7 @@ class ZonePointsMixin:
         controls_layout = self._create_all_controls()
         try:
             controls_layout.setContentsMargins(0, 0, 0, 0)
-            controls_layout.setSpacing(6)
+            controls_layout.setSpacing(8)
         except Exception:
             pass
         from PyQt5.QtWidgets import QSizePolicy
@@ -76,7 +82,7 @@ class ZonePointsMixin:
         controls_bar.setLayout(controls_layout)
         controls_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         try:
-            controls_bar.setMaximumHeight(32)  # compact toolbar-like bar
+            controls_bar.setMaximumHeight(36)
         except Exception:
             pass
         layout.addWidget(controls_bar)
@@ -105,14 +111,13 @@ class ZonePointsMixin:
         # Set minimum height to be compact - just enough for toolbar and a few table rows
         # This gives more vertical space to other zones (image view, etc.)
         try:
-            # Minimum: title bar (~20px) + compact toolbar (~32px) + 2-3 table rows (~80px)
-            self.zonePointsDock.setMinimumHeight(130)
+            self.zonePointsDock.setMinimumHeight(150)
         except Exception:
             pass
         
         self.addDockWidget(Qt.BottomDockWidgetArea, self.zonePointsDock)
         try:
-            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(0, 4)
             splitter.setStretchFactor(1, 2)
         except Exception:
             pass
@@ -143,37 +148,34 @@ class ZonePointsMixin:
     def _create_all_controls(self) -> QHBoxLayout:
         """Create all control layouts in a single horizontal layout."""
         layout = QHBoxLayout()
+        try:
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(12)
+        except Exception:
+            pass
 
         # Point count and shrink controls
         controls = ZonePointsUIBuilder.create_controls_layout(self)
-        for i in range(controls.count()):
-            item = controls.itemAt(i)
-            if item:
-                layout.addWidget(item.widget())
+        layout.addLayout(controls)
 
         # Coordinate controls
         coord_controls = ZonePointsUIBuilder.create_coordinate_controls(self)
-        for i in range(coord_controls.count()):
-            item = coord_controls.itemAt(i)
-            if item:
-                layout.addWidget(item.widget())
+        layout.addLayout(coord_controls)
 
         # Action buttons
         button_controls = ZonePointsUIBuilder.create_action_buttons(self)
-        for i in range(button_controls.count()):
-            item = button_controls.itemAt(i)
-            if item:
-                layout.addWidget(item.widget())
+        layout.addLayout(button_controls)
+        layout.addStretch(1)
 
         return layout
 
     def _setup_event_handlers(self):
         """Set up all event handlers for the UI components."""
         self.generatePointsBtn.clicked.connect(self.generate_zone_points)
-        self.updateCoordinatesBtn.clicked.connect(self.update_coordinates)
         self.pointsTable.selectionModel().selectionChanged.connect(
             self.on_points_table_selection
         )
+        self.pointsTable.itemChanged.connect(self._handle_points_table_item_changed)
         self.pointsTable.installEventFilter(self)
         self.pointsTable.setContextMenuPolicy(Qt.CustomContextMenu)
         self.pointsTable.customContextMenuRequested.connect(
@@ -298,6 +300,193 @@ class ZonePointsMixin:
 
     # --- Table and selection methods remain as before, with attribute checks as needed ---
     def update_coordinates(self):
+        self.update_points_table()
+
+    def _set_table_item_editable(self, item: QTableWidgetItem, editable: bool) -> None:
+        if item is None:
+            return
+        try:
+            flags = item.flags()
+            if editable:
+                item.setFlags(flags | Qt.ItemIsEditable)
+            else:
+                item.setFlags(flags & ~Qt.ItemIsEditable)
+        except Exception:
+            pass
+
+    def _parse_table_float(self, row: int, column: int) -> Optional[float]:
+        if not hasattr(self, "pointsTable") or self.pointsTable is None:
+            return None
+        item = self.pointsTable.item(row, column)
+        if item is None:
+            return None
+        text = str(item.text() or "").strip()
+        if not text or text.upper() == "N/A":
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+
+    def _point_refs_for_row(self, row: int):
+        gp = self.image_view.points_dict["generated"]["points"]
+        gz = self.image_view.points_dict["generated"]["zones"]
+        up = self.image_view.points_dict["user"]["points"]
+        uz = self.image_view.points_dict["user"]["zones"]
+
+        if row < len(gp):
+            point_item = gp[row]
+            zone_item = gz[row] if row < len(gz) else None
+            return point_item, zone_item, "generated"
+
+        user_row = row - len(gp)
+        if 0 <= user_row < len(up):
+            point_item = up[user_row]
+            zone_item = uz[user_row] if user_row < len(uz) else None
+            return point_item, zone_item, "user"
+
+        return None, None, None
+
+    def _point_within_allowed_region(self, x_px: float, y_px: float) -> bool:
+        include_shape, exclude_shapes = self._get_inclusion_exclusion_shapes()
+        if include_shape is None:
+            return False
+
+        from PyQt5.QtCore import QPointF
+
+        point = QPointF(float(x_px), float(y_px))
+        try:
+            if not include_shape.contains(include_shape.mapFromScene(point)):
+                return False
+        except Exception:
+            return False
+        for exclude_shape in exclude_shapes:
+            try:
+                if exclude_shape.contains(exclude_shape.mapFromScene(point)):
+                    return False
+            except Exception:
+                continue
+        return True
+
+    def _move_point_and_zone(self, point_item, zone_item, x_px: float, y_px: float) -> None:
+        try:
+            point_rect = point_item.rect()
+            point_center = point_rect.center()
+            point_item.setPos(
+                float(x_px) - float(point_center.x()),
+                float(y_px) - float(point_center.y()),
+            )
+        except Exception:
+            radius = float(ZonePointsConstants.POINT_RADIUS)
+            point_item.setRect(
+                float(x_px) - radius,
+                float(y_px) - radius,
+                ZonePointsConstants.POINT_DIAMETER,
+                ZonePointsConstants.POINT_DIAMETER,
+            )
+
+        if zone_item is None or sip.isdeleted(zone_item):
+            return
+
+        if hasattr(zone_item, "get_radius") and hasattr(zone_item, "_center_x"):
+            try:
+                zone_radius = float(zone_item.get_radius())
+            except Exception:
+                zone_radius = 0.0
+            try:
+                zone_item._center_x = float(x_px)
+                zone_item._center_y = float(y_px)
+                zone_item.setRect(
+                    float(x_px) - zone_radius,
+                    float(y_px) - zone_radius,
+                    2 * zone_radius,
+                    2 * zone_radius,
+                )
+                updater = getattr(zone_item, "_update_handle_positions", None)
+                if callable(updater):
+                    updater()
+                return
+            except Exception:
+                pass
+
+        try:
+            rect = zone_item.rect()
+            center = rect.center()
+            zone_item.setPos(
+                float(x_px) - float(center.x()),
+                float(y_px) - float(center.y()),
+            )
+        except Exception:
+            pass
+
+    def _handle_points_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item is None:
+            return
+        if getattr(self, "_updating_points_table", False):
+            return
+        row = int(item.row())
+        column = int(item.column())
+        if column not in (1, 2, 3, 4):
+            return
+
+        point_uid, _point_display_id = self._get_point_identity_from_row(row)
+        if self._is_row_measured(row=row, point_uid=point_uid):
+            QMessageBox.warning(
+                self,
+                "Measured Point",
+                "Measured points cannot be moved from the table.",
+            )
+            self.update_points_table()
+            return
+
+        point_item, zone_item, _point_type = self._point_refs_for_row(row)
+        if point_item is None or sip.isdeleted(point_item):
+            self.update_points_table()
+            return
+
+        current_center = point_item.sceneBoundingRect().center()
+        new_x_px = float(current_center.x())
+        new_y_px = float(current_center.y())
+
+        if column in (1, 2):
+            parsed_x = self._parse_table_float(row, 1)
+            parsed_y = self._parse_table_float(row, 2)
+            if parsed_x is None or parsed_y is None:
+                self.update_points_table()
+                return
+            new_x_px = float(parsed_x)
+            new_y_px = float(parsed_y)
+        else:
+            if not float(getattr(self, "pixel_to_mm_ratio", 0.0)):
+                QMessageBox.warning(
+                    self,
+                    "Missing Conversion",
+                    "Cannot move points by mm coordinates until the px/mm conversion is set.",
+                )
+                self.update_points_table()
+                return
+            parsed_x_mm = self._parse_table_float(row, 3)
+            parsed_y_mm = self._parse_table_float(row, 4)
+            if parsed_x_mm is None or parsed_y_mm is None:
+                self.update_points_table()
+                return
+            new_x_px = self.include_center[0] + (
+                self.real_x_pos_mm.value() - float(parsed_x_mm)
+            ) * self.pixel_to_mm_ratio
+            new_y_px = self.include_center[1] + (
+                self.real_y_pos_mm.value() - float(parsed_y_mm)
+            ) * self.pixel_to_mm_ratio
+
+        if not self._point_within_allowed_region(new_x_px, new_y_px):
+            QMessageBox.warning(
+                self,
+                "Invalid Point Position",
+                "The updated coordinates place the point outside the allowed include zone.",
+            )
+            self.update_points_table()
+            return
+
+        self._move_point_and_zone(point_item, zone_item, new_x_px, new_y_px)
         self.update_points_table()
 
     def safe_remove_item(self, item):
@@ -911,15 +1100,24 @@ class ZonePointsMixin:
                     if point_id is not None:
                         id_item.setData(Qt.UserRole, int(point_id))
                     id_item.setData(Qt.UserRole + 1, str(point_uid))
+                    self._set_table_item_editable(id_item, editable=False)
                     self.pointsTable.setItem(
                         idx,
                         0,
                         id_item,
                     )
-                    self.pointsTable.setItem(idx, 1, QTableWidgetItem(f"{x:.2f}"))
-                    self.pointsTable.setItem(idx, 2, QTableWidgetItem(f"{y:.2f}"))
-                    self.pointsTable.setItem(idx, 3, QTableWidgetItem("N/A"))
-                    self.pointsTable.setItem(idx, 4, QTableWidgetItem("N/A"))
+                    x_item = QTableWidgetItem(f"{x:.2f}")
+                    y_item = QTableWidgetItem(f"{y:.2f}")
+                    x_mm_item = QTableWidgetItem("N/A")
+                    y_mm_item = QTableWidgetItem("N/A")
+                    self._set_table_item_editable(x_item, editable=True)
+                    self._set_table_item_editable(y_item, editable=True)
+                    self._set_table_item_editable(x_mm_item, editable=True)
+                    self._set_table_item_editable(y_mm_item, editable=True)
+                    self.pointsTable.setItem(idx, 1, x_item)
+                    self.pointsTable.setItem(idx, 2, y_item)
+                    self.pointsTable.setItem(idx, 3, x_mm_item)
+                    self.pointsTable.setItem(idx, 4, y_mm_item)
             finally:
                 self.pointsTable.blockSignals(False)
                 self._updating_points_table = False
@@ -1123,13 +1321,18 @@ class ZonePointsMixin:
             if point_id is not None:
                 id_item.setData(Qt.UserRole, int(point_id))
             id_item.setData(Qt.UserRole + 1, str(point_uid))
+            self._set_table_item_editable(id_item, editable=False)
             self.pointsTable.setItem(
                 idx,
                 0,
                 id_item,
             )
-            self.pointsTable.setItem(idx, 1, QTableWidgetItem(f"{x:.2f}"))
-            self.pointsTable.setItem(idx, 2, QTableWidgetItem(f"{y:.2f}"))
+            x_item = QTableWidgetItem(f"{x:.2f}")
+            y_item = QTableWidgetItem(f"{y:.2f}")
+            self._set_table_item_editable(x_item, editable=True)
+            self._set_table_item_editable(y_item, editable=True)
+            self.pointsTable.setItem(idx, 1, x_item)
+            self.pointsTable.setItem(idx, 2, y_item)
 
             # Set coordinate data
             if self.pixel_to_mm_ratio:
@@ -1141,11 +1344,15 @@ class ZonePointsMixin:
                     self.real_y_pos_mm.value()
                     - (y - self.include_center[1]) / self.pixel_to_mm_ratio
                 )
-                self.pointsTable.setItem(idx, 3, QTableWidgetItem(f"{x_mm:.2f}"))
-                self.pointsTable.setItem(idx, 4, QTableWidgetItem(f"{y_mm:.2f}"))
+                x_mm_item = QTableWidgetItem(f"{x_mm:.2f}")
+                y_mm_item = QTableWidgetItem(f"{y_mm:.2f}")
             else:
-                self.pointsTable.setItem(idx, 3, QTableWidgetItem("N/A"))
-                self.pointsTable.setItem(idx, 4, QTableWidgetItem("N/A"))
+                x_mm_item = QTableWidgetItem("N/A")
+                y_mm_item = QTableWidgetItem("N/A")
+            self._set_table_item_editable(x_mm_item, editable=True)
+            self._set_table_item_editable(y_mm_item, editable=True)
+            self.pointsTable.setItem(idx, 3, x_mm_item)
+            self.pointsTable.setItem(idx, 4, y_mm_item)
 
             # Do not attach measurement widgets in the table anymore. They live in the right panel.
 

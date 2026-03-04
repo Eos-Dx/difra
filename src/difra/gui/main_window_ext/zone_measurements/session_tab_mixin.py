@@ -49,64 +49,48 @@ class SessionTabMixin:
         info_layout.addWidget(self.session_info_label)
         layout.addWidget(info_group)
 
-        actions_group = QGroupBox("Active Session Actions")
-        actions_layout = QVBoxLayout(actions_group)
-
-        close_layout = QHBoxLayout()
-        self.close_session_btn = QPushButton("Close && Finalize Active Session")
-        self.close_session_btn.setToolTip(
-            "Lock active session container and archive measurement files."
-        )
-        self.close_session_btn.clicked.connect(self._on_close_finalize_session)
-        self.close_session_btn.setEnabled(False)
-        close_layout.addWidget(self.close_session_btn)
-        actions_layout.addLayout(close_layout)
-
-        upload_layout = QHBoxLayout()
-        self.upload_session_btn = QPushButton("Upload Active Session (Fake)")
-        self.upload_session_btn.setToolTip(
-            "Fake upload for currently active session. Use queue actions for batch sending."
-        )
-        self.upload_session_btn.clicked.connect(self._on_upload_session)
-        self.upload_session_btn.setEnabled(False)
-        upload_layout.addWidget(self.upload_session_btn)
-        actions_layout.addLayout(upload_layout)
-
-        layout.addWidget(actions_group)
-
         queue_group = QGroupBox("Session Containers Ready To Close/Send")
         queue_layout = QVBoxLayout(queue_group)
 
-        queue_btn_layout = QHBoxLayout()
+        queue_btn_layout = QVBoxLayout()
+        queue_btn_layout.setSpacing(4)
+        queue_btn_row_1 = QHBoxLayout()
+        queue_btn_row_1.setSpacing(4)
         self.refresh_sessions_btn = QPushButton("Refresh")
         self.refresh_sessions_btn.clicked.connect(self._refresh_session_container_lists)
-        queue_btn_layout.addWidget(self.refresh_sessions_btn)
+        queue_btn_row_1.addWidget(self.refresh_sessions_btn)
 
         self.load_session_from_path_btn = QPushButton("Load Container…")
         self.load_session_from_path_btn.clicked.connect(
             self._on_load_session_container_from_dialog
         )
-        queue_btn_layout.addWidget(self.load_session_from_path_btn)
+        queue_btn_row_1.addWidget(self.load_session_from_path_btn)
 
         self.select_all_sessions_btn = QPushButton("Select All")
         self.select_all_sessions_btn.clicked.connect(
             lambda: self._set_all_pending_selection(True)
         )
-        queue_btn_layout.addWidget(self.select_all_sessions_btn)
+        queue_btn_row_1.addWidget(self.select_all_sessions_btn)
+        queue_btn_row_1.addStretch()
+        queue_btn_layout.addLayout(queue_btn_row_1)
 
+        queue_btn_row_2 = QHBoxLayout()
+        queue_btn_row_2.setSpacing(4)
         self.clear_sessions_selection_btn = QPushButton("Clear Selection")
         self.clear_sessions_selection_btn.clicked.connect(
             lambda: self._set_all_pending_selection(False)
         )
-        queue_btn_layout.addWidget(self.clear_sessions_selection_btn)
+        queue_btn_row_2.addWidget(self.clear_sessions_selection_btn)
 
         self.send_selected_sessions_btn = QPushButton("Close && Send Selected")
         self.send_selected_sessions_btn.clicked.connect(self._on_send_selected_sessions)
-        queue_btn_layout.addWidget(self.send_selected_sessions_btn)
+        queue_btn_row_2.addWidget(self.send_selected_sessions_btn)
 
         self.send_all_sessions_btn = QPushButton("Close && Send All")
         self.send_all_sessions_btn.clicked.connect(self._on_send_all_sessions)
-        queue_btn_layout.addWidget(self.send_all_sessions_btn)
+        queue_btn_row_2.addWidget(self.send_all_sessions_btn)
+        queue_btn_row_2.addStretch()
+        queue_btn_layout.addLayout(queue_btn_row_2)
         queue_layout.addLayout(queue_btn_layout)
 
         self.pending_sessions_table = QTableWidget()
@@ -443,8 +427,6 @@ class SessionTabMixin:
         info = self.session_manager.get_session_info()
         view_state = SessionTabPresenter.build_active_session_view_state(info)
         self.session_info_label.setText(view_state.info_text)
-        self.close_session_btn.setEnabled(view_state.close_enabled)
-        self.upload_session_btn.setEnabled(view_state.upload_enabled)
 
         self._refresh_session_container_lists()
 

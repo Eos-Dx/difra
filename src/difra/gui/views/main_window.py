@@ -101,6 +101,14 @@ class MainWindow(
             self.splitDockWidget(
                 self.zonePointsDock, self.zoneMeasurementsDock, Qt.Horizontal
             )
+            try:
+                self.resizeDocks(
+                    [self.zonePointsDock, self.zoneMeasurementsDock],
+                    [1100, 320],
+                    Qt.Horizontal,
+                )
+            except Exception:
+                pass
             logger.debug("Dock widgets split")
 
             # 4. The rest as before...
@@ -147,9 +155,6 @@ class MainWindow(
             logger.debug("Adding restore state from file action...")
             # Add new "Restore State From File" action to the File menu.
             self.add_restore_state_action_from_file()
-            logger.debug("Adding save state action...")
-            # Add "Save State" button to the toolbar.
-            self.add_save_state_action()
             logger.debug("State actions added")
 
             # If DEV mode, auto-open default image
@@ -235,7 +240,3 @@ class MainWindow(
         )
         if file_path:
             self.restore_state(file_path)
-
-    def add_save_state_action(self):
-        save_state_act = QAction("Save State", self, triggered=self.manual_save_state)
-        self.toolbar.addAction(save_state_act)
