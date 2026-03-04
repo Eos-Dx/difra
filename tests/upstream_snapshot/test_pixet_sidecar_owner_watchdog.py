@@ -10,8 +10,8 @@ SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-SIDECAR_SCRIPT = REPO_ROOT / "src" / "hardware" / "difra" / "scripts" / "pixet_sidecar_server.py"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIDECAR_SCRIPT = REPO_ROOT / "src" / "difra" / "scripts" / "pixet_sidecar_server.py"
 
 
 def _free_tcp_port() -> int:

@@ -11,6 +11,9 @@ def _pm():
     return pm
 
 
+_DEFAULT_PM = _pm
+
+
 class ZoneMeasurementsProcessStartMixin:
     def _append_capture_log(self, message: str):
         try:

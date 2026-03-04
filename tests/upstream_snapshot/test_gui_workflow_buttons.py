@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QInputDialog,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -240,6 +241,12 @@ def _patch_message_boxes(monkeypatch):
         dialogs["critical"].append(args[2] if len(args) > 2 else "")
         return QMessageBox.Yes
 
+    monkeypatch.setattr(QMessageBox, "exec_", lambda self: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("", True)),
+    )
     for module in (technical_measurements, h5_generation_mixin, h5_management_mixin):
         monkeypatch.setattr(module.QMessageBox, "question", staticmethod(_question))
         monkeypatch.setattr(module.QMessageBox, "information", staticmethod(_information))
@@ -305,6 +312,7 @@ def test_gui_button_driven_technical_workflow(qapp, tmp_path, monkeypatch):
         ],
         "dev_active_detectors": ["det_primary", "det_secondary"],
         "active_detectors": ["det_primary", "det_secondary"],
+        "technical_folder": str(work_dir),
         "technical_temp_folder": str(temp_dir),
         "technical_archive_folder": str(archive_dir),
         "technical_archive_patterns": ["*.npy"],
@@ -394,7 +402,7 @@ def test_gui_button_driven_technical_workflow(qapp, tmp_path, monkeypatch):
     assert not archive_zips, f"Unexpected ZIP bundle(s): {archive_zips}"
     archive_subdirs = [p for p in archive_dir.glob("*") if p.is_dir()]
     assert archive_subdirs, f"No archive subfolder created in {archive_dir}"
-    archived_npy = sorted(archive_subdirs[-1].glob("*.npy"))
+    archived_npy = sorted(archive_dir.rglob("*.npy"))
     assert archived_npy, "Expected archived raw .npy files in technical archive folder"
 
     # No critical dialog should have been shown
