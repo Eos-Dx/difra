@@ -399,7 +399,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         # Mock state management
         self.mock_processor.state = {}
         self.mock_processor.state_measurements = {}
-        self.mock_processor.manual_save_state = Mock()
+        self.mock_processor.auto_save_state = Mock()
         self.mock_processor.measure_next_point = Mock()
 
     def create_mock_point_at_position(self, x_mm, y_mm, uid=None):
@@ -495,7 +495,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -587,7 +587,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -669,7 +669,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -775,7 +775,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -880,7 +880,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -1003,7 +1003,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
 
@@ -1097,7 +1097,7 @@ class TestMeasurementPointFiltering(unittest.TestCase):
         proc.pixel_to_mm_ratio = self.mock_processor.pixel_to_mm_ratio
         proc.state = {}
         proc.state_measurements = {}
-        proc.manual_save_state = Mock()
+        proc.auto_save_state = Mock()
         proc.measure_next_point = Mock()
         proc.integrationSpinBox = self.mock_processor.integrationSpinBox
         proc.attenuationCheckBox = Mock()

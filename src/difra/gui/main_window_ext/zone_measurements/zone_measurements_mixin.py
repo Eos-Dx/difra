@@ -2,17 +2,16 @@
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QDockWidget, QTabWidget, QVBoxLayout, QWidget
 
-from .attenuation_mixin import AttenuationMixin
 from .detector_param_mixin import DetectorParamMixin
 from .session_tab_mixin import SessionTabMixin
 from .zone_measurements_logic_mixin import ZoneMeasurementsLogicMixin
 
 
 class ZoneMeasurementsMixin(
-    ZoneMeasurementsLogicMixin, DetectorParamMixin, AttenuationMixin, SessionTabMixin
+    ZoneMeasurementsLogicMixin, DetectorParamMixin, SessionTabMixin
 ):
     """
-    Aggregator mixin that combines measurement, detector param, and attenuation logic.
+    Aggregator mixin that combines measurement, detector param, and session logic.
     Inherit from this in your main window.
     """
 
@@ -31,7 +30,6 @@ class ZoneMeasurementsMixin(
 
         # --- Add tabs ---
         self.create_zone_measurements_widget()  # Adds the Measurements tab (and its controls) to self.tabs
-        self.create_attenuation_tab()  # Adds the Attenuation tab to self.tabs
         self.setup_detector_param_tabs()  # Initialize detector tabs tracking
         self.populate_detector_param_tabs()  # Creates one tab per active detector alias
         self.create_session_tab()  # Adds the Session tab to self.tabs
@@ -39,13 +37,19 @@ class ZoneMeasurementsMixin(
         # --- Create and set up the Dock ---
         self.zoneMeasurementsDock = QDockWidget("Zone Measurements", self)
         self.zoneMeasurementsDock.setObjectName("ZoneMeasurementsDock")
+        self.zoneMeasurementsDock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.zoneMeasurementsDock.setFeatures(
+            QDockWidget.DockWidgetClosable
+            | QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+        )
         self.zoneMeasurementsDock.setWidget(container)
         
         # Set minimum height to be compact - just enough for controls and a few rows
         # This gives more vertical space to other zones (image view, etc.)
         try:
-            # Minimum: title bar (~20px) + tab bar (~30px) + controls (~150px) + 2-3 table rows (~100px)
-            self.zoneMeasurementsDock.setMinimumHeight(150)
+            # Keep this dock easy to shrink; the main window sets only an initial width bias.
+            self.zoneMeasurementsDock.setMinimumHeight(110)
         except Exception:
             pass
         

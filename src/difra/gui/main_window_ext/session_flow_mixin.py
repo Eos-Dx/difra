@@ -34,32 +34,8 @@ class SessionFlowMixin:
         return session_path.parent
 
     def _sync_attenuation_controls_after_restore(self, session_info: dict) -> None:
-        """Enable attenuation checkbox when restored session already contains attenuation data."""
-        if not hasattr(self, "attenuationCheckBox"):
-            return
-
-        has_prior_attenuation = bool(
-            session_info.get("i0_recorded")
-            or session_info.get("i_recorded")
-            or session_info.get("attenuation_complete")
-        )
-        if not has_prior_attenuation:
-            return
-
-        try:
-            self.attenuationCheckBox.setChecked(True)
-        except Exception:
-            return
-
-        if hasattr(self, "_append_session_log"):
-            if session_info.get("i0_recorded"):
-                self._append_session_log(
-                    "Restored attenuation state: I0 already exists in session"
-                )
-            else:
-                self._append_session_log(
-                    "Restored attenuation state from existing session"
-                )
+        """Attenuation controls were removed from Zone Measurements."""
+        return
 
     def _handle_incomplete_measurements_after_restore(self, session_path: Path):
         """Recover in-progress measurements from on-disk files or mark for re-measurement."""

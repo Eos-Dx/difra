@@ -24,9 +24,9 @@ developed and released on its own.
 
 ## Runtime Expectations
 
-The launcher scripts in `src/difra/bin/` force-refresh the runtime dependency
-packages from GitHub on every run so the environment is always brought up to
-date before DiFRA starts.
+The launcher scripts in `src/difra/bin/` check the managed runtime dependency
+packages on every run and refresh them from GitHub only when the configured
+source changed or has not been installed yet.
 
 Managed runtime packages:
 
@@ -43,8 +43,14 @@ last successful refresh, the dependency is not downloaded again.
 For fixed wheel/release URLs, DiFRA skips the re-download once that exact URL
 has already been installed successfully.
 
-The refresh step uses `pip install --upgrade --force-reinstall --no-cache-dir`
-against the GitHub source archives by default.
+When a refresh is needed, DiFRA uses:
+
+```bash
+python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --upgrade --force-reinstall ...
+```
+
+Branch archives are used for `container` and `protocol`; `xrdanalysis` uses the
+published `v0.2` release wheel by default.
 
 For direct source imports outside the launcher, local sibling checkouts can
 still be resolved during development.

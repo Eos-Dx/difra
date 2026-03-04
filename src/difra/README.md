@@ -150,10 +150,13 @@ Edit `src/difra/resources/config/global.json`:
 ### Key Features
 
 #### Zone Measurements
+- Use the **Measurements** tab to initialize hardware, home/load the stage, and
+  run automated scans
+- Configure integration time, save folder, and sample ID for the active run
 - Draw and manage holder/include/exclude zones on the sample image
-- Configure exposure time and number of frames
-- Generate points and run automated measurements
-- Data is written to session HDF5 containers
+- Data is written directly to session HDF5 containers
+- The old standalone **Attenuation** tab has been removed from Zone
+  Measurements
 
 #### Technical Measurements (Auxiliary)
 - Capture calibration images
@@ -164,10 +167,26 @@ Edit `src/difra/resources/config/global.json`:
 - View real-time detector output
 
 #### Session Queue and Archive
+- Session tab shows active session info plus queue/archive tables
 - Session tab lists all `session_*.h5` containers in measurements folder
 - Close/send one, selected set, or all containers (fake cloud send in current dev mode)
 - Sent containers are locked, moved to session archive, and removed from pending list
 - Archive list shows sample/study/operator/created/archived metadata
+
+#### Zone Points
+- Point generation and coordinate editing live in the separate **Zone Points**
+  dock
+- The dock contains point count, `% offset`, `X_pos`, `Y_pos`, conversion, and
+  **Generate Points** controls on a single row
+- Editing point coordinates in the table updates unmeasured points in place when
+  they remain inside the allowed include region
+
+#### Workspace Persistence
+- Workspace geometry, zones, and points are synced automatically into the active
+  unlocked session container
+- The old manual **Save State** action is no longer part of the main UI
+- `Restore State` / `Restore State From File` remain available for legacy JSON
+  workspace restoration paths
 
 #### PyFAI Calibration
 1. Set the working folder where calibration images are stored

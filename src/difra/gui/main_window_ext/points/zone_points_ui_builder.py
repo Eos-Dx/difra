@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
+    QVBoxLayout,
 )
 
 from difra.gui.main_window_ext.points.zone_geometry import (
@@ -35,7 +36,7 @@ class ZonePointsUIBuilder:
         layout = QHBoxLayout()
         try:
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(6)
+            layout.setSpacing(4)
         except Exception:
             pass
 
@@ -71,7 +72,7 @@ class ZonePointsUIBuilder:
         layout = QHBoxLayout()
         try:
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(6)
+            layout.setSpacing(4)
         except Exception:
             pass
 
@@ -103,10 +104,6 @@ class ZonePointsUIBuilder:
             pass
         layout.addWidget(parent.real_y_pos_mm)
 
-        # Conversion label
-        parent.conversionLabel = QLabel("Conversion: 1.00 px/mm")
-        layout.addWidget(parent.conversionLabel)
-
         return layout
 
     @staticmethod
@@ -119,11 +116,11 @@ class ZonePointsUIBuilder:
         except Exception:
             pass
 
+        parent.conversionLabel = QLabel("Conversion: 1.00 px/mm")
+        layout.addWidget(parent.conversionLabel)
+
         parent.generatePointsBtn = QPushButton("Generate Points")
         layout.addWidget(parent.generatePointsBtn)
-
-        parent.updateCoordinatesBtn = QPushButton("Update Coordinates")
-        layout.addWidget(parent.updateCoordinatesBtn)
 
         # Add current position display near Update Coordinates button
         if not hasattr(parent, "zoneCurrentPositionLabel"):
@@ -141,6 +138,14 @@ class ZonePointsUIBuilder:
         table = QTableWidget(0, len(ZonePointsConstants.TABLE_COLUMNS))
         table.setHorizontalHeaderLabels(ZonePointsConstants.TABLE_COLUMNS)
         table.setItemDelegateForColumn(0, PointIdentityDelegate(table))
+        try:
+            table.setEditTriggers(
+                QTableWidget.DoubleClicked
+                | QTableWidget.EditKeyPressed
+                | QTableWidget.SelectedClicked
+            )
+        except Exception:
+            pass
         try:
             table.verticalHeader().setDefaultSectionSize(42)
         except Exception:
