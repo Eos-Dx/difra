@@ -7,8 +7,83 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
+auto_update_repo() {
+  local auto_update="${DIFRA_AUTO_UPDATE:-1}"
+  local remote_name="${DIFRA_AUTO_UPDATE_REMOTE:-origin}"
+  local branch=""
+  local local_head=""
+  local remote_head=""
+  local tracked_changes=""
+
+  case "${auto_update}" in
+    0|false|FALSE|no|NO)
+      echo "[INFO] Automatic git update check disabled (DIFRA_AUTO_UPDATE=${auto_update})."
+      return 0
+      ;;
+  esac
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "[WARN] git is unavailable; skipping automatic update check."
+    return 0
+  fi
+
+  if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[WARN] $REPO_ROOT is not a git work tree; skipping automatic update check."
+    return 0
+  fi
+
+  branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+    echo "[WARN] Repository is in detached HEAD state; skipping automatic update check."
+    return 0
+  fi
+
+  if ! git -C "$REPO_ROOT" remote get-url "$remote_name" >/dev/null 2>&1; then
+    echo "[WARN] Git remote '$remote_name' is not configured; skipping automatic update check."
+    return 0
+  fi
+
+  echo "[INFO] Checking for updates from ${remote_name}/${branch}"
+  if ! git -C "$REPO_ROOT" fetch --quiet "$remote_name" "$branch"; then
+    echo "[WARN] git fetch failed; continuing with local checkout."
+    return 0
+  fi
+
+  local_head="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  remote_head="$(git -C "$REPO_ROOT" rev-parse "${remote_name}/${branch}" 2>/dev/null || true)"
+  if [ -z "$local_head" ] || [ -z "$remote_head" ]; then
+    echo "[WARN] Could not resolve local/remote git revision; continuing with local checkout."
+    return 0
+  fi
+
+  if [ "$local_head" = "$remote_head" ]; then
+    echo "[INFO] Repository is already up to date."
+    return 0
+  fi
+
+  tracked_changes="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
+  if [ -n "$tracked_changes" ]; then
+    echo "[WARN] Remote updates are available, but tracked local changes exist; skipping automatic pull."
+    return 0
+  fi
+
+  if ! git -C "$REPO_ROOT" merge-base --is-ancestor HEAD "${remote_name}/${branch}" >/dev/null 2>&1; then
+    echo "[WARN] Local branch is not behind ${remote_name}/${branch} (ahead or diverged); skipping automatic pull."
+    return 0
+  fi
+
+  echo "[INFO] Pulling latest fast-forward changes from ${remote_name}/${branch}"
+  if git -C "$REPO_ROOT" pull --ff-only "$remote_name" "$branch"; then
+    echo "[INFO] Repository updated successfully."
+  else
+    echo "[WARN] git pull --ff-only failed; continuing with existing checkout."
+  fi
+}
+
 CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/global.json"
 MAIN_CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/main.json"
+
+auto_update_repo
 
 if ! command -v conda >/dev/null 2>&1; then
   echo "[ERROR] 'conda' was not found on PATH. Please ensure conda is initialized in your shell."
