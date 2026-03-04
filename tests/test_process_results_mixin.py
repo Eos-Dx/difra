@@ -87,14 +87,34 @@ class _FakeLabel:
         self.text = value
 
 
+class _FakeTreeItem:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def setText(self, column: int, text: str) -> None:
+        self.calls.append((column, text))
+
+
 class _MeasurementWidget:
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.kwargs = kwargs
         self.hidden = False
+        self.mm_coordinates = []
+        self.measurements = []
+        self.window_titles = []
 
     def isHidden(self):
         return self.hidden
+
+    def set_mm_coordinates(self, x_mm: float, y_mm: float) -> None:
+        self.mm_coordinates.append((x_mm, y_mm))
+
+    def add_measurement(self, results, timestamp) -> None:
+        self.measurements.append((results, timestamp))
+
+    def setWindowTitle(self, title: str) -> None:
+        self.window_titles.append(title)
 
 
 def _patch_pm(monkeypatch):
@@ -306,6 +326,85 @@ def test_get_or_create_measurement_widget_returns_none_when_imports_missing(monk
     assert any(level == "error" for level, _args, _kwargs in logger.calls)
 
 
+def test_add_measurement_to_table_returns_when_point_uid_is_missing(monkeypatch):
+    logger, _warnings = _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        _get_point_identity_from_table_row=lambda row: (None, None),
+    )
+
+    ZoneMeasurementsProcessResultsMixin.add_measurement_to_table(
+        owner,
+        row=0,
+        results={"ok": True},
+        timestamp="2026-03-04 10:00:00",
+    )
+
+    assert any(level == "warning" for level, _args, _kwargs in logger.calls)
+
+
+def test_add_measurement_to_table_updates_widget_and_tree_item(monkeypatch):
+    _patch_pm(monkeypatch)
+    widget = _MeasurementWidget()
+    top_item = _FakeTreeItem()
+    owner = SimpleNamespace(
+        pointsTable=_FakePointsTable(
+            {
+                (2, 3): _FakeTableItem("1.25"),
+                (2, 4): _FakeTableItem("-3.50"),
+            }
+        ),
+        _get_point_identity_from_table_row=lambda row: ("7_deadbeef", 7),
+        _get_or_create_measurement_widget=lambda point_uid, point_display_id=None: widget,
+        add_measurement_widget_to_panel=lambda point_uid, point_display_id=None: None,
+        _measurement_items={"7_deadbeef": (top_item, None, None)},
+        _timestamp="2026-03-04 10:00:00",
+    )
+
+    ZoneMeasurementsProcessResultsMixin.add_measurement_to_table(
+        owner,
+        row=2,
+        results={"value": 42},
+        timestamp=None,
+    )
+
+    assert widget.mm_coordinates == [(1.25, -3.5)]
+    assert widget.measurements == [({"value": 42}, "2026-03-04 10:00:00")]
+    assert top_item.calls == [(0, "Point #7 1.25:-3.50 mm")]
+
+
+def test_add_measurement_to_table_falls_back_to_window_title_without_mm_setter(monkeypatch):
+    _patch_pm(monkeypatch)
+
+    class _TitleOnlyWidget:
+        def __init__(self) -> None:
+            self.window_titles = []
+            self.measurements = []
+
+        def setWindowTitle(self, title: str) -> None:
+            self.window_titles.append(title)
+
+        def add_measurement(self, results, timestamp) -> None:
+            self.measurements.append((results, timestamp))
+
+    widget = _TitleOnlyWidget()
+    owner = SimpleNamespace(
+        pointsTable=_FakePointsTable({}),
+        _get_point_identity_from_table_row=lambda row: ("uid-5", 5),
+        _get_or_create_measurement_widget=lambda point_uid, point_display_id=None: widget,
+        _timestamp="stamp",
+    )
+
+    ZoneMeasurementsProcessResultsMixin.add_measurement_to_table(
+        owner,
+        row=1,
+        results={"value": 1},
+        timestamp="manual",
+    )
+
+    assert widget.window_titles == ["Measurement History: Point #5"]
+    assert widget.measurements == [({"value": 1}, "manual")]
+
+
 def test_pause_measurements_toggles_pause_state_and_resumes(monkeypatch):
     logger, _warnings = _patch_pm(monkeypatch)
     resumed = []
@@ -324,6 +423,64 @@ def test_pause_measurements_toggles_pause_state_and_resumes(monkeypatch):
     assert owner.pause_btn.text == "Pause"
     assert resumed == [True]
     assert len(logger.calls) >= 2
+
+
+def test_skip_current_point_returns_early_for_stopped_or_invalid_bounds(monkeypatch):
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        stopped=True,
+        total_points=1,
+        current_measurement_sorted_index=0,
+        sorted_indices=[0],
+    )
+
+    ZoneMeasurementsProcessResultsMixin.skip_current_point(owner)
+
+    owner = SimpleNamespace(
+        stopped=False,
+        total_points=0,
+        current_measurement_sorted_index=0,
+        sorted_indices=[],
+    )
+    ZoneMeasurementsProcessResultsMixin.skip_current_point(owner)
+
+
+def test_skip_current_point_skips_when_user_cancels(monkeypatch):
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        stopped=False,
+        total_points=2,
+        current_measurement_sorted_index=0,
+        sorted_indices=[5, 6],
+        _skip_point_by_row=lambda row, reason: (_ for _ in ()).throw(RuntimeError("should not be called")),
+    )
+    from PyQt5.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("", False))
+
+    ZoneMeasurementsProcessResultsMixin.skip_current_point(owner)
+
+
+def test_skip_current_point_records_skip_reason_and_log(monkeypatch):
+    _patch_pm(monkeypatch)
+    calls = []
+    logs = []
+    owner = SimpleNamespace(
+        stopped=False,
+        total_points=2,
+        current_measurement_sorted_index=1,
+        sorted_indices=[3, 8],
+        _skip_point_by_row=lambda row, reason: calls.append((row, reason)) or True,
+        _append_capture_log=lambda message: logs.append(message),
+    )
+    from PyQt5.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("because", True))
+
+    ZoneMeasurementsProcessResultsMixin.skip_current_point(owner)
+
+    assert calls == [(8, "because")]
+    assert logs == ["Point 2: skipped (because)"]
 
 
 def test_stop_measurements_resets_ui_state(monkeypatch):
