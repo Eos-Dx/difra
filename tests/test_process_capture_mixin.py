@@ -20,6 +20,151 @@ class _StubStageController:
         return {"load": (11.0, -5.5)}
 
 
+class _FakeSignal:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def connect(self, callback) -> None:
+        self.callbacks.append(callback)
+
+    def emit(self, *args, **kwargs) -> None:
+        for callback in list(self.callbacks):
+            try:
+                callback(*args, **kwargs)
+            except TypeError:
+                callback()
+
+
+class _FakeThread:
+    def __init__(self) -> None:
+        self.started = _FakeSignal()
+        self.finished = _FakeSignal()
+        self.started_called = 0
+        self.quit_called = 0
+        self.deleted = 0
+
+    def start(self) -> None:
+        self.started_called += 1
+        self.started.emit()
+
+    def quit(self) -> None:
+        self.quit_called += 1
+
+    def deleteLater(self) -> None:
+        self.deleted += 1
+
+
+class _FakeCaptureWorker:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.finished = _FakeSignal()
+        self.thread = None
+        self.run_called = 0
+        self.deleted = 0
+
+    def moveToThread(self, thread) -> None:
+        self.thread = thread
+
+    def run(self) -> None:
+        self.run_called += 1
+
+    def deleteLater(self) -> None:
+        self.deleted += 1
+
+
+class _FakeCheckBox:
+    def __init__(self, checked: bool) -> None:
+        self._checked = checked
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+
+class _StubButton:
+    def __init__(self) -> None:
+        self.values = []
+
+    def setEnabled(self, value):
+        self.values.append(value)
+
+
+class _StubProgressBar:
+    def __init__(self) -> None:
+        self.max_values = []
+        self.values = []
+
+    def setMaximum(self, value):
+        self.max_values.append(value)
+
+    def setValue(self, value):
+        self.values.append(value)
+
+
+class _StubLineEdit:
+    def __init__(self, value):
+        self._value = value
+
+    def text(self):
+        return self._value
+
+
+class _StubSpin:
+    def __init__(self, value):
+        self._value = value
+
+    def value(self):
+        return self._value
+
+
+class _StubCenter:
+    def __init__(self, x, y):
+        self._x = x
+        self._y = y
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+
+class _StubRect:
+    def __init__(self, x, y):
+        self._center = _StubCenter(x, y)
+
+    def center(self):
+        return self._center
+
+
+class _StubPointItem:
+    def __init__(self, x, y):
+        self._rect = _StubRect(x, y)
+
+    def sceneBoundingRect(self):
+        return self._rect
+
+
+def _patch_pm(monkeypatch):
+    logger_calls = []
+    warnings = []
+
+    logger = SimpleNamespace(
+        info=lambda *args, **kwargs: logger_calls.append(("info", args, kwargs)),
+        warning=lambda *args, **kwargs: logger_calls.append(("warning", args, kwargs)),
+        error=lambda *args, **kwargs: logger_calls.append(("error", args, kwargs)),
+        debug=lambda *args, **kwargs: logger_calls.append(("debug", args, kwargs)),
+    )
+    pm = SimpleNamespace(
+        logger=logger,
+        QThread=_FakeThread,
+        QMessageBox=SimpleNamespace(
+            warning=lambda *args: warnings.append(args[1:3]),
+        ),
+    )
+    monkeypatch.setattr(capture_module, "_pm", lambda: pm)
+    return logger_calls, warnings
+
+
 def test_place_raw_capture_file_noops_when_source_matches_target_and_copies_dsc(tmp_path: Path):
     target_txt = tmp_path / "capture.txt"
     target_dsc = tmp_path / "capture.dsc"
@@ -165,3 +310,199 @@ def test_capture_attenuation_background_skips_when_loading_position_missing(monk
 
     assert owner._attenuation_bg_files is None
     assert logs[-1] == "I0 skipped: loading position is not configured"
+
+
+def test_measure_next_point_respects_stopped_and_paused_states(monkeypatch):
+    logger_calls, _warnings = _patch_pm(monkeypatch)
+    owner = SimpleNamespace(stopped=True, paused=False)
+
+    ZoneMeasurementsProcessCaptureMixin.measure_next_point(owner)
+
+    owner = SimpleNamespace(stopped=False, paused=True)
+    ZoneMeasurementsProcessCaptureMixin.measure_next_point(owner)
+
+    debug_messages = [args[0] for level, args, _kwargs in logger_calls if level == "debug"]
+    assert "Measurement stopped" in debug_messages
+    assert "Measurement is paused. Waiting for resume" in debug_messages
+
+
+def test_measure_next_point_finishes_when_all_points_measured(monkeypatch):
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        stopped=False,
+        paused=False,
+        sorted_indices=[0],
+        total_points=1,
+        current_measurement_sorted_index=1,
+        progressBar=_StubProgressBar(),
+        start_btn=_StubButton(),
+        pause_btn=_StubButton(),
+        stop_btn=_StubButton(),
+        skip_btn=_StubButton(),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin.measure_next_point(owner)
+
+    assert owner.progressBar.values == [1]
+    assert owner.start_btn.values[-1] is True
+    assert owner.pause_btn.values[-1] is False
+    assert owner.stop_btn.values[-1] is False
+    assert owner.skip_btn.values[-1] is False
+
+
+def test_measure_next_point_routes_to_attenuation_flow_when_checkbox_enabled(monkeypatch):
+    _patch_pm(monkeypatch)
+    calls = []
+    owner = SimpleNamespace(
+        stopped=False,
+        paused=False,
+        current_measurement_sorted_index=0,
+        sorted_indices=[0],
+        total_points=1,
+        progressBar=_StubProgressBar(),
+        start_btn=_StubButton(),
+        pause_btn=_StubButton(),
+        stop_btn=_StubButton(),
+        skip_btn=_StubButton(),
+        fileNameLineEdit=_StubLineEdit("sample"),
+        measurement_folder="/tmp",
+        integration_time=1.0,
+        real_x_pos_mm=_StubSpin(0.0),
+        real_y_pos_mm=_StubSpin(0.0),
+        include_center=(0.0, 0.0),
+        pixel_to_mm_ratio=1.0,
+        update_xy_pos=lambda: None,
+        _append_capture_log=lambda _msg: None,
+        _append_hw_log=lambda _msg: None,
+        attenuationCheckBox=_FakeCheckBox(True),
+        state_measurements={
+            "measurement_points": [{"x": 2.5, "y": -1.0}],
+        },
+        state={},
+        image_view=SimpleNamespace(
+            points_dict={
+                "generated": {"points": [_StubPointItem(0.0, 0.0)], "zones": [object()]},
+                "user": {"points": [], "zones": []},
+            }
+        ),
+        _start_attenuation_then_normal=lambda txt_base: calls.append(txt_base),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin.measure_next_point(owner)
+
+    assert len(calls) == 1
+
+
+def test_start_normal_capture_returns_when_technical_imports_missing(monkeypatch):
+    logger_calls, _warnings = _patch_pm(monkeypatch)
+    logs = []
+    owner = SimpleNamespace(
+        _zone_technical_imports_available=lambda: False,
+        _append_capture_log=lambda message: logs.append(message),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._start_normal_capture(owner, "/tmp/base")
+
+    assert logs == ["Error: technical imports unavailable"]
+    assert any(level == "error" for level, _args, _kwargs in logger_calls)
+
+
+def test_start_normal_capture_creates_worker_thread_and_marks_session_start(monkeypatch):
+    _patch_pm(monkeypatch)
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    session_calls = []
+    session_manager = SimpleNamespace(
+        is_session_active=lambda: True,
+        begin_point_measurement=lambda **kwargs: session_calls.append(("begin", kwargs)),
+        log_event=lambda **kwargs: session_calls.append(("log", kwargs)),
+    )
+    capture_logs = []
+    session_logs = []
+    owner = SimpleNamespace(
+        _zone_technical_imports_available=lambda: True,
+        _get_zone_technical_module=lambda name: _FakeCaptureWorker,
+        current_measurement_sorted_index=0,
+        total_points=2,
+        integration_time=0.5,
+        detector_controller={"det_a": object()},
+        config={"detectors": []},
+        hardware_client=object(),
+        _x_mm=1.0,
+        _y_mm=2.0,
+        _append_capture_log=lambda message: capture_logs.append(message),
+        _append_session_log=lambda message: session_logs.append(message),
+        _current_session_point_index=lambda: 7,
+        session_manager=session_manager,
+        on_capture_finished=lambda success, files: None,
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._start_normal_capture(owner, "/tmp/sample")
+
+    assert isinstance(owner.capture_worker, _FakeCaptureWorker)
+    assert isinstance(owner.capture_thread, _FakeThread)
+    assert owner.capture_worker.kwargs["naming_mode"] == "normal"
+    assert owner.capture_worker.kwargs["container_version"] == "0.2"
+    assert owner.capture_thread.started_called == 1
+    assert owner.capture_worker.run_called == 1
+    assert session_calls and session_calls[0][0] == "begin"
+    assert "Normal capture worker started" in capture_logs
+    assert session_logs and "opened in session container" in session_logs[0]
+
+
+def test_start_attenuation_then_normal_warns_if_background_missing(monkeypatch):
+    _logger_calls, warnings = _patch_pm(monkeypatch)
+    capture_logs = []
+    owner = SimpleNamespace(
+        _reuse_existing_i0_from_session=False,
+        _attenuation_bg_files=None,
+        _move_stage=lambda x, y, timeout_s=15: None,
+        _x_mm=1.0,
+        _y_mm=2.0,
+        _append_hw_log=lambda message: None,
+        _zone_technical_imports_available=lambda: False,
+        _append_capture_log=lambda message: capture_logs.append(message),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._start_attenuation_then_normal(owner, "/tmp/base")
+
+    assert warnings and warnings[0][0] == "Attenuation Background Missing"
+    assert capture_logs[-1] == "Error: technical imports unavailable for attenuation"
+
+
+def test_start_attenuation_then_normal_emits_callback_and_starts_normal_capture(monkeypatch):
+    _patch_pm(monkeypatch)
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    capture_logs = []
+    record_calls = []
+    normal_calls = []
+    owner = SimpleNamespace(
+        attenFramesSpin=SimpleNamespace(value=lambda: 5),
+        attenTimeSpin=SimpleNamespace(value=lambda: 0.01),
+        _reuse_existing_i0_from_session=True,
+        _attenuation_bg_files={"det_a": "/tmp/bg.npy"},
+        _record_attenuation_files=lambda key, files: record_calls.append((key, files)),
+        _move_stage=lambda x, y, timeout_s=15: None,
+        _x_mm=1.0,
+        _y_mm=2.0,
+        _append_hw_log=lambda message: None,
+        _zone_technical_imports_available=lambda: True,
+        _append_capture_log=lambda message: capture_logs.append(message),
+        _append_session_log=lambda message: capture_logs.append(f"SESSION:{message}"),
+        _start_normal_capture=lambda txt_base: normal_calls.append(txt_base),
+        _get_zone_technical_module=lambda name: _FakeCaptureWorker,
+        detector_controller={"det_a": object()},
+        config={"detectors": []},
+        hardware_client=None,
+        measurement_folder="/tmp",
+        fileNameLineEdit=_StubLineEdit("sample"),
+        session_manager=SimpleNamespace(is_session_active=lambda: False),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._start_attenuation_then_normal(owner, "/tmp/base")
+
+    assert isinstance(owner._attn2_worker, _FakeCaptureWorker)
+    owner._attn2_worker.finished.emit(True, {"det_a": "/tmp/with.npy"})
+    assert record_calls[0][0] == "without_sample"
+    assert record_calls[-1] == ("with_sample", {"det_a": "/tmp/with.npy"})
+    assert normal_calls == ["/tmp/base"]
+    assert "Attenuation I capture complete" in capture_logs
