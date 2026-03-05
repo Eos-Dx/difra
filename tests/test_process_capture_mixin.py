@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 import difra.gui.main_window_ext.zone_measurements.logic.process_capture_mixin as capture_module
 from difra.gui.main_window_ext.zone_measurements.logic.process_capture_mixin import (
     ZoneMeasurementsProcessCaptureMixin,
@@ -18,6 +20,18 @@ class _StubStageController:
     def get_home_load_positions(self):
         self.calls.append("get_home_load_positions")
         return {"load": (11.0, -5.5)}
+
+
+class _FakeAttenuationController:
+    def __init__(self, npy_data=None):
+        self.calls = []
+        self.npy_data = np.array(npy_data if npy_data is not None else [[1.0, 2.0]])
+
+    def convert_to_container_format(self, txt_path: str, _container_version: str) -> str:
+        self.calls.append(txt_path)
+        npy_path = str(Path(txt_path).with_suffix(".npy"))
+        np.save(npy_path, self.npy_data)
+        return npy_path
 
 
 class _FakeSignal:
@@ -449,6 +463,40 @@ def test_start_normal_capture_creates_worker_thread_and_marks_session_start(monk
     assert session_logs and "opened in session container" in session_logs[0]
 
 
+def test_start_normal_capture_continues_when_session_begin_fails(monkeypatch):
+    _patch_pm(monkeypatch)
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    capture_logs = []
+    session_logs = []
+    session_manager = SimpleNamespace(
+        is_session_active=lambda: True,
+        begin_point_measurement=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    owner = SimpleNamespace(
+        _zone_technical_imports_available=lambda: True,
+        _get_zone_technical_module=lambda name: _FakeCaptureWorker,
+        current_measurement_sorted_index=0,
+        total_points=1,
+        integration_time=1.0,
+        detector_controller={"det_a": object()},
+        config={"detectors": []},
+        hardware_client=None,
+        _x_mm=0.0,
+        _y_mm=0.0,
+        _append_capture_log=lambda message: capture_logs.append(message),
+        _append_session_log=lambda message: session_logs.append(message),
+        _current_session_point_index=lambda: 1,
+        session_manager=session_manager,
+        on_capture_finished=lambda success, files: None,
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._start_normal_capture(owner, "/tmp/sample")
+
+    assert isinstance(owner.capture_worker, _FakeCaptureWorker)
+    assert any("failed to mark session start" in message for message in session_logs)
+    assert "Normal capture worker started" in capture_logs
+
+
 def test_start_attenuation_then_normal_warns_if_background_missing(monkeypatch):
     _logger_calls, warnings = _patch_pm(monkeypatch)
     capture_logs = []
@@ -467,6 +515,113 @@ def test_start_attenuation_then_normal_warns_if_background_missing(monkeypatch):
 
     assert warnings and warnings[0][0] == "Attenuation Background Missing"
     assert capture_logs[-1] == "Error: technical imports unavailable for attenuation"
+
+
+def test_capture_attenuation_background_skips_when_move_to_loading_fails(monkeypatch):
+    logs = []
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        config={},
+        detector_controller={},
+        _get_loading_position=lambda: (1.0, 2.0),
+        _move_stage=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stage blocked")),
+        _append_capture_log=lambda message: logs.append(message),
+        _append_hw_log=lambda message: None,
+        fileNameLineEdit=_StubLineEdit("sample"),
+        measurement_folder="/tmp",
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._capture_attenuation_background(owner)
+
+    assert owner._attenuation_bg_files is None
+    assert "cannot move to loading position" in logs[-1]
+
+
+def test_capture_attenuation_background_skips_when_hardware_client_is_missing(monkeypatch):
+    logs = []
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        config={},
+        detector_controller={},
+        _get_loading_position=lambda: (1.0, 2.0),
+        _move_stage=lambda *args, **kwargs: (1.0, 2.0),
+        _append_capture_log=lambda message: logs.append(message),
+        _append_hw_log=lambda message: None,
+        fileNameLineEdit=_StubLineEdit("sample"),
+        measurement_folder="/tmp",
+        hardware_client=None,
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._capture_attenuation_background(owner)
+
+    assert owner._attenuation_bg_files is None
+    assert logs[-1] == "I0 skipped: hardware client unavailable"
+
+
+def test_capture_attenuation_background_handles_capture_exposure_errors(monkeypatch):
+    logs = []
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    _patch_pm(monkeypatch)
+    owner = SimpleNamespace(
+        config={},
+        detector_controller={},
+        _get_loading_position=lambda: (1.0, 2.0),
+        _move_stage=lambda *args, **kwargs: (1.0, 2.0),
+        _append_capture_log=lambda message: logs.append(message),
+        _append_hw_log=lambda message: None,
+        fileNameLineEdit=_StubLineEdit("sample"),
+        measurement_folder="/tmp",
+        hardware_client=SimpleNamespace(
+            capture_exposure=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("capture failed"))
+        ),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._capture_attenuation_background(owner)
+
+    assert owner._attenuation_bg_files is None
+    assert logs[-1] == "I0 capture failed: capture failed"
+
+
+def test_capture_attenuation_background_saves_results_and_records_session(monkeypatch, tmp_path: Path):
+    logs = []
+    session_logs = []
+    session_calls = []
+    monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
+    _patch_pm(monkeypatch)
+    raw_txt = tmp_path / "raw.txt"
+    raw_dsc = tmp_path / "raw.dsc"
+    raw_txt.write_text("1 2 3\n4 5 6\n", encoding="utf-8")
+    raw_dsc.write_text("DSC", encoding="utf-8")
+    controller = _FakeAttenuationController([[1.0, 2.0], [3.0, 4.0]])
+    owner = SimpleNamespace(
+        config={"detectors": [{"alias": "det_a", "id": "A1"}]},
+        detector_controller={"det_a": controller},
+        _get_loading_position=lambda: (3.0, -2.0),
+        _move_stage=lambda *args, **kwargs: (3.0, -2.0),
+        _append_capture_log=lambda message: logs.append(message),
+        _append_session_log=lambda message: session_logs.append(message),
+        _append_hw_log=lambda message: None,
+        fileNameLineEdit=_StubLineEdit("sample"),
+        measurement_folder=str(tmp_path),
+        hardware_client=SimpleNamespace(
+            capture_exposure=lambda **kwargs: {"det_a": str(raw_txt)}
+        ),
+        session_manager=SimpleNamespace(
+            is_session_active=lambda: True,
+            add_attenuation_measurement=lambda **kwargs: session_calls.append(kwargs),
+        ),
+    )
+
+    ZoneMeasurementsProcessCaptureMixin._capture_attenuation_background(owner)
+
+    assert "det_a" in owner._attenuation_bg_files
+    out_npy = Path(owner._attenuation_bg_files["det_a"])
+    assert out_npy.exists()
+    assert logs[-1] == "I0 saved for 1 detector(s)"
+    assert session_calls and session_calls[0]["mode"] == "without"
+    assert "A1" in session_calls[0]["measurement_data"]
+    assert any("I0 saved to session container" in entry for entry in session_logs)
 
 
 def test_start_attenuation_then_normal_emits_callback_and_starts_normal_capture(monkeypatch):
