@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import difra.gui.main_window_ext.zone_measurements.logic.process_results_mixin as results_module
@@ -23,6 +24,57 @@ class _FakeLogger:
 
     def debug(self, *args, **kwargs) -> None:
         self.calls.append(("debug", args, kwargs))
+
+
+class _FakeSignal:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def connect(self, callback) -> None:
+        self.callbacks.append(callback)
+
+    def emit(self, *args, **kwargs) -> None:
+        for callback in list(self.callbacks):
+            try:
+                callback(*args, **kwargs)
+            except TypeError:
+                callback()
+
+
+class _FakeThread:
+    def __init__(self, *args, **kwargs) -> None:
+        self.started = _FakeSignal()
+        self.finished = _FakeSignal()
+        self.started_called = 0
+        self.quit_called = 0
+        self.deleted = 0
+
+    def start(self) -> None:
+        self.started_called += 1
+        self.started.emit()
+
+    def quit(self) -> None:
+        self.quit_called += 1
+
+    def deleteLater(self) -> None:
+        self.deleted += 1
+
+
+class _FakeColor:
+    def __init__(self, r: int, g: int, b: int) -> None:
+        self.rgb = (r, g, b)
+        self.alpha = None
+
+    def setAlphaF(self, value: float) -> None:
+        self.alpha = value
+
+
+class _FakeQTimer:
+    calls = []
+
+    @classmethod
+    def singleShot(cls, delay_ms: int, callback) -> None:
+        cls.calls.append((delay_ms, callback))
 
 
 class _FakeTableItem:
@@ -73,10 +125,10 @@ class _FakeButton:
 
 class _FakeProgressBar:
     def __init__(self) -> None:
-        self.value = None
+        self.values = []
 
     def setValue(self, value: int) -> None:
-        self.value = value
+        self.values.append(value)
 
 
 class _FakeLabel:
@@ -117,7 +169,37 @@ class _MeasurementWidget:
         self.window_titles.append(title)
 
 
-def _patch_pm(monkeypatch):
+class _FakeBrushItem:
+    def __init__(self) -> None:
+        self.brushes = []
+
+    def setBrush(self, brush) -> None:
+        self.brushes.append(brush)
+
+
+class _FakeMeasurementWorker:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.measurement_ready = _FakeSignal()
+        self.thread = None
+        self.run_called = 0
+        self.deleted = 0
+
+    def moveToThread(self, thread) -> None:
+        self.thread = thread
+
+    def run(self) -> None:
+        self.run_called += 1
+
+    def deleteLater(self) -> None:
+        self.deleted += 1
+
+
+class _ResultsHarness(ZoneMeasurementsProcessResultsMixin):
+    pass
+
+
+def _patch_pm(monkeypatch, *, with_ui: bool = False):
     logger = _FakeLogger()
     warnings = []
     pm = SimpleNamespace(
@@ -126,6 +208,11 @@ def _patch_pm(monkeypatch):
             warning=lambda *args: warnings.append(args[1:3]),
         ),
     )
+    if with_ui:
+        _FakeQTimer.calls.clear()
+        pm.QThread = _FakeThread
+        pm.QColor = _FakeColor
+        pm.QTimer = _FakeQTimer
     monkeypatch.setattr(results_module, "_pm", lambda: pm)
     return logger, warnings
 
@@ -405,6 +492,35 @@ def test_add_measurement_to_table_falls_back_to_window_title_without_mm_setter(m
     assert widget.measurements == [({"value": 1}, "manual")]
 
 
+def test_spawn_measurement_thread_returns_when_technical_imports_missing(monkeypatch):
+    logger, _warnings = _patch_pm(monkeypatch)
+    owner = _ResultsHarness()
+    owner._zone_technical_imports_available = lambda: False
+
+    owner.spawn_measurement_thread(row=1, file_map={"det_a": "/tmp/a.npy"})
+
+    assert any(level == "error" for level, _args, _kwargs in logger.calls)
+
+
+def test_spawn_measurement_thread_wires_worker_and_starts_thread(monkeypatch):
+    _patch_pm(monkeypatch, with_ui=True)
+    owner = _ResultsHarness()
+    owner._zone_technical_imports_available = lambda: True
+    owner._get_zone_technical_module = lambda name: _FakeMeasurementWorker
+    owner.masks = {"m": 1}
+    owner.ponis = {"p": 2}
+
+    owner.spawn_measurement_thread(row=4, file_map={"det_a": "/tmp/a.npy"})
+
+    assert len(owner._measurement_threads) == 1
+    thread, worker = owner._measurement_threads[0]
+    assert isinstance(thread, _FakeThread)
+    assert isinstance(worker, _FakeMeasurementWorker)
+    assert worker.kwargs["row"] == 4
+    assert worker.kwargs["filenames"] == {"det_a": "/tmp/a.npy"}
+    assert worker.run_called == 1
+
+
 def test_pause_measurements_toggles_pause_state_and_resumes(monkeypatch):
     logger, _warnings = _patch_pm(monkeypatch)
     resumed = []
@@ -423,6 +539,58 @@ def test_pause_measurements_toggles_pause_state_and_resumes(monkeypatch):
     assert owner.pause_btn.text == "Pause"
     assert resumed == [True]
     assert len(logger.calls) >= 2
+
+
+def test_measurement_finished_advances_progress_and_calls_next_point(monkeypatch):
+    _patch_pm(monkeypatch)
+    next_calls = []
+    owner = _ResultsHarness()
+    owner.stopped = False
+    owner.paused = False
+    owner.current_measurement_sorted_index = 0
+    owner.total_points = 3
+    owner.progressBar = _FakeProgressBar()
+    owner.measurementStartTime = time.time() - 6
+    owner.timeRemainingLabel = _FakeLabel()
+    owner.pause_btn = _FakeButton()
+    owner.stop_btn = _FakeButton()
+    owner.start_btn = _FakeButton()
+    owner.measure_next_point = lambda: next_calls.append(True)
+
+    owner.measurement_finished()
+
+    assert owner.current_measurement_sorted_index == 1
+    assert owner.progressBar.values[-1] == 1
+    assert next_calls == [True]
+    assert "done" in owner.timeRemainingLabel.text
+
+
+def test_measurement_finished_completes_sequence_and_disables_controls(monkeypatch):
+    _patch_pm(monkeypatch)
+    logs = []
+    owner = _ResultsHarness()
+    owner.stopped = False
+    owner.paused = False
+    owner.current_measurement_sorted_index = 0
+    owner.total_points = 1
+    owner.progressBar = _FakeProgressBar()
+    owner.measurementStartTime = time.time() - 2
+    owner.timeRemainingLabel = _FakeLabel()
+    owner.pause_btn = _FakeButton()
+    owner.stop_btn = _FakeButton()
+    owner.start_btn = _FakeButton()
+    owner.skip_btn = _FakeButton()
+    owner._append_measurement_log = lambda message: logs.append(message)
+    owner.measure_next_point = lambda: (_ for _ in ()).throw(RuntimeError("should not run"))
+
+    owner.measurement_finished()
+
+    assert owner.current_measurement_sorted_index == 1
+    assert owner.pause_btn.enabled is False
+    assert owner.stop_btn.enabled is False
+    assert owner.start_btn.enabled is True
+    assert owner.skip_btn.enabled is False
+    assert "[CAPTURE] Measurement sequence complete" in logs
 
 
 def test_skip_current_point_returns_early_for_stopped_or_invalid_bounds(monkeypatch):
@@ -502,7 +670,7 @@ def test_stop_measurements_resets_ui_state(monkeypatch):
     assert owner.stopped is True
     assert owner.paused is False
     assert owner.current_measurement_sorted_index == 0
-    assert owner.progressBar.value == 0
+    assert owner.progressBar.values[-1] == 0
     assert owner.timeRemainingLabel.text == "Measurement stopped."
     assert owner.start_btn.enabled is True
     assert owner.pause_btn.text == "Pause"
@@ -510,6 +678,116 @@ def test_stop_measurements_resets_ui_state(monkeypatch):
     assert owner.stop_btn.enabled is False
     assert owner.skip_btn.enabled is False
     assert any(level == "info" for level, _args, _kwargs in logger.calls)
+
+
+def test_on_capture_finished_failure_marks_session_point(monkeypatch):
+    _patch_pm(monkeypatch, with_ui=True)
+    logs = []
+    failed_calls = []
+    owner = _ResultsHarness()
+    owner.current_measurement_sorted_index = 0
+    owner._current_session_point_index = lambda: 5
+    owner.session_manager = SimpleNamespace(
+        is_session_active=lambda: True,
+        fail_point_measurement=lambda **kwargs: failed_calls.append(kwargs),
+    )
+    owner._append_measurement_log = lambda message: logs.append(message)
+
+    owner.on_capture_finished(False, {"det_a": "/tmp/a.npy"})
+
+    assert failed_calls and failed_calls[0]["point_index"] == 5
+    assert failed_calls[0]["reason"] == "capture_failed"
+    assert "[CAPTURE] Point 5: capture failed" in logs
+    assert "[SESSION] Point 5: marked failed in session container" in logs
+
+
+def test_on_capture_finished_success_without_session_spawns_postprocess(monkeypatch):
+    _patch_pm(monkeypatch, with_ui=True)
+    spawned = []
+    owner = _ResultsHarness()
+    owner.current_measurement_sorted_index = 0
+    owner.sorted_indices = [12]
+    owner.session_manager = None
+    owner.config = {
+        "detectors": [
+            {
+                "alias": "det_a",
+                "id": "A1",
+                "type": "pixet",
+                "size": [256, 256],
+                "pixel_size_um": 55,
+                "faulty_pixels": [],
+            }
+        ]
+    }
+    owner.state_measurements = {
+        "measurements_meta": {},
+        "measurement_points": [{"unique_id": "1_deadbeef"}],
+    }
+    owner._x_mm = 1.5
+    owner._y_mm = -2.5
+    owner._base_name = "sample"
+    owner.integration_time = 0.25
+    owner.calibration_group_hash = "group-hash"
+    owner._dump_state_measurements = lambda: None
+    owner.state_path_measurements = "/tmp/state.json"
+    owner.spawn_measurement_thread = lambda row, file_map: spawned.append((row, dict(file_map)))
+    owner._point_item = _FakeBrushItem()
+    owner._zone_item = _FakeBrushItem()
+    owner.measurement_finished = lambda: None
+    owner._append_measurement_log = lambda message: None
+
+    owner.on_capture_finished(True, {"det_a": "/tmp/det_a.npy"})
+
+    assert "det_a.npy" in owner.state_measurements["measurements_meta"]
+    meta = owner.state_measurements["measurements_meta"]["det_a.npy"]
+    assert meta["unique_id"] == "1_deadbeef"
+    assert meta["CALIBRATION_GROUP_HASH"] == "group-hash"
+    assert spawned == [(12, {"det_a": "/tmp/det_a.npy"})]
+    assert owner._point_item.brushes
+    assert owner._zone_item.brushes
+    assert _FakeQTimer.calls and _FakeQTimer.calls[-1][0] == 1000
+
+
+def test_on_capture_finished_session_write_failure_marks_point_failed(monkeypatch):
+    _patch_pm(monkeypatch, with_ui=True)
+    spawned = []
+    failed_calls = []
+    session_manager = SimpleNamespace(
+        session_path="/tmp/session.h5",
+        is_session_active=lambda: True,
+        fail_point_measurement=lambda **kwargs: failed_calls.append(kwargs),
+    )
+    owner = _ResultsHarness()
+    owner.current_measurement_sorted_index = 0
+    owner._current_session_point_index = lambda: 3
+    owner.sorted_indices = [0]
+    owner.session_manager = session_manager
+    owner.config = {"detectors": [{"alias": "det_a", "id": "A1"}]}
+    owner.detector_controller = {}
+    owner.state_measurements = {
+        "measurements_meta": {},
+        "measurement_points": [{"unique_id": "3_deadbeef"}],
+    }
+    owner._x_mm = 0.0
+    owner._y_mm = 0.0
+    owner._base_name = "sample"
+    owner.integration_time = 1.0
+    owner._timestamp = "20260305_120000"
+    owner._dump_state_measurements = lambda: None
+    owner.state_path_measurements = "/tmp/state.json"
+    owner.spawn_measurement_thread = lambda row, file_map: spawned.append((row, dict(file_map)))
+    owner._point_item = _FakeBrushItem()
+    owner._zone_item = _FakeBrushItem()
+    owner.measurement_finished = lambda: None
+    owner._append_measurement_log = lambda message: None
+
+    owner.on_capture_finished(True, {"det_a": "/tmp/missing_file.npy"})
+
+    reasons = [call["reason"] for call in failed_calls]
+    assert "capture_success_without_payload" in reasons
+    assert any(reason.startswith("h5_write_failed:") for reason in reasons)
+    assert spawned == [(0, {"det_a": "/tmp/missing_file.npy"})]
 
 
 def test_confirm_poni_settings_warns_when_active_detector_is_missing_calibration(monkeypatch):
