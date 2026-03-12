@@ -323,13 +323,25 @@ def test_load_technical_files_without_container(qapp, tmp_path, monkeypatch):
         "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
         "dev_active_detectors": ["det_primary"],
         "active_detectors": ["det_primary"],
+        "technical_folder": str(tmp_path / "technical_storage"),
+        "technical_temp_folder": str(tmp_path / "technical_temp"),
     }
     harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_raw")
     harness.show()
     qapp.processEvents()
 
     monkeypatch.setattr(
-        QFileDialog,
+        harness,
+        "configure_detector_distances",
+        lambda: setattr(harness, "_detector_distances", {"det_primary": 17.0}),
+    )
+    monkeypatch.setattr(
+        harness,
+        "update_active_technical_container_poni",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        technical_measurements.QFileDialog,
         "getOpenFileNames",
         staticmethod(lambda *a, **k: (raw_files, "NumPy Arrays (*.npy)")),
     )
@@ -337,8 +349,7 @@ def test_load_technical_files_without_container(qapp, tmp_path, monkeypatch):
     harness.load_technical_files()
     qapp.processEvents()
 
-    # File-based loading is removed in container-first workflow.
-    assert harness.auxTable.rowCount() == 0
+    assert harness.auxTable.rowCount() == 4
 
 
 def test_open_existing_session_container_updates_state(qapp, tmp_path, monkeypatch):
@@ -373,6 +384,53 @@ def test_open_existing_session_container_updates_state(qapp, tmp_path, monkeypat
     assert harness.session_manager.sample_id == "SAMPLE_LOAD_001"
     assert harness.session_manager.session_id == session_id
     assert harness.status_updates == 1
+
+
+def test_technical_event_log_is_persisted_to_active_technical_container(qapp, tmp_path):
+    technical_path = _make_technical_container(tmp_path / "technical_log_sink")
+    config = {
+        "DEV": True,
+        "detectors": [
+            {"id": "det_primary", "alias": "PRIMARY"},
+            {"id": "det_secondary", "alias": "SECONDARY"},
+        ],
+        "dev_active_detectors": ["det_primary", "det_secondary"],
+        "active_detectors": ["det_primary", "det_secondary"],
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_log_sink")
+    harness._set_active_technical_container(str(technical_path))
+
+    harness._log_technical_event("persist-runtime-log")
+
+    logs_txt_path = f"{schema.GROUP_RUNTIME}/difra_logs_txt"
+    with h5py.File(technical_path, "r") as h5f:
+        assert logs_txt_path in h5f
+        ds = h5f[logs_txt_path]
+        value = ds[()]
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        else:
+            value = str(value)
+        assert "persist-runtime-log" in value
+        assert " | TECH | " in value
+        assert str(ds.attrs.get("format", "")) == "txt"
+
+
+def test_session_logs_forwarded_to_technical_runtime_sink():
+    harness = _SessionLoadHarness(config={"operator_id": "sad"})
+    forwarded = []
+    harness._append_runtime_log_to_active_technical_container = (
+        lambda message, **kwargs: (forwarded.append((message, kwargs)), True)[1]
+    )
+
+    harness._append_session_log("session-msg")
+    harness._append_technical_log("tech-msg")
+
+    assert len(forwarded) == 2
+    assert forwarded[0][0] == "[SESSION] session-msg"
+    assert forwarded[0][1].get("channel") == "SESSION"
+    assert forwarded[1][0] == "[TECH] tech-msg"
+    assert forwarded[1][1].get("channel") == "TECH"
 
 
 def test_restore_session_enables_attenuation_checkbox_when_i0_exists(
@@ -1015,6 +1073,35 @@ def test_file_backed_aux_rows_still_require_double_click(qapp, tmp_path, monkeyp
     assert opened == [(0, harness.AUX_COL_FILE)]
 
 
+def test_on_new_technical_container_requests_empty_container(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    config = {
+        "DEV": True,
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+        "dev_active_detectors": ["det_primary"],
+        "active_detectors": ["det_primary"],
+        "operator_id": "sad",
+    }
+    harness = _SessionAwareTechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_new")
+    harness._detector_distances = {"det_primary": 17.0}
+    harness.show()
+    qapp.processEvents()
+
+    calls = []
+
+    def _fake_create(*, clear_table=False):
+        calls.append(bool(clear_table))
+        return tmp_path / "technical_new.nxs.h5"
+
+    monkeypatch.setattr(harness, "_create_new_active_technical_container", _fake_create)
+
+    harness.on_new_technical_container()
+    qapp.processEvents()
+
+    assert calls == [True]
+
+
 def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_path):
     technical_folder = tmp_path / "technical_replace"
     archive_folder = tmp_path / "archive" / "technical"
@@ -1035,7 +1122,93 @@ def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_pa
     assert archived_path.parent.parent == archive_folder
 
 
-def test_new_technical_container_forces_active_session_archive_unsent(
+def test_replacement_archive_remaps_aux_table_h5refs_to_archived_file(qapp, tmp_path):
+    technical_folder = tmp_path / "technical_replace_refs"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+    lock_container(tech_path, user_id="sad")
+
+    harness = _TechnicalLoadHarness(
+        config={"technical_archive_folder": str(archive_folder)},
+        work_dir=technical_folder,
+    )
+
+    harness.auxTable.insertRow(0)
+    file_item = technical_measurements.QTableWidgetItem("PRIMARY: from_container")
+    dataset_path = "/runtime/technical_aux_rows/row_000001/processed_signal"
+    file_item.setData(
+        technical_measurements.Qt.UserRole,
+        f"h5ref://{tech_path}#{dataset_path}",
+    )
+    file_item.setData(
+        harness._aux_source_info_role(),
+        {
+            "source_kind": "container",
+            "source_path": "",
+            "container_path": str(tech_path),
+            "dataset_path": dataset_path,
+            "row_id": "row_000001",
+        },
+    )
+    harness.auxTable.setItem(0, harness.AUX_COL_FILE, file_item)
+
+    archived_path = harness._archive_existing_technical_container_for_replacement(
+        tech_path
+    )
+
+    new_ref = str(file_item.data(technical_measurements.Qt.UserRole) or "")
+    assert new_ref == f"h5ref://{archived_path}#{dataset_path}"
+
+    source_info = file_item.data(harness._aux_source_info_role())
+    assert isinstance(source_info, dict)
+    assert source_info.get("container_path") == str(archived_path)
+
+
+def test_archive_active_container_locks_then_archives_container_and_related_files(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_archive_action"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+
+    related_txt = technical_folder / "archive_me.txt"
+    related_poni = technical_folder / "archive_me.poni"
+    related_txt.write_text("raw", encoding="utf-8")
+    related_poni.write_text("Distance: 0.17\n", encoding="utf-8")
+
+    harness = _TechnicalLoadHarness(
+        config={
+            "technical_archive_folder": str(archive_folder),
+            "technical_archive_patterns": ["*.txt", "*.poni"],
+            "operator_id": "sad",
+        },
+        work_dir=technical_folder,
+    )
+    harness._set_active_technical_container(str(tech_path))
+    lock_invocations = []
+    monkeypatch.setattr(
+        harness,
+        "lock_active_technical_container",
+        lambda: (lock_invocations.append(True), True)[1],
+    )
+
+    archived = harness.archive_active_technical_container()
+
+    assert archived is True
+    assert lock_invocations == [True]
+    assert not tech_path.exists()
+    assert str(getattr(harness, "_active_technical_container_path", "") or "").strip() == ""
+
+    archived_h5 = list(archive_folder.rglob(tech_path.name))
+    assert len(archived_h5) == 1
+    archive_subdir = archived_h5[0].parent
+    assert (archive_subdir / related_txt.name).exists()
+    assert (archive_subdir / related_poni.name).exists()
+
+
+def test_new_technical_container_forces_active_session_archive_and_upload(
     qapp, tmp_path, monkeypatch
 ):
     technical_folder = tmp_path / "technical_force_close"
@@ -1098,11 +1271,13 @@ def test_new_technical_container_forces_active_session_archive_unsent(
     assert harness._finalize_active_session_for_new_technical_container() is True
     assert harness.session_manager.is_session_active() is False
     assert not session_path.exists()
-    assert warnings
-    assert "UNSENT" in warnings[-1]
+    assert warnings == []
 
     archived_sessions = sorted(measurements_archive.rglob("session_*.nxs.h5"))
     assert len(archived_sessions) == 1
     archived_session = archived_sessions[0]
-    assert harness.session_manager.container_manager.get_transfer_status(archived_session) == "unsent"
+    assert harness.session_manager.container_manager.get_transfer_status(archived_session) == "sent"
     assert harness.session_manager.container_manager.is_container_locked(archived_session)
+    with h5py.File(archived_session, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "success"
+        assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_")
