@@ -19,11 +19,46 @@ from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 
 class H5ManagementLockingMixin:
+    CONTAINER_STATE_ATTR = "container_state"
+    CONTAINER_STATE_REASON_ATTR = "container_state_reason"
+    CONTAINER_STATE_UPDATED_ATTR = "container_state_updated_at"
+    STATE_DRAFT = "draft"
+    STATE_PENDING_DISTANCES = "pending_distances"
+    STATE_PENDING_PONI = "pending_poni"
+    STATE_PENDING_PONI_REVIEW = "pending_poni_review"
+    STATE_READY_TO_LOCK = "ready_to_lock"
+    STATE_REJECTED_BLOCKED = "rejected_blocked"
+    STATE_VALIDATION_FAILED = "validation_failed"
+    STATE_LOCKED = "locked"
+    STATE_ARCHIVED = "archived"
+    VALID_CONTAINER_STATES = frozenset(
+        {
+            STATE_DRAFT,
+            STATE_PENDING_DISTANCES,
+            STATE_PENDING_PONI,
+            STATE_PENDING_PONI_REVIEW,
+            STATE_READY_TO_LOCK,
+            STATE_REJECTED_BLOCKED,
+            STATE_VALIDATION_FAILED,
+            STATE_LOCKED,
+            STATE_ARCHIVED,
+        }
+    )
     PONI_REVIEW_STATUS_ATTR = "poni_center_review_status"
     PONI_REVIEW_USER_ATTR = "poni_center_review_user"
     PONI_REVIEW_TS_ATTR = "poni_center_review_timestamp"
     PONI_REVIEW_IN_ZONE_ATTR = "poni_center_in_allowed_zone"
     PONI_REVIEW_NOTES_ATTR = "poni_center_review_notes"
+    PONI_REVIEW_REASON_ATTR = "poni_center_review_reason"
+    VALID_PONI_REJECT_REASONS = frozenset(
+        {
+            "user_rejected_preview",
+            "center_out_of_zone",
+            "review_unavailable",
+            "reload_declined_after_reject",
+            "other",
+        }
+    )
 
     @staticmethod
     def _to_float_or_none(value):
@@ -48,6 +83,193 @@ class H5ManagementLockingMixin:
         h5_management_lock_actions.QMessageBox = QMessageBox
         h5_management_lock_actions.QInputDialog = QInputDialog
         h5_management_lock_actions.get_container_manager = get_container_manager
+
+    def _write_container_attrs(self, container_path: Path, attrs: dict) -> bool:
+        import h5py
+
+        path = Path(container_path)
+        if not path.exists():
+            return False
+
+        original_mode = None
+        try:
+            original_mode = path.stat().st_mode
+            if not os.access(path, os.W_OK):
+                os.chmod(path, original_mode | 0o200)
+        except Exception:
+            original_mode = None
+
+        try:
+            with h5py.File(path, "a") as h5f:
+                for key, value in dict(attrs or {}).items():
+                    h5f.attrs[str(key)] = value
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to write container attributes for %s: %s",
+                path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            if original_mode is not None:
+                try:
+                    os.chmod(path, original_mode)
+                except Exception:
+                    logger.debug(
+                        "Suppressed exception while restoring container mode after attr write",
+                        exc_info=True,
+                    )
+
+    def _set_container_state(self, container_path: Path, *, state: str, reason: str = "") -> bool:
+        normalized_state = str(state or "").strip().lower()
+        if normalized_state not in self.VALID_CONTAINER_STATES:
+            logger.warning("Refusing invalid technical container state: %s", state)
+            return False
+
+        return self._write_container_attrs(
+            Path(container_path),
+            {
+                self.CONTAINER_STATE_ATTR: normalized_state,
+                self.CONTAINER_STATE_REASON_ATTR: str(reason or "").strip(),
+                self.CONTAINER_STATE_UPDATED_ATTR: time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+
+    def _set_active_container_state(self, *, state: str, reason: str = "") -> bool:
+        active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+        if not active_path:
+            return False
+        return self._set_container_state(Path(active_path), state=state, reason=reason)
+
+    def _container_has_distance_metadata(self, container_path: Path) -> bool:
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                distance_attr = h5f.attrs.get(schema.ATTR_DISTANCE_CM)
+                if distance_attr is not None:
+                    try:
+                        float(distance_attr)
+                        return True
+                    except Exception:
+                        pass
+
+                tech_group = h5f.get(schema.GROUP_TECHNICAL)
+                if tech_group is None:
+                    tech_group = h5f.get(f"{schema.GROUP_CALIBRATION_SNAPSHOT}/events")
+                if tech_group is not None:
+                    for event_name in tech_group.keys():
+                        event_group = tech_group[event_name]
+                        for detector_name in event_group.keys():
+                            detector_group = event_group[detector_name]
+                            distance_attr = detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
+                            if distance_attr is not None:
+                                try:
+                                    float(distance_attr)
+                                    return True
+                                except Exception:
+                                    pass
+
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is not None:
+                    for ds_name in poni_group.keys():
+                        distance_attr = poni_group[ds_name].attrs.get(schema.ATTR_DISTANCE_CM)
+                        if distance_attr is not None:
+                            try:
+                                float(distance_attr)
+                                return True
+                            except Exception:
+                                pass
+        except Exception:
+            return False
+
+        return False
+
+    def _infer_container_state(self, container_path: Path) -> str:
+        path = Path(container_path)
+        try:
+            import h5py
+
+            with h5py.File(path, "r") as h5f:
+                persisted_state = self._decode_attr_text(
+                    h5f.attrs.get(self.CONTAINER_STATE_ATTR, "")
+                ).strip().lower()
+                if persisted_state == self.STATE_ARCHIVED:
+                    return self.STATE_ARCHIVED
+                if persisted_state == self.STATE_VALIDATION_FAILED:
+                    return self.STATE_VALIDATION_FAILED
+        except Exception:
+            pass
+
+        container_manager = get_container_manager(self.config if hasattr(self, "config") else None)
+        try:
+            if container_manager.is_container_locked(path):
+                return self.STATE_LOCKED
+        except Exception:
+            pass
+
+        aliases = []
+        collect_aliases = getattr(self, "_collect_lock_detector_aliases", None)
+        if callable(collect_aliases):
+            try:
+                aliases = [str(alias).strip() for alias in (collect_aliases(path) or []) if str(alias).strip()]
+            except Exception:
+                aliases = []
+
+        distance_map = {}
+        get_distance_map = getattr(self, "_distance_map_by_alias", None)
+        if callable(get_distance_map):
+            try:
+                distance_map = {
+                    str(alias).strip(): float(value)
+                    for alias, value in (get_distance_map() or {}).items()
+                    if str(alias).strip()
+                }
+            except Exception:
+                distance_map = {}
+
+        if aliases:
+            missing = [alias for alias in aliases if alias not in distance_map]
+            if missing:
+                return self.STATE_PENDING_DISTANCES
+        elif not self._container_has_distance_metadata(path):
+            return self.STATE_PENDING_DISTANCES
+
+        has_poni_datasets = False
+        has_poni = getattr(self, "_container_has_poni_datasets", None)
+        if callable(has_poni):
+            try:
+                has_poni_datasets = bool(has_poni(path))
+            except Exception:
+                has_poni_datasets = False
+        if not has_poni_datasets:
+            return self.STATE_PENDING_PONI
+
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        validation_enabled = isinstance(validation_cfg, dict) and bool(
+            validation_cfg.get("enabled", False)
+        )
+        if not validation_enabled:
+            return self.STATE_READY_TO_LOCK
+
+        review_state = self._read_poni_review_state(path)
+        if review_state.get("status") == "rejected":
+            return self.STATE_REJECTED_BLOCKED
+        if (
+            review_state.get("status") == "accepted"
+            and bool(review_state.get("in_zone", False))
+        ):
+            return self.STATE_READY_TO_LOCK
+        return self.STATE_PENDING_PONI_REVIEW
+
+    def _sync_container_state(self, container_path: Path, *, reason: str = "auto_sync") -> str:
+        inferred = self._infer_container_state(Path(container_path))
+        self._set_container_state(Path(container_path), state=inferred, reason=reason)
+        return inferred
 
     @staticmethod
     def _build_fake_poni_content(
@@ -479,6 +701,9 @@ class H5ManagementLockingMixin:
                 notes = self._decode_attr_text(
                     h5f.attrs.get(self.PONI_REVIEW_NOTES_ATTR, "")
                 ).strip()
+                reject_reason = self._decode_attr_text(
+                    h5f.attrs.get(self.PONI_REVIEW_REASON_ATTR, "")
+                ).strip()
                 raw_in_zone = h5f.attrs.get(self.PONI_REVIEW_IN_ZONE_ATTR, False)
                 in_zone = bool(raw_in_zone)
         except Exception:
@@ -488,6 +713,7 @@ class H5ManagementLockingMixin:
                 "timestamp": "",
                 "in_zone": False,
                 "notes": "",
+                "reject_reason": "",
             }
 
         return {
@@ -496,6 +722,7 @@ class H5ManagementLockingMixin:
             "timestamp": timestamp,
             "in_zone": in_zone,
             "notes": notes,
+            "reject_reason": reject_reason,
         }
 
     def _write_poni_review_state(
@@ -505,47 +732,36 @@ class H5ManagementLockingMixin:
         status: str,
         in_zone: bool,
         notes: str = "",
+        reject_reason: str = "",
     ) -> bool:
-        import h5py
-
         review_status = str(status or "pending").strip().lower() or "pending"
         review_user = self._current_operator_id_for_review()
         review_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         review_notes = str(notes or "").strip()
+        reason_code = str(reject_reason or "").strip().lower()
+        if review_status == "rejected":
+            if not reason_code:
+                logger.warning(
+                    "Refusing to persist rejected PONI review without reject_reason for %s",
+                    container_path,
+                )
+                return False
+            if reason_code not in self.VALID_PONI_REJECT_REASONS:
+                reason_code = "other"
+        else:
+            reason_code = ""
 
-        original_mode = None
-        try:
-            original_mode = Path(container_path).stat().st_mode
-            if not os.access(container_path, os.W_OK):
-                os.chmod(container_path, original_mode | 0o200)
-        except Exception:
-            original_mode = None
-
-        try:
-            with h5py.File(container_path, "a") as h5f:
-                h5f.attrs[self.PONI_REVIEW_STATUS_ATTR] = review_status
-                h5f.attrs[self.PONI_REVIEW_USER_ATTR] = review_user
-                h5f.attrs[self.PONI_REVIEW_TS_ATTR] = review_timestamp
-                h5f.attrs[self.PONI_REVIEW_IN_ZONE_ATTR] = bool(in_zone)
-                h5f.attrs[self.PONI_REVIEW_NOTES_ATTR] = review_notes
-            return True
-        except Exception as exc:
-            logger.warning(
-                "Failed to write PONI review state for %s: %s",
-                container_path,
-                exc,
-                exc_info=True,
-            )
-            return False
-        finally:
-            if original_mode is not None:
-                try:
-                    os.chmod(container_path, original_mode)
-                except Exception:
-                    logger.debug(
-                        "Suppressed exception while restoring container mode after PONI review write",
-                        exc_info=True,
-                    )
+        return self._write_container_attrs(
+            Path(container_path),
+            {
+                self.PONI_REVIEW_STATUS_ATTR: review_status,
+                self.PONI_REVIEW_USER_ATTR: review_user,
+                self.PONI_REVIEW_TS_ATTR: review_timestamp,
+                self.PONI_REVIEW_IN_ZONE_ATTR: bool(in_zone),
+                self.PONI_REVIEW_NOTES_ATTR: review_notes,
+                self.PONI_REVIEW_REASON_ATTR: reason_code,
+            },
+        )
 
     def _run_poni_center_review_workflow(
         self,
@@ -570,6 +786,11 @@ class H5ManagementLockingMixin:
 
         decision = show_preview(str(container_path), decision_mode=True)
         if decision is None:
+            self._set_container_state(
+                Path(container_path),
+                state=self.STATE_PENDING_PONI_REVIEW,
+                reason="review_unavailable",
+            )
             QMessageBox.warning(
                 self,
                 "PONI Review Required",
@@ -587,11 +808,23 @@ class H5ManagementLockingMixin:
             )
             in_zone = len(center_errors) == 0
             if in_zone:
-                self._write_poni_review_state(
+                persisted = self._write_poni_review_state(
                     Path(container_path),
                     status="accepted",
                     in_zone=True,
                     notes="accepted_in_valid_zone",
+                )
+                if not persisted:
+                    QMessageBox.warning(
+                        self,
+                        "PONI Review Error",
+                        "Failed to persist PONI review acceptance. Lock cannot continue.",
+                    )
+                    return False
+                self._set_container_state(
+                    Path(container_path),
+                    state=self.STATE_READY_TO_LOCK,
+                    reason="poni_review_accepted_in_zone",
                 )
                 self._log_technical_event(
                     f"PONI center review accepted for {container_id}"
@@ -599,11 +832,24 @@ class H5ManagementLockingMixin:
                 return True
 
             # Hard fail: user cannot proceed with an out-of-zone center acceptance.
-            self._write_poni_review_state(
+            persisted = self._write_poni_review_state(
                 Path(container_path),
                 status="rejected",
                 in_zone=False,
                 notes="accept_attempt_rejected_out_of_zone",
+                reject_reason="center_out_of_zone",
+            )
+            if not persisted:
+                QMessageBox.warning(
+                    self,
+                    "PONI Review Error",
+                    "Failed to persist reject reason for invalid PONI center. Lock cannot continue.",
+                )
+                return False
+            self._set_container_state(
+                Path(container_path),
+                state=self.STATE_REJECTED_BLOCKED,
+                reason="center_out_of_zone",
             )
             QMessageBox.critical(
                 self,
@@ -623,6 +869,11 @@ class H5ManagementLockingMixin:
                 if retry == QMessageBox.Yes:
                     return bool(self._launch_poni_update_for_container(Path(container_path)))
 
+            self._set_container_state(
+                Path(container_path),
+                state=self.STATE_REJECTED_BLOCKED,
+                reason="reload_declined_after_reject",
+            )
             QMessageBox.warning(
                 self,
                 "Lock Blocked",
@@ -631,11 +882,24 @@ class H5ManagementLockingMixin:
             )
             return False
 
-        self._write_poni_review_state(
+        persisted = self._write_poni_review_state(
             Path(container_path),
             status="rejected",
             in_zone=False,
             notes="rejected_by_user",
+            reject_reason="user_rejected_preview",
+        )
+        if not persisted:
+            QMessageBox.warning(
+                self,
+                "PONI Review Error",
+                "Failed to persist reject reason. Lock cannot continue.",
+            )
+            return False
+        self._set_container_state(
+            Path(container_path),
+            state=self.STATE_REJECTED_BLOCKED,
+            reason="user_rejected_preview",
         )
         self._log_technical_event(
             f"PONI center review rejected for {container_id}"
@@ -652,6 +916,11 @@ class H5ManagementLockingMixin:
             if retry == QMessageBox.Yes:
                 return bool(self._launch_poni_update_for_container(Path(container_path)))
 
+        self._set_container_state(
+            Path(container_path),
+            state=self.STATE_REJECTED_BLOCKED,
+            reason="reload_declined_after_reject",
+        )
         QMessageBox.warning(
             self,
             "Lock Blocked",
@@ -976,6 +1245,11 @@ class H5ManagementLockingMixin:
                 "Validation Failed",
                 message,
             )
+            self._set_container_state(
+                Path(container_path),
+                state=self.STATE_VALIDATION_FAILED,
+                reason="lock_validation_failed",
+            )
             self._log_technical_event(
                 f"Lock blocked by validation errors for {container_id}: {len(errors)} error(s)"
             )
@@ -1000,10 +1274,20 @@ class H5ManagementLockingMixin:
             review_state.get("status") == "accepted"
             and bool(review_state.get("in_zone", False))
         ):
+            self._set_container_state(
+                Path(container_path),
+                state=self.STATE_READY_TO_LOCK,
+                reason="poni_review_confirmed",
+            )
             return True
 
         self._log_technical_event(
             f"PONI center review must be re-confirmed before lock for {container_id}"
+        )
+        self._set_container_state(
+            Path(container_path),
+            state=self.STATE_PENDING_PONI_REVIEW,
+            reason="poni_review_reconfirmation_required",
         )
         return bool(
             self._run_poni_center_review_workflow(

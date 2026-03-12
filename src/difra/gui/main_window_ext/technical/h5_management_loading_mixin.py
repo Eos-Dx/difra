@@ -101,6 +101,15 @@ class H5ManagementLoadingMixin:
                     exc,
                     exc_info=True,
                 )
+        sync_state = getattr(self, "_sync_container_state", None)
+        if callable(sync_state):
+            try:
+                sync_state(Path(file_path), reason="active_container_set")
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception while syncing container state on activation",
+                    exc_info=True,
+                )
 
     def _active_technical_container_path_obj(self):
         raw = str(getattr(self, "_active_technical_container_path", "") or "").strip()
@@ -298,6 +307,13 @@ class H5ManagementLoadingMixin:
             if hasattr(self, "config") and isinstance(self.config, dict):
                 operator_id = self.config.get("operator_id")
             container_manager.lock_container(existing_path, user_id=operator_id)
+            set_state = getattr(self, "_set_container_state", None)
+            if callable(set_state):
+                set_state(
+                    Path(existing_path),
+                    state=getattr(self, "STATE_LOCKED", "locked"),
+                    reason="locked_before_archive",
+                )
 
         archived = self._archive_existing_technical_container_for_replacement(
             existing_path=existing_path,
@@ -362,6 +378,13 @@ class H5ManagementLoadingMixin:
 
         destination = archive_dir / Path(existing_path).name
         shutil.move(str(existing_path), str(destination))
+        set_state = getattr(self, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(destination),
+                state=getattr(self, "STATE_ARCHIVED", "archived"),
+                reason="archived_for_replacement",
+            )
         archived_count = 0
         archive_technical_data_files = getattr(
             container_manager,
@@ -781,6 +804,9 @@ class H5ManagementLoadingMixin:
                 with h5py.File(active_path, "a") as h5f:
                     h5f.attrs[schema.ATTR_DISTANCE_CM] = root_distance
 
+            sync_state = getattr(self, "_sync_container_state", None)
+            if callable(sync_state):
+                sync_state(Path(active_path), reason="table_sync_completed")
             self._log_technical_event(
                 f"Technical container synced from table: {active_path.name} (rows={len(runtime_rows)})"
             )
@@ -802,6 +828,9 @@ class H5ManagementLoadingMixin:
         if active_path is None:
             return
         self._sync_active_technical_container_from_table(show_errors=False)
+        sync_state = getattr(self, "_sync_container_state", None)
+        if callable(sync_state):
+            sync_state(Path(active_path), reason="distances_updated")
 
     def _extract_rows_from_runtime_group(self, h5f, schema, h5_path: str):
         candidates = [
@@ -1160,6 +1189,9 @@ class H5ManagementLoadingMixin:
         try:
             self._populate_aux_table_from_h5(file_path)
             self._set_active_technical_container(file_path)
+            sync_state = getattr(self, "_sync_container_state", None)
+            if callable(sync_state):
+                sync_state(Path(file_path), reason="container_loaded")
 
             if hasattr(self, "on_technical_container_loaded"):
                 try:
