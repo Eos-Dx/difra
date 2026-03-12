@@ -166,6 +166,26 @@ Edit `src/difra/resources/config/global.json`:
 - Apply masks to detector images
 - View real-time detector output
 
+Technical container state machine (`container_state` attr):
+
+| State | Meaning | Typical trigger |
+|---|---|---|
+| `pending_distances` | Distances not confirmed yet | New container created, distance step skipped/cancelled |
+| `pending_poni` | Distances are set, PONI still missing/sync pending | Distances confirmed, before PONI upload |
+| `pending_poni_review` | PONI loaded, user review required | PONI sync finished / re-confirmation required |
+| `ready_to_lock` | Review accepted and center in valid zone | Accept in preview + center validation passed |
+| `rejected_blocked` | Lock hard-blocked by reject/invalid center | Reject or out-of-zone accept attempt without successful reload |
+| `validation_failed` | Container validation failed before lock | Lock attempted and validator returned errors |
+| `locked` | Container is locked for production use | Successful `Lock Container` |
+| `archived` | Container moved to archive | Successful archive flow |
+
+Reject reason schema (`poni_center_review_reason`):
+- `user_rejected_preview`
+- `center_out_of_zone`
+- `review_unavailable`
+- `reload_declined_after_reject`
+- `other`
+
 #### Session Queue and Archive
 - Session tab shows active session info plus queue/archive tables
 - Session tab lists all `session_*.h5` containers in measurements folder
