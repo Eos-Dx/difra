@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from pathlib import Path
@@ -7,6 +8,9 @@ def _tm():
     from difra.gui.main_window_ext import technical_measurements as tm
 
     return tm
+
+
+logger = logging.getLogger(__name__)
 
 
 class TechnicalAuxTableMixin:
@@ -35,15 +39,21 @@ class TechnicalAuxTableMixin:
         if integration_match:
             try:
                 metadata["integration_time_ms"] = float(integration_match.group(1)) * 1000.0
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in aux_table_mixin.py",
+                    exc_info=True,
+                )
 
         frames_match = re.search(r"(?:^|_)(\d+)frames(?:_|$)", stem, flags=re.IGNORECASE)
         if frames_match:
             try:
                 metadata["n_frames"] = int(frames_match.group(1))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in aux_table_mixin.py",
+                    exc_info=True,
+                )
 
         thickness_match = re.search(
             r"(?:^|_)(\d+(?:\.\d+)?)mm(?:_|$)",
@@ -53,8 +63,11 @@ class TechnicalAuxTableMixin:
         if thickness_match:
             try:
                 metadata["thickness"] = float(thickness_match.group(1))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in aux_table_mixin.py",
+                    exc_info=True,
+                )
 
         return metadata
 
@@ -76,8 +89,11 @@ class TechnicalAuxTableMixin:
                 stored = file_item.data(self._aux_metadata_role())
                 if isinstance(stored, dict):
                     metadata.update(stored)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
 
         if include_filename_fallback:
             parsed = self._extract_capture_metadata_from_path(str(file_path or ""))
@@ -109,8 +125,11 @@ class TechnicalAuxTableMixin:
                     "File name should include timestamp before detector alias\n"
                     "Expected pattern like: name_YYYYMMDD_HHMMSS_..._ALIAS.ext",
                 )
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
 
         row = self.auxTable.rowCount()
         self.auxTable.insertRow(row)
@@ -188,8 +207,11 @@ class TechnicalAuxTableMixin:
                                 f"Added {inferred_type} measurement: {alias} "
                                 f"({os.path.basename(str(npy_path or ''))})"
                             )
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
 
         self._on_aux_row_updated()
 
@@ -219,8 +241,11 @@ class TechnicalAuxTableMixin:
             active_aliases = self._get_active_detector_aliases()
             if alias in active_aliases:
                 return alias
-        except Exception:
-            pass
+        except (AttributeError, TypeError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
         return alias
 
     def _infer_type_from_filename(self, file_path: str) -> str:
@@ -240,15 +265,124 @@ class TechnicalAuxTableMixin:
 
     def load_technical_files(self):
         tm = _tm()
+        folder = ""
+        current_folder = getattr(self, "_current_technical_output_folder", None)
+        if callable(current_folder):
+            try:
+                folder = str(current_folder() or "")
+            except Exception:
+                folder = ""
+        if not folder:
+            try:
+                folder = str((self.folderLE.text() or "").strip())
+            except Exception:
+                folder = ""
+        if not folder:
+            folder = str(Path.cwd())
+
+        files, _selected_filter = tm.QFileDialog.getOpenFileNames(
+            self,
+            "Load Technical Files (Recovery)",
+            folder,
+            "Technical Files (*.npy *.txt);;NumPy Arrays (*.npy);;Text Files (*.txt);;All Files (*)",
+        )
+        if not files:
+            self._log_technical_event("Technical file recovery cancelled by user")
+            return
+
+        valid_files = []
+        for file_path in files:
+            p = Path(str(file_path or "").strip())
+            if not p.exists() or not p.is_file():
+                continue
+            if p.suffix.lower() not in (".npy", ".txt"):
+                continue
+            valid_files.append(str(p))
+
+        if not valid_files:
+            tm.QMessageBox.warning(
+                self,
+                "No Valid Files",
+                "No valid technical files selected.\n\nSupported formats: .npy, .txt",
+            )
+            return
+
+        replace_existing = tm.QMessageBox.Yes
+        if hasattr(self, "auxTable") and self.auxTable is not None and self.auxTable.rowCount() > 0:
+            replace_existing = tm.QMessageBox.question(
+                self,
+                "Replace Current Technical Rows",
+                "Recovery mode will replace current technical rows with selected files.\n\nContinue?",
+                tm.QMessageBox.Yes | tm.QMessageBox.No,
+                tm.QMessageBox.No,
+            )
+            if replace_existing != tm.QMessageBox.Yes:
+                self._log_technical_event("Technical file recovery cancelled: replace not confirmed")
+                return
+
+        self._restoring_aux_table = True
+        try:
+            if replace_existing == tm.QMessageBox.Yes:
+                self.auxTable.setRowCount(0)
+
+            for file_path in sorted(valid_files):
+                alias = self._infer_alias_from_filename(file_path)
+                technical_type = self._infer_type_from_filename(file_path)
+                self._add_aux_item_to_list(
+                    alias or "",
+                    file_path,
+                    source_kind="file",
+                    technical_type=technical_type,
+                    is_primary=True,
+                )
+        finally:
+            self._restoring_aux_table = False
+
+        if hasattr(self, "_sync_active_technical_container_from_table"):
+            setattr(self, "_skip_distance_prompt_once", True)
+            try:
+                synced = bool(self._sync_active_technical_container_from_table(show_errors=True))
+            finally:
+                setattr(self, "_skip_distance_prompt_once", False)
+            if not synced:
+                tm.QMessageBox.warning(
+                    self,
+                    "Recovery Sync Failed",
+                    "Files were loaded into the table, but syncing to active container failed.",
+                )
+                self._log_technical_event("Technical file recovery failed during sync")
+                return
+
+        self._log_technical_event(
+            f"Loaded {len(valid_files)} technical file(s) in recovery mode"
+        )
         tm.QMessageBox.information(
             self,
-            "Removed Workflow",
-            "Loading technical data directly from files is removed.\n"
-            "Use technical container workflow: set distances, measure, and load containers.",
+            "Recovery Mode",
+            "Technical files were loaded in recovery mode.\n\n"
+            "Next steps: confirm distances, then load PONI files.",
         )
-        self._log_technical_event(
-            "Load files action is removed; technical workflow is container-first"
-        )
+
+        # Recovery workflow step: ask distances after file-based reconstruction.
+        configure_distances = getattr(self, "configure_detector_distances", None)
+        if callable(configure_distances):
+            try:
+                setattr(self, "_suppress_distance_auto_container_creation", True)
+                configure_distances()
+            finally:
+                setattr(self, "_suppress_distance_auto_container_creation", False)
+
+        update_poni = getattr(self, "update_active_technical_container_poni", None)
+        if callable(update_poni):
+            reply = tm.QMessageBox.question(
+                self,
+                "Load PONI Files",
+                "Recovery files are loaded.\n\nLoad PONI files now?",
+                tm.QMessageBox.Yes | tm.QMessageBox.No,
+                tm.QMessageBox.Yes,
+            )
+            if reply == tm.QMessageBox.Yes:
+                update_poni()
 
     def build_aux_state(self):
         tm = _tm()
@@ -272,8 +406,11 @@ class TechnicalAuxTableMixin:
                         primary_checkbox = primary_widget.findChild(tm.QCheckBox)
                         if primary_checkbox is not None:
                             is_primary = bool(primary_checkbox.isChecked())
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in aux_table_mixin.py",
+                        exc_info=True,
+                    )
 
                 type_cb = self.auxTable.cellWidget(r, self.AUX_COL_TYPE)
                 type_text = None
@@ -282,8 +419,11 @@ class TechnicalAuxTableMixin:
                         t = type_cb.currentText()
                         if t and t != self.NO_SELECTION_LABEL:
                             type_text = t
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in aux_table_mixin.py",
+                        exc_info=True,
+                    )
 
                 alias_cb = self.auxTable.cellWidget(r, self.AUX_COL_ALIAS)
                 alias_text = None
@@ -292,8 +432,11 @@ class TechnicalAuxTableMixin:
                         a = alias_cb.currentText()
                         if a and a != self.NO_SELECTION_LABEL:
                             alias_text = a
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in aux_table_mixin.py",
+                        exc_info=True,
+                    )
                 rows.append(
                     {
                         "file_path": file_path,
@@ -304,8 +447,8 @@ class TechnicalAuxTableMixin:
                         "source_info": source_info if isinstance(source_info, dict) else {},
                     }
                 )
-        except Exception as e:
-            print(f"Error building aux state: {e}")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+            logger.warning("Error building aux state: %s", e, exc_info=True)
         return rows
 
     def restore_technical_aux_rows(self, rows):
@@ -353,13 +496,16 @@ class TechnicalAuxTableMixin:
                         file_item = self.auxTable.item(rix, self.AUX_COL_FILE)
                         if file_item is not None:
                             file_item.setData(self._aux_metadata_role(), capture_metadata)
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    logger.debug(
+                        "Suppressed exception in aux_table_mixin.py",
+                        exc_info=True,
+                    )
             self._restoring_aux_table = False
             self._on_aux_row_updated()
-        except Exception as e:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
             self._restoring_aux_table = False
-            print(f"Error restoring aux rows: {e}")
+            logger.warning("Error restoring aux rows: %s", e, exc_info=True)
 
     def delete_selected_aux_rows(self):
         try:
@@ -374,11 +520,14 @@ class TechnicalAuxTableMixin:
             for r in rows:
                 try:
                     self.auxTable.removeRow(r)
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError):
+                    logger.debug(
+                        "Suppressed exception in aux_table_mixin.py",
+                        exc_info=True,
+                    )
             self._on_aux_row_updated()
-        except Exception as e:
-            print(f"Error deleting selected aux rows: {e}")
+        except (AttributeError, RuntimeError, TypeError, ValueError) as e:
+            logger.warning("Error deleting selected aux rows: %s", e, exc_info=True)
 
     def eventFilter(self, source, event):
         tm = _tm()
@@ -387,8 +536,11 @@ class TechnicalAuxTableMixin:
                 if event.key() == tm.Qt.Key_Delete:
                     self.delete_selected_aux_rows()
                     return True
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError):
+                logger.debug(
+                    "Suppressed exception in aux_table_mixin.py",
+                    exc_info=True,
+                )
         return super().eventFilter(source, event)
 
     def _get_active_detector_aliases(self):
@@ -413,8 +565,11 @@ class TechnicalAuxTableMixin:
 
             if not isinstance(cb, _QtWidget):
                 cb = _QtComboBox()
-        except Exception:
-            pass
+        except (ImportError, AttributeError, TypeError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
         if hasattr(cb, "addItem"):
             cb.addItem(self.NO_SELECTION_LABEL, None)
             for t in self.TYPE_OPTIONS:
@@ -497,8 +652,11 @@ class TechnicalAuxTableMixin:
 
             if not isinstance(cb, _QtWidget):
                 cb = _QtComboBox()
-        except Exception:
-            pass
+        except (ImportError, AttributeError, TypeError):
+            logger.debug(
+                "Suppressed exception in aux_table_mixin.py",
+                exc_info=True,
+            )
         if hasattr(cb, "addItem"):
             cb.addItem(self.NO_SELECTION_LABEL, None)
             for alias in self._get_active_detector_aliases():
@@ -520,8 +678,11 @@ class TechnicalAuxTableMixin:
         if callable(sync_fn):
             try:
                 sync_fn()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in aux_table_mixin.py",
+                    exc_info=True,
+                )
 
     def refresh_aux_table_alias_models(self):
         aliases = self._get_active_detector_aliases()

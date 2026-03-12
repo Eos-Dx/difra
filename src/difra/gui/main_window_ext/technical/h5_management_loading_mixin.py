@@ -62,8 +62,13 @@ class H5ManagementLoadingMixin:
             if detector_id in by_id:
                 try:
                     by_alias[str(alias)] = float(by_id[detector_id])
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to parse detector distance for alias=%s id=%s: %s",
+                        alias,
+                        detector_id,
+                        exc,
+                    )
         return by_alias
 
     def _collect_poni_data_by_alias(self):
@@ -85,13 +90,17 @@ class H5ManagementLoadingMixin:
             self._active_technical_container_locked = bool(
                 container_manager.is_container_locked(Path(file_path))
             )
-        except Exception:
+        except (AttributeError, OSError, TypeError, ValueError):
             self._active_technical_container_locked = False
         if hasattr(self, "_refresh_technical_output_folder_lock"):
             try:
                 self._refresh_technical_output_folder_lock()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.warning(
+                    "Failed to refresh technical output lock indicator: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     def _active_technical_container_path_obj(self):
         raw = str(getattr(self, "_active_technical_container_path", "") or "").strip()
@@ -99,11 +108,111 @@ class H5ManagementLoadingMixin:
             return None
         return Path(raw)
 
+    def _append_runtime_log_to_active_technical_container(
+        self,
+        message: str,
+        *,
+        channel: str = "",
+        source: str = "gui",
+    ) -> bool:
+        """Append runtime log line to active technical container TXT dataset."""
+        raw_message = str(message or "").strip()
+        if not raw_message:
+            return False
+
+        active_path = self._active_technical_container_path_obj()
+        if active_path is None or not active_path.exists():
+            return False
+
+        normalized_channel = str(channel or "").strip().upper()
+        if not normalized_channel and raw_message.startswith("["):
+            right = raw_message.find("]")
+            if right > 1:
+                normalized_channel = raw_message[1:right].strip().upper()
+        if not normalized_channel:
+            normalized_channel = "GENERAL"
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        runtime_root = str(getattr(schema, "GROUP_RUNTIME", "/runtime") or "/runtime")
+        if not runtime_root.startswith("/"):
+            runtime_root = f"/{runtime_root}"
+        logs_txt_path = f"{runtime_root.rstrip('/')}/difra_logs_txt"
+
+        max_entries = 5000
+        if hasattr(self, "config") and isinstance(self.config, dict):
+            try:
+                max_entries = int(self.config.get("technical_runtime_log_max_entries", 5000))
+            except (TypeError, ValueError):
+                max_entries = 5000
+        if max_entries < 1:
+            max_entries = 1
+
+        restore_mode = None
+        try:
+            stat_result = active_path.stat()
+            restore_mode = stat_result.st_mode
+            if not os.access(active_path, os.W_OK):
+                os.chmod(active_path, restore_mode | 0o200)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            restore_mode = None
+
+        try:
+            import h5py
+
+            timestamp = schema.now_timestamp() if hasattr(schema, "now_timestamp") else time.strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+            new_line = (
+                f"{timestamp} | {normalized_channel} | {str(source or 'gui')} | {raw_message}"
+            )
+            with h5py.File(active_path, "a") as h5f:
+                existing_text = ""
+                if logs_txt_path in h5f:
+                    raw = h5f[logs_txt_path][()]
+                    if isinstance(raw, bytes):
+                        existing_text = raw.decode("utf-8", errors="replace")
+                    else:
+                        existing_text = str(raw or "")
+                    try:
+                        del h5f[logs_txt_path]
+                    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                        logger.debug(
+                            "Suppressed exception while replacing technical TXT log dataset",
+                            exc_info=True,
+                        )
+
+                lines = [ln for ln in str(existing_text).splitlines() if str(ln).strip()]
+                lines.append(new_line)
+                lines = lines[-int(max_entries):]
+                payload = "\n".join(lines)
+
+                ds = h5f.create_dataset(logs_txt_path, data=np.bytes_(payload))
+                ds.attrs["line_count"] = int(len(lines))
+                ds.attrs["last_timestamp"] = str(timestamp)
+                ds.attrs["format"] = "txt"
+                ds.attrs["encoding"] = "utf-8"
+            return True
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception while writing technical runtime log",
+                exc_info=True,
+            )
+            return False
+        finally:
+            if restore_mode is not None:
+                try:
+                    os.chmod(active_path, restore_mode)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug(
+                        "Suppressed exception while restoring technical container mode",
+                        exc_info=True,
+                    )
+
     @staticmethod
     def _paths_same(left: Path, right: Path) -> bool:
         try:
             return Path(left).resolve() == Path(right).resolve()
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             return str(Path(left)) == str(Path(right))
 
     @staticmethod
@@ -116,7 +225,7 @@ class H5ManagementLoadingMixin:
             if actual_cm is None:
                 return False
             return abs(float(actual_cm) - float(expected_cm)) <= float(tolerance_cm)
-        except Exception:
+        except (TypeError, ValueError):
             return False
 
     def _read_technical_container_distance_cm(self, container_path: Path):
@@ -147,7 +256,7 @@ class H5ManagementLoadingMixin:
                         distance_attr = poni_group[ds_name].attrs.get(schema.ATTR_DISTANCE_CM)
                         if distance_attr is not None:
                             return float(distance_attr)
-        except Exception:
+        except (KeyError, OSError, TypeError, ValueError):
             return None
 
         return None
@@ -165,7 +274,7 @@ class H5ManagementLoadingMixin:
                     continue
                 try:
                     resolved = str(tech_path.resolve())
-                except Exception:
+                except (OSError, RuntimeError, TypeError, ValueError):
                     resolved = str(tech_path)
                 if resolved in seen:
                     continue
@@ -201,8 +310,12 @@ class H5ManagementLoadingMixin:
             if hasattr(self, "_refresh_technical_output_folder_lock"):
                 try:
                     self._refresh_technical_output_folder_lock()
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError) as exc:
+                    logger.warning(
+                        "Failed to refresh technical output lock after archive: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
         return archived
 
@@ -230,7 +343,7 @@ class H5ManagementLoadingMixin:
                     lock_info.get("locked_by") or cfg.get("operator_id", ""),
                     fallback="unknown",
                 )
-            except Exception:
+            except (AttributeError, OSError, TypeError, ValueError):
                 operator_token = "unknown"
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -249,10 +362,130 @@ class H5ManagementLoadingMixin:
 
         destination = archive_dir / Path(existing_path).name
         shutil.move(str(existing_path), str(destination))
+        archived_count = 0
+        archive_technical_data_files = getattr(
+            container_manager,
+            "archive_technical_data_files",
+            None,
+        )
+        if callable(archive_technical_data_files):
+            file_patterns = None
+            if isinstance(cfg, dict):
+                file_patterns = cfg.get(
+                    "technical_archive_patterns",
+                    ["*.txt", "*.dsc", "*.npy", "*.poni", "*_state.json"],
+                )
+            try:
+                archived_count = int(
+                    archive_technical_data_files(
+                        container_path=Path(existing_path),
+                        archive_folder=archive_dir,
+                        file_patterns=file_patterns,
+                    )
+                    or 0
+                )
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to archive technical companion files for %s: %s",
+                    existing_path,
+                    exc,
+                    exc_info=True,
+                )
+        if archived_count > 0:
+            self._log_technical_event(
+                f"Archived {archived_count} technical companion file(s) to {archive_dir.name}"
+            )
+            update_paths = getattr(self, "_update_aux_table_paths_after_archive", None)
+            if callable(update_paths):
+                try:
+                    update_paths(archive_dir)
+                except (AttributeError, RuntimeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in h5_management_loading_mixin.py",
+                        exc_info=True,
+                    )
+        try:
+            self._remap_aux_table_container_references(
+                old_container_path=Path(existing_path),
+                new_container_path=Path(destination),
+            )
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.warning(
+                "Failed to remap aux table references after technical archive: %s",
+                exc,
+                exc_info=True,
+            )
         return destination
 
+    def _remap_aux_table_container_references(
+        self,
+        *,
+        old_container_path: Path,
+        new_container_path: Path,
+    ) -> int:
+        """Rewrite aux table h5ref/source_info container paths after archive move."""
+        if not hasattr(self, "auxTable") or self.auxTable is None:
+            return 0
+
+        old_path = Path(old_container_path)
+        new_path = Path(new_container_path)
+        updated = 0
+
+        source_ref_role = self._aux_metadata_role() - 1
+        source_info_role = self._aux_source_info_role()
+
+        for row in range(self.auxTable.rowCount()):
+            file_item = self.auxTable.item(row, 1)
+            if file_item is None:
+                continue
+
+            row_updated = False
+
+            source_ref = str(file_item.data(source_ref_role) or "").strip()
+            container_path, dataset_path = self._parse_h5ref(source_ref)
+            if container_path and dataset_path:
+                try:
+                    if self._paths_same(Path(container_path), old_path):
+                        file_item.setData(
+                            source_ref_role,
+                            f"h5ref://{new_path}#{dataset_path}",
+                        )
+                        row_updated = True
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug(
+                        "Suppressed exception in h5_management_loading_mixin.py",
+                        exc_info=True,
+                    )
+
+            source_info = file_item.data(source_info_role)
+            if isinstance(source_info, dict):
+                source_container = str(source_info.get("container_path") or "").strip()
+                if source_container:
+                    try:
+                        if self._paths_same(Path(source_container), old_path):
+                            patched = dict(source_info)
+                            patched["container_path"] = str(new_path)
+                            file_item.setData(source_info_role, patched)
+                            row_updated = True
+                    except (OSError, RuntimeError, TypeError, ValueError):
+                        logger.debug(
+                            "Suppressed exception in h5_management_loading_mixin.py",
+                            exc_info=True,
+                        )
+
+            if row_updated:
+                updated += 1
+
+        if updated > 0:
+            self._log_technical_event(
+                f"Remapped {updated} aux row(s) to archived container path: {new_path.name}"
+            )
+        return updated
+
     def _attempt_forced_session_send(self, session_path: Path) -> None:
-        raise RuntimeError("Cloud session upload API is not available in this build.")
+        # Stub transport is handled by SessionLifecycleActions; keep this hook for
+        # future real API integration.
+        return None
 
     def _finalize_active_session_for_new_technical_container(self) -> bool:
         return h5_management_loading_actions.finalize_active_session_for_new_technical_container(
@@ -365,7 +598,7 @@ class H5ManagementLoadingMixin:
                     from PyQt5.QtWidgets import QCheckBox
 
                     checkbox = primary_widget.findChild(QCheckBox)
-                except Exception:
+                except (ImportError, AttributeError, RuntimeError, TypeError):
                     checkbox = None
                 if checkbox is not None:
                     is_primary = bool(checkbox.isChecked())
@@ -379,7 +612,7 @@ class H5ManagementLoadingMixin:
                         "source_path": source_path,
                     }
                 )
-            except Exception as exc:
+            except (FileNotFoundError, KeyError, OSError, TypeError, ValueError) as exc:
                 if show_errors:
                     QMessageBox.warning(
                         self,
@@ -493,8 +726,12 @@ class H5ManagementLoadingMixin:
                     detector_configs,
                     self._get_active_detector_ids(),
                 )
-            except Exception:
-                pass
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to refresh detector configuration in active technical container: %s",
+                    exc,
+                    exc_info=True,
+                )
 
             poni_data = self._collect_poni_data_by_alias()
             if poni_data:
@@ -505,7 +742,7 @@ class H5ManagementLoadingMixin:
                         distances_for_write,
                         detector_id_by_alias=alias_to_detector_id,
                     )
-                except Exception:
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
                     logger.warning("Failed to refresh PONI datasets in active technical container", exc_info=True)
 
             event_index = 1
@@ -530,8 +767,14 @@ class H5ManagementLoadingMixin:
             for alias, evt_idx in agbh_event_indices.items():
                 try:
                     technical_container.link_poni_to_event(active_path, alias, evt_idx)
-                except Exception:
-                    pass
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to link PONI dataset to event alias=%s event=%s: %s",
+                        alias,
+                        evt_idx,
+                        exc,
+                        exc_info=True,
+                    )
 
             if isinstance(distances_for_write, dict) and distances_for_write:
                 root_distance = float(next(iter(distances_for_write.values())))
@@ -542,7 +785,7 @@ class H5ManagementLoadingMixin:
                 f"Technical container synced from table: {active_path.name} (rows={len(runtime_rows)})"
             )
             return True
-        except Exception as exc:
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.warning("Technical container sync failed: %s", exc, exc_info=True)
             if show_errors:
                 QMessageBox.warning(
@@ -553,6 +796,8 @@ class H5ManagementLoadingMixin:
             return False
 
     def _on_detector_distances_updated(self):
+        if bool(getattr(self, "_suppress_distance_auto_container_creation", False)):
+            return
         active_path = self._create_new_active_technical_container(clear_table=False)
         if active_path is None:
             return
@@ -672,6 +917,175 @@ class H5ManagementLoadingMixin:
                 )
         return rows
 
+    @staticmethod
+    def _normalize_center_preview_alias(alias: str) -> str:
+        key = str(alias or "").strip().upper()
+        if key == "SAXS":
+            return "PRIMARY"
+        if key == "WAXS":
+            return "SECONDARY"
+        return key
+
+    def _detector_sizes_for_center_preview(self):
+        sizes = {}
+        for detector_cfg in self.config.get("detectors", []) if hasattr(self, "config") else []:
+            alias = str(detector_cfg.get("alias") or "").strip()
+            if not alias:
+                continue
+            size_cfg = detector_cfg.get("size", {})
+            if isinstance(size_cfg, dict):
+                width = size_cfg.get("width", 256)
+                height = size_cfg.get("height", 256)
+            else:
+                width = 256
+                height = 256
+            try:
+                size_tuple = (int(width), int(height))
+            except Exception:
+                size_tuple = (256, 256)
+            sizes[alias] = size_tuple
+            sizes[self._normalize_center_preview_alias(alias)] = size_tuple
+        return sizes
+
+    def _collect_agbh_images_for_center_preview(self, h5_path: str):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
+        detector_id_to_alias = {
+            str(cfg.get("id")): str(cfg.get("alias"))
+            for cfg in detector_configs
+            if cfg.get("id") and cfg.get("alias")
+        }
+
+        agbh_images = {}
+
+        with h5py.File(h5_path, "r") as h5f:
+            tech_group = h5f.get(schema.GROUP_TECHNICAL)
+            if tech_group is None:
+                tech_group = h5f.get(f"{schema.GROUP_CALIBRATION_SNAPSHOT}/events")
+            if tech_group is None:
+                return {}
+
+            for event_name in sorted(tech_group.keys()):
+                if not str(event_name).startswith("tech_evt_"):
+                    continue
+                event_group = tech_group[event_name]
+                technical_type = event_group.attrs.get(
+                    "type",
+                    event_group.attrs.get(schema.ATTR_TECHNICAL_TYPE, ""),
+                )
+                if isinstance(technical_type, bytes):
+                    technical_type = technical_type.decode("utf-8", errors="replace")
+                if str(technical_type or "").strip().upper() != str(
+                    schema.TECHNICAL_TYPE_AGBH
+                ).upper():
+                    continue
+
+                for detector_name in sorted(event_group.keys()):
+                    detector_group = event_group[detector_name]
+                    if schema.DATASET_PROCESSED_SIGNAL not in detector_group:
+                        continue
+
+                    alias = detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
+                    if isinstance(alias, bytes):
+                        alias = alias.decode("utf-8", errors="replace")
+                    alias = str(alias or "").strip()
+                    if not alias:
+                        detector_id = detector_group.attrs.get(schema.ATTR_DETECTOR_ID, "")
+                        if isinstance(detector_id, bytes):
+                            detector_id = detector_id.decode("utf-8", errors="replace")
+                        alias = detector_id_to_alias.get(
+                            str(detector_id),
+                            str(detector_name).replace("det_", "").upper(),
+                        )
+                    alias_key = self._normalize_center_preview_alias(alias)
+                    if alias_key in agbh_images:
+                        continue
+                    try:
+                        data = detector_group[schema.DATASET_PROCESSED_SIGNAL][()]
+                        data = np.asarray(data, dtype=float)
+                        if data.ndim == 2:
+                            agbh_images[alias_key] = data
+                    except Exception:
+                        logger.warning(
+                            "Failed to extract AGBH image for alias '%s' from %s",
+                            alias,
+                            h5_path,
+                            exc_info=True,
+                        )
+        return agbh_images
+
+    def _show_poni_center_preview_for_container(
+        self,
+        h5_path: str,
+        *,
+        decision_mode: bool = False,
+    ):
+        validation_cfg = self.config.get("poni_center_validation", {}) if hasattr(self, "config") else {}
+        if not isinstance(validation_cfg, dict) or not validation_cfg.get("enabled", False):
+            return None if decision_mode else False
+
+        detector_rules = validation_cfg.get("detectors", {})
+        if not isinstance(detector_rules, dict) or not detector_rules:
+            return None if decision_mode else False
+
+        aliases = [self._normalize_center_preview_alias(a) for a in detector_rules.keys()]
+        aliases = [a for a in aliases if a]
+        if not aliases:
+            return None if decision_mode else False
+
+        ponis = getattr(self, "ponis", {}) or {}
+        poni_by_alias = {}
+        for alias, text in ponis.items():
+            key = self._normalize_center_preview_alias(alias)
+            if key and text:
+                poni_by_alias[key] = str(text)
+
+        if not poni_by_alias:
+            return None if decision_mode else False
+
+        detector_sizes = self._detector_sizes_for_center_preview()
+        agbh_images = self._collect_agbh_images_for_center_preview(str(h5_path))
+
+        show_preview = None
+        if hasattr(self, "_get_technical_module"):
+            show_preview = self._get_technical_module("show_poni_centers_preview_window")
+        if not callable(show_preview):
+            return None if decision_mode else False
+
+        try:
+            dialog = show_preview(
+                aliases=aliases,
+                poni_by_alias=poni_by_alias,
+                detector_sizes_by_alias=detector_sizes,
+                validation_cfg=validation_cfg,
+                agbh_images_by_alias=agbh_images,
+                decision_mode=bool(decision_mode),
+                parent=self,
+            )
+            if bool(decision_mode):
+                if isinstance(dialog, dict):
+                    result_dialog = dialog.get("dialog")
+                    if result_dialog is not None:
+                        self._poni_center_preview_dialog = result_dialog
+                    return bool(dialog.get("accepted", False))
+                if isinstance(dialog, bool):
+                    return bool(dialog)
+                return None
+
+            if dialog is not None:
+                self._poni_center_preview_dialog = dialog
+                return True
+            return False
+        except Exception:
+            logger.warning(
+                "Failed to show PONI center preview for container %s",
+                h5_path,
+                exc_info=True,
+            )
+            return False
+
     def load_technical_h5(self):
         """Load technical H5 container selected by user."""
         from .helpers import _get_default_folder
@@ -715,7 +1129,7 @@ class H5ManagementLoadingMixin:
 
         try:
             is_valid, errors, warnings = validate_technical_container(file_path, strict=False)
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if show_dialogs:
                 QMessageBox.critical(
                     self,
@@ -750,7 +1164,7 @@ class H5ManagementLoadingMixin:
             if hasattr(self, "on_technical_container_loaded"):
                 try:
                     self.on_technical_container_loaded(file_path, is_locked=is_locked)
-                except Exception as callback_error:
+                except (AttributeError, RuntimeError, TypeError, ValueError) as callback_error:
                     logger.warning(
                         f"Technical-load callback failed: {callback_error}",
                         exc_info=True,
@@ -768,8 +1182,9 @@ class H5ManagementLoadingMixin:
             self._log_technical_event(
                 f"Loaded technical container: {Path(file_path).name} ({lock_status})"
             )
+            self._show_poni_center_preview_for_container(file_path)
             return True
-        except Exception as exc:
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if show_dialogs:
                 QMessageBox.critical(
                     self,
@@ -824,8 +1239,13 @@ class H5ManagementLoadingMixin:
                         if distance_attr is not None:
                             try:
                                 extracted_distances[detector_id] = float(distance_attr)
-                            except Exception:
-                                pass
+                            except (TypeError, ValueError) as exc:
+                                logger.warning(
+                                    "Failed to parse technical distance from event alias=%s id=%s: %s",
+                                    alias,
+                                    detector_id,
+                                    exc,
+                                )
 
             poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
             if poni_group is not None:
@@ -865,7 +1285,7 @@ class H5ManagementLoadingMixin:
                                 break
                         if detector_id and distance_attr is not None:
                             extracted_distances[detector_id] = float(distance_attr)
-                    except Exception as poni_err:
+                    except (KeyError, OSError, TypeError, ValueError) as poni_err:
                         logger.warning("Failed to parse PONI dataset '%s': %s", ds_name, poni_err)
 
         self._restoring_aux_table = True

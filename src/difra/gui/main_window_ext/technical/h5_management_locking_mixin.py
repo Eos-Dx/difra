@@ -1,6 +1,7 @@
 """Technical H5 validation/locking responsibilities."""
 
 from . import h5_management_mixin as _module
+from .poni_center_validation import parse_poni_center_px, validate_poni_centers
 
 os = _module.os
 logger = _module.logger
@@ -18,6 +19,29 @@ from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 
 class H5ManagementLockingMixin:
+    PONI_REVIEW_STATUS_ATTR = "poni_center_review_status"
+    PONI_REVIEW_USER_ATTR = "poni_center_review_user"
+    PONI_REVIEW_TS_ATTR = "poni_center_review_timestamp"
+    PONI_REVIEW_IN_ZONE_ATTR = "poni_center_in_allowed_zone"
+    PONI_REVIEW_NOTES_ATTR = "poni_center_review_notes"
+
+    @staticmethod
+    def _to_float_or_none(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _decode_attr_text(value, default: str = "") -> str:
+        if value is None:
+            return default
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
+
     @staticmethod
     def _sync_lock_action_overrides():
         """Mirror monkeypatchable module globals into extracted helper actions."""
@@ -31,6 +55,7 @@ class H5ManagementLockingMixin:
         distance_cm: float = 17.0,
         detector_size=(256, 256),
         pixel_size_um=(55.0, 55.0),
+        center_px=None,
     ) -> str:
         """Create deterministic fake PONI content for demo mode."""
         try:
@@ -52,10 +77,20 @@ class H5ManagementLockingMixin:
         pixel1 = pixel1_um * 1e-6
         pixel2 = pixel2_um * 1e-6
 
-        # Stable pseudo-variation per detector alias.
-        alias_seed = abs(hash(str(alias))) % 1000
-        poni1 = 0.006 + (alias_seed % 150) / 100000.0
-        poni2 = 0.002 + (alias_seed % 120) / 100000.0
+        if isinstance(center_px, (list, tuple)) and len(center_px) >= 2:
+            try:
+                row_px = float(center_px[0])
+                col_px = float(center_px[1])
+            except Exception:
+                row_px = float(height) / 2.0
+                col_px = float(width) / 2.0
+            poni1 = row_px * pixel1
+            poni2 = col_px * pixel2
+        else:
+            # Stable pseudo-variation per detector alias.
+            alias_seed = abs(hash(str(alias))) % 1000
+            poni1 = 0.006 + (alias_seed % 150) / 100000.0
+            poni2 = 0.002 + (alias_seed % 120) / 100000.0
 
         return (
             "# Auto-generated fake PONI (DEMO mode)\n"
@@ -72,6 +107,120 @@ class H5ManagementLockingMixin:
             "Wavelength: 1.5406e-10\n"
             f"# Detector alias: {alias}\n"
         )
+
+    def _resolve_demo_poni_center_px(self, alias: str, detector_size=(256, 256)):
+        """Resolve demo center in pixels from main.json center rules when available."""
+        alias_key = str(alias or "").strip().upper()
+        # Fixed demo targets requested by workflow for fake PRIMARY/SECONDARY.
+        if alias_key == "PRIMARY":
+            return 128.0, 8.0
+        if alias_key == "SECONDARY":
+            return 128.0, 280.0
+
+        try:
+            width = float(detector_size[0])
+            height = float(detector_size[1])
+        except Exception:
+            width, height = 256.0, 256.0
+
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        if not isinstance(validation_cfg, dict):
+            validation_cfg = {}
+
+        defaults = validation_cfg.get("defaults", {})
+        if not isinstance(defaults, dict):
+            defaults = {}
+
+        detector_rules = validation_cfg.get("detectors", {})
+        if not isinstance(detector_rules, dict):
+            detector_rules = {}
+
+        alias_key = str(alias or "").strip().upper()
+        rule = {}
+        if defaults:
+            rule.update(defaults)
+        for key, value in detector_rules.items():
+            if str(key or "").strip().upper() == alias_key and isinstance(value, dict):
+                rule.update(value)
+                break
+
+        row_target = self._to_float_or_none(rule.get("row_target_px"))
+        if row_target is None:
+            row_target = height / 2.0
+
+        col_target = self._to_float_or_none(rule.get("col_target_px"))
+        col_min = self._to_float_or_none(rule.get("col_min_px"))
+        col_max = self._to_float_or_none(rule.get("col_max_px"))
+        col_gt = self._to_float_or_none(rule.get("col_gt_px"))
+        col_lt = self._to_float_or_none(rule.get("col_lt_px"))
+
+        if col_target is not None:
+            col = float(col_target)
+        elif col_gt is not None and col_lt is not None and float(col_lt) > float(col_gt):
+            col = (float(col_gt) + float(col_lt)) / 2.0
+        elif col_gt is not None:
+            col = float(col_gt) + 1.0
+        elif col_min is not None and col_max is not None and float(col_max) >= float(col_min):
+            col = (float(col_min) + float(col_max)) / 2.0
+        elif col_min is not None:
+            col = float(col_min)
+        elif col_lt is not None:
+            col = float(col_lt) - 1.0
+        elif col_max is not None:
+            col = float(col_max)
+        else:
+            col = width / 2.0
+
+        # Ensure strict inequalities and bounds where specified.
+        if col_gt is not None and not (col > float(col_gt)):
+            col = float(col_gt) + 1.0
+        if col_min is not None and col < float(col_min):
+            col = float(col_min)
+        if col_lt is not None and not (col < float(col_lt)):
+            col = float(col_lt) - 1.0
+        if col_max is not None and col > float(col_max):
+            col = float(col_max)
+
+        return float(row_target), float(col)
+
+    def _demo_poni_is_compliant(
+        self,
+        *,
+        alias: str,
+        poni_text: str,
+        detector_size,
+        center_tolerance_px: float = 0.5,
+        size_tolerance_px: float = 0.5,
+    ) -> bool:
+        """Check that a demo PONI matches expected detector size and configured center."""
+        geometry = parse_poni_center_px(
+            str(poni_text or ""),
+            fallback_detector_size=detector_size,
+        )
+        if not isinstance(geometry, dict):
+            return False
+
+        expected_row, expected_col = self._resolve_demo_poni_center_px(alias, detector_size)
+        actual_row = float(geometry.get("row_px", 0.0))
+        actual_col = float(geometry.get("col_px", 0.0))
+        actual_w = float(geometry.get("width_px", 0.0))
+        actual_h = float(geometry.get("height_px", 0.0))
+        try:
+            expected_w = float(detector_size[0])
+            expected_h = float(detector_size[1])
+        except Exception:
+            expected_w, expected_h = 256.0, 256.0
+
+        if abs(actual_w - expected_w) > float(size_tolerance_px):
+            return False
+        if abs(actual_h - expected_h) > float(size_tolerance_px):
+            return False
+        if abs(actual_row - expected_row) > float(center_tolerance_px):
+            return False
+        if abs(actual_col - expected_col) > float(center_tolerance_px):
+            return False
+        return True
 
     def _auto_provision_demo_poni_files(self, aliases) -> bool:
         """Create/load fake PONI files for aliases in DEV mode."""
@@ -111,22 +260,7 @@ class H5ManagementLockingMixin:
             if isinstance(existing_meta, dict):
                 existing_path = str(existing_meta.get("path") or "").strip()
 
-            if existing_content and existing_path and os.path.exists(existing_path):
-                continue
-
             demo_path = demo_dir / f"{alias.lower()}_demo.poni"
-            if demo_path.exists():
-                try:
-                    content = demo_path.read_text(encoding="utf-8")
-                    self.ponis[alias] = content
-                    self.poni_files[alias] = {
-                        "path": str(demo_path),
-                        "name": demo_path.name,
-                    }
-                    added += 1
-                    continue
-                except Exception:
-                    pass
 
             detector_cfg = detector_cfg_by_alias.get(alias, {})
             size_cfg = detector_cfg.get("size", {}) if isinstance(detector_cfg, dict) else {}
@@ -152,11 +286,51 @@ class H5ManagementLockingMixin:
                 pixel_size_um = (55.0, 55.0)
 
             distance_cm = float(distances_by_alias.get(alias, 17.0))
+            center_px = self._resolve_demo_poni_center_px(alias, detector_size)
+
+            # If operator selected a non-demo PONI file and it's present in memory, keep it.
+            if existing_content and existing_path and os.path.exists(existing_path):
+                try:
+                    is_demo_path = Path(existing_path).resolve().parent == demo_dir.resolve()
+                except Exception:
+                    is_demo_path = str(existing_path).endswith(f"{alias.lower()}_demo.poni")
+                if not is_demo_path:
+                    continue
+                if self._demo_poni_is_compliant(
+                    alias=alias,
+                    poni_text=existing_content,
+                    detector_size=detector_size,
+                ):
+                    continue
+
+            # Reuse existing demo file only when it already matches expected size/center.
+            if demo_path.exists():
+                try:
+                    content = demo_path.read_text(encoding="utf-8")
+                    if self._demo_poni_is_compliant(
+                        alias=alias,
+                        poni_text=content,
+                        detector_size=detector_size,
+                    ):
+                        self.ponis[alias] = content
+                        self.poni_files[alias] = {
+                            "path": str(demo_path),
+                            "name": demo_path.name,
+                        }
+                        added += 1
+                        continue
+                except Exception:
+                    logger.debug(
+                        "Suppressed exception while reading existing demo PONI",
+                        exc_info=True,
+                    )
+
             content = self._build_fake_poni_content(
                 alias=alias,
                 distance_cm=distance_cm,
                 detector_size=detector_size,
                 pixel_size_um=pixel_size_um,
+                center_px=center_px,
             )
             try:
                 demo_path.write_text(content, encoding="utf-8")
@@ -192,6 +366,301 @@ class H5ManagementLockingMixin:
         except Exception:
             return False
 
+    def _collect_container_poni_text_by_alias(self, container_path: Path):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        poni_by_alias = {}
+
+        with h5py.File(container_path, "r") as h5f:
+            poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+            if poni_group is None:
+                return {}
+
+            for ds_name in sorted(poni_group.keys()):
+                try:
+                    ds = poni_group[ds_name]
+                    alias = ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
+                    if isinstance(alias, bytes):
+                        alias = alias.decode("utf-8", errors="replace")
+                    alias = str(alias or "").strip()
+                    if not alias and str(ds_name).startswith("poni_"):
+                        alias = str(ds_name)[5:].upper()
+                    if not alias:
+                        continue
+
+                    value = ds[()]
+                    if isinstance(value, bytes):
+                        text = value.decode("utf-8", errors="replace")
+                    else:
+                        text = str(value)
+                    poni_by_alias[alias] = text
+                except Exception:
+                    logger.warning(
+                        "Failed to parse PONI dataset while validating centers: %s",
+                        ds_name,
+                        exc_info=True,
+                    )
+
+        return poni_by_alias
+
+    def _detector_sizes_by_alias(self):
+        sizes = {}
+        for detector_cfg in self.config.get("detectors", []) if hasattr(self, "config") else []:
+            alias = str(detector_cfg.get("alias") or "").strip()
+            if not alias:
+                continue
+            size_cfg = detector_cfg.get("size", {})
+            if isinstance(size_cfg, dict):
+                width = size_cfg.get("width", 256)
+                height = size_cfg.get("height", 256)
+            else:
+                width = 256
+                height = 256
+            try:
+                sizes[alias] = (int(width), int(height))
+            except Exception:
+                sizes[alias] = (256, 256)
+        return sizes
+
+    def _validate_poni_centers_for_container(self, container_path: Path):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        if not isinstance(validation_cfg, dict) or not validation_cfg.get("enabled", False):
+            return [], []
+
+        if bool(cfg.get("DEV", False)) and not bool(
+            validation_cfg.get("apply_in_dev_mode", False)
+        ):
+            return [], []
+
+        try:
+            poni_text_by_alias = self._collect_container_poni_text_by_alias(container_path)
+        except Exception as exc:
+            return [f"PONI center validation failed while reading container: {exc}"], []
+
+        detector_sizes = self._detector_sizes_by_alias()
+        return validate_poni_centers(
+            poni_text_by_alias=poni_text_by_alias,
+            detector_sizes_by_alias=detector_sizes,
+            validation_config=validation_cfg,
+        )
+
+    def _current_operator_id_for_review(self) -> str:
+        operator_id = ""
+        operator_manager = getattr(self, "operator_manager", None)
+        if operator_manager is not None:
+            getter = getattr(operator_manager, "get_current_operator_id", None)
+            if callable(getter):
+                try:
+                    operator_id = str(getter() or "").strip()
+                except Exception:
+                    operator_id = ""
+
+        if not operator_id and hasattr(self, "config") and isinstance(self.config, dict):
+            operator_id = str(self.config.get("operator_id") or "").strip()
+
+        return operator_id or "unknown"
+
+    def _read_poni_review_state(self, container_path: Path):
+        import h5py
+
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                status = self._decode_attr_text(
+                    h5f.attrs.get(self.PONI_REVIEW_STATUS_ATTR, "pending")
+                ).strip().lower()
+                user = self._decode_attr_text(
+                    h5f.attrs.get(self.PONI_REVIEW_USER_ATTR, "")
+                ).strip()
+                timestamp = self._decode_attr_text(
+                    h5f.attrs.get(self.PONI_REVIEW_TS_ATTR, "")
+                ).strip()
+                notes = self._decode_attr_text(
+                    h5f.attrs.get(self.PONI_REVIEW_NOTES_ATTR, "")
+                ).strip()
+                raw_in_zone = h5f.attrs.get(self.PONI_REVIEW_IN_ZONE_ATTR, False)
+                in_zone = bool(raw_in_zone)
+        except Exception:
+            return {
+                "status": "pending",
+                "user": "",
+                "timestamp": "",
+                "in_zone": False,
+                "notes": "",
+            }
+
+        return {
+            "status": status or "pending",
+            "user": user,
+            "timestamp": timestamp,
+            "in_zone": in_zone,
+            "notes": notes,
+        }
+
+    def _write_poni_review_state(
+        self,
+        container_path: Path,
+        *,
+        status: str,
+        in_zone: bool,
+        notes: str = "",
+    ) -> bool:
+        import h5py
+
+        review_status = str(status or "pending").strip().lower() or "pending"
+        review_user = self._current_operator_id_for_review()
+        review_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        review_notes = str(notes or "").strip()
+
+        original_mode = None
+        try:
+            original_mode = Path(container_path).stat().st_mode
+            if not os.access(container_path, os.W_OK):
+                os.chmod(container_path, original_mode | 0o200)
+        except Exception:
+            original_mode = None
+
+        try:
+            with h5py.File(container_path, "a") as h5f:
+                h5f.attrs[self.PONI_REVIEW_STATUS_ATTR] = review_status
+                h5f.attrs[self.PONI_REVIEW_USER_ATTR] = review_user
+                h5f.attrs[self.PONI_REVIEW_TS_ATTR] = review_timestamp
+                h5f.attrs[self.PONI_REVIEW_IN_ZONE_ATTR] = bool(in_zone)
+                h5f.attrs[self.PONI_REVIEW_NOTES_ATTR] = review_notes
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to write PONI review state for %s: %s",
+                container_path,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            if original_mode is not None:
+                try:
+                    os.chmod(container_path, original_mode)
+                except Exception:
+                    logger.debug(
+                        "Suppressed exception while restoring container mode after PONI review write",
+                        exc_info=True,
+                    )
+
+    def _run_poni_center_review_workflow(
+        self,
+        container_path: Path,
+        *,
+        container_id: str,
+        prompt_reload_on_reject: bool = True,
+    ) -> bool:
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        if not isinstance(validation_cfg, dict) or not validation_cfg.get("enabled", False):
+            return True
+
+        show_preview = getattr(self, "_show_poni_center_preview_for_container", None)
+        if not callable(show_preview):
+            QMessageBox.warning(
+                self,
+                "PONI Review Unavailable",
+                "PONI center review UI is unavailable in this build.",
+            )
+            return False
+
+        decision = show_preview(str(container_path), decision_mode=True)
+        if decision is None:
+            QMessageBox.warning(
+                self,
+                "PONI Review Required",
+                "PONI center preview could not be shown.\n\n"
+                "Cannot proceed without user review.",
+            )
+            self._log_technical_event(
+                f"PONI center review blocked: preview unavailable for {container_id}"
+            )
+            return False
+
+        if bool(decision):
+            center_errors, _center_warnings = self._validate_poni_centers_for_container(
+                Path(container_path)
+            )
+            in_zone = len(center_errors) == 0
+            if in_zone:
+                self._write_poni_review_state(
+                    Path(container_path),
+                    status="accepted",
+                    in_zone=True,
+                    notes="accepted_in_valid_zone",
+                )
+                self._log_technical_event(
+                    f"PONI center review accepted for {container_id}"
+                )
+                return True
+
+            # Hard fail: user cannot proceed with an out-of-zone center acceptance.
+            self._write_poni_review_state(
+                Path(container_path),
+                status="rejected",
+                in_zone=False,
+                notes="accept_attempt_rejected_out_of_zone",
+            )
+            QMessageBox.critical(
+                self,
+                "PONI Validation Failed",
+                "Center point is outside the valid zone.\n\n"
+                "Lock cannot continue.\n"
+                "Adjust PONI/distance settings and load valid PONI files.",
+            )
+            if prompt_reload_on_reject:
+                retry = QMessageBox.question(
+                    self,
+                    "Reload PONI",
+                    "Load new PONI files now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if retry == QMessageBox.Yes:
+                    return bool(self._launch_poni_update_for_container(Path(container_path)))
+
+            QMessageBox.warning(
+                self,
+                "Lock Blocked",
+                "Technical container remains unlocked.\n\n"
+                "Without lock, downstream measurements will not be available.",
+            )
+            return False
+
+        self._write_poni_review_state(
+            Path(container_path),
+            status="rejected",
+            in_zone=False,
+            notes="rejected_by_user",
+        )
+        self._log_technical_event(
+            f"PONI center review rejected for {container_id}"
+        )
+
+        if prompt_reload_on_reject:
+            retry = QMessageBox.question(
+                self,
+                "PONI Rejected",
+                "PONI centers were rejected.\n\nLoad new PONI files now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if retry == QMessageBox.Yes:
+                return bool(self._launch_poni_update_for_container(Path(container_path)))
+
+        QMessageBox.warning(
+            self,
+            "Lock Blocked",
+            "PONI review was rejected and no replacement was loaded.\n\n"
+            "Technical container remains unlocked.\n"
+            "Without lock, downstream measurements will not be available.",
+        )
+        return False
+
     def _collect_lock_detector_aliases(self, container_path: Path):
         import h5py
 
@@ -202,7 +671,11 @@ class H5ManagementLockingMixin:
             try:
                 aliases.extend([a for a in self._get_active_detector_aliases() if a])
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in h5_management_locking_mixin.py",
+                    exc_info=True,
+                )
 
         if aliases:
             return sorted({str(a) for a in aliases if str(a).strip()})
@@ -300,6 +773,32 @@ class H5ManagementLockingMixin:
 
         return True
 
+    def _launch_poni_update_for_container(self, container_path: Path) -> bool:
+        """Run Update PONI flow for a specific container path."""
+        update_fn = getattr(self, "update_active_technical_container_poni", None)
+        if not callable(update_fn):
+            return False
+
+        previous_path = str(getattr(self, "_active_technical_container_path", "") or "")
+        previous_locked = bool(getattr(self, "_active_technical_container_locked", False))
+        switched = False
+        try:
+            same_path = False
+            if previous_path:
+                try:
+                    same_path = Path(previous_path).resolve() == Path(container_path).resolve()
+                except Exception:
+                    same_path = str(previous_path) == str(container_path)
+            if not same_path:
+                self._active_technical_container_path = str(container_path)
+                self._active_technical_container_locked = False
+                switched = True
+            return bool(update_fn())
+        finally:
+            if switched:
+                self._active_technical_container_path = previous_path
+                self._active_technical_container_locked = previous_locked
+
     def _ensure_poni_before_lock(self, container_path: Path, container_id: str) -> bool:
         if self._container_has_poni_datasets(container_path):
             return True
@@ -320,7 +819,7 @@ class H5ManagementLockingMixin:
         if bool(self.config.get("DEV", False)):
             if self._auto_provision_demo_poni_files(aliases):
                 if hasattr(self, "_sync_active_technical_container_from_table"):
-                    synced = self._sync_active_technical_container_from_table(show_errors=True)
+                    synced = self._sync_active_technical_container_from_table(show_errors=False)
                     if not synced:
                         QMessageBox.warning(
                             self,
@@ -357,7 +856,7 @@ class H5ManagementLockingMixin:
             return False
 
         if hasattr(self, "_sync_active_technical_container_from_table"):
-            synced = self._sync_active_technical_container_from_table(show_errors=True)
+            synced = self._sync_active_technical_container_from_table(show_errors=False)
             if not synced:
                 QMessageBox.warning(
                     self,
@@ -430,6 +929,16 @@ class H5ManagementLockingMixin:
             )
             is_valid = False
 
+        center_errors, center_warnings = self._validate_poni_centers_for_container(
+            Path(container_path)
+        )
+        center_error_count = len(center_errors)
+        if center_errors:
+            errors.extend(center_errors)
+            is_valid = False
+        if center_warnings:
+            warnings.extend(center_warnings)
+
         if not is_valid:
             details = []
             for i, err in enumerate(errors[:8], 1):
@@ -437,13 +946,35 @@ class H5ManagementLockingMixin:
             if len(errors) > 8:
                 details.append(f"... and {len(errors) - 8} more")
 
-            QMessageBox.critical(
-                self,
-                "Validation Failed",
+            remediation_lines = []
+            has_distance_error = any(
+                ("distance" in str(err).lower()) and ("poni" in str(err).lower())
+                for err in errors
+            )
+            if has_distance_error:
+                remediation_lines.append(
+                    "Distance check failed: update PONI file distance values or detector distance settings."
+                )
+            if center_error_count > 0:
+                remediation_lines.append(
+                    "Center position check failed: update PONI file center values or update limits in main.json (poni_center_validation)."
+                )
+
+            message = (
                 "Technical container cannot be locked because validation failed.\n\n"
                 f"Container ID: {container_id}\n"
                 f"File: {container_path.name}\n\n"
-                + "\n".join(details),
+                + "\n".join(details)
+            )
+            if remediation_lines:
+                message += "\n\nRecommended action:\n" + "\n".join(
+                    f"- {line}" for line in remediation_lines
+                )
+
+            QMessageBox.critical(
+                self,
+                "Validation Failed",
+                message,
             )
             self._log_technical_event(
                 f"Lock blocked by validation errors for {container_id}: {len(errors)} error(s)"
@@ -456,6 +987,31 @@ class H5ManagementLockingMixin:
             )
 
         return True
+
+    def _confirm_poni_center_preview_before_lock(self, container_path: Path, container_id: str) -> bool:
+        """Require accepted user review for PONI center preview before lock."""
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        if not isinstance(validation_cfg, dict) or not validation_cfg.get("enabled", False):
+            return True
+
+        review_state = self._read_poni_review_state(Path(container_path))
+        if (
+            review_state.get("status") == "accepted"
+            and bool(review_state.get("in_zone", False))
+        ):
+            return True
+
+        self._log_technical_event(
+            f"PONI center review must be re-confirmed before lock for {container_id}"
+        )
+        return bool(
+            self._run_poni_center_review_workflow(
+                Path(container_path),
+                container_id=container_id,
+                prompt_reload_on_reject=True,
+            )
+        )
 
     def _validate_and_prompt_lock(self, container_path: str, container_id: str):
         """Validate container and prompt user to lock it.
@@ -501,6 +1057,15 @@ class H5ManagementLockingMixin:
         except Exception as e:
             errors.append(f"Failed to check schema version: {e}")
             is_valid = False
+
+        center_errors, center_warnings = self._validate_poni_centers_for_container(
+            Path(container_path)
+        )
+        if center_errors:
+            errors.extend(center_errors)
+            is_valid = False
+        if center_warnings:
+            warnings.extend(center_warnings)
         
         # Build validation summary
         status_icon = "✅" if is_valid else ("⚠️" if errors else "✅")
@@ -547,8 +1112,11 @@ class H5ManagementLockingMixin:
             )
             
             if reply == QMessageBox.Yes:
-                # Lock the container
-                self._lock_container(container_path, container_id)
+                if self._confirm_poni_center_preview_before_lock(
+                    Path(container_path), container_id
+                ):
+                    # Lock the container only after operator preview confirmation.
+                    self._lock_container(container_path, container_id)
             else:
                 QMessageBox.information(
                     self,
@@ -599,6 +1167,16 @@ class H5ManagementLockingMixin:
         """Lock currently active technical container."""
         self._sync_lock_action_overrides()
         return h5_management_lock_actions.lock_active_technical_container(self)
+
+    def archive_active_technical_container(self):
+        """Archive active technical container (irreversible)."""
+        self._sync_lock_action_overrides()
+        return h5_management_lock_actions.archive_active_technical_container(self)
+
+    def update_active_technical_container_poni(self):
+        """Update PONI files for active technical container and resync datasets."""
+        self._sync_lock_action_overrides()
+        return h5_management_lock_actions.update_active_technical_container_poni(self)
     
     def _lock_container(self, container_path: str, container_id: str):
         """Lock the technical container and archive raw data."""
