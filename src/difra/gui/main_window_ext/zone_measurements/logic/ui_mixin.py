@@ -29,7 +29,11 @@ class ZoneMeasurementsUIMixin:
                 ):
                     self.measurementLog.appendPlainText(line)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
 
     def create_zone_measurements_widget(self):
         """
@@ -48,7 +52,11 @@ class ZoneMeasurementsUIMixin:
             control_font.setPointSize(9)  # Smaller font for controls (menu-size)
             meas_tab.setFont(control_font)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         
         meas_layout = QVBoxLayout(meas_tab)
         # Reduce vertical spacing for compact layout
@@ -64,31 +72,51 @@ class ZoneMeasurementsUIMixin:
         try:
             self.initializeBtn.setMaximumHeight(28)  # Compact button height
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         self.start_btn = QPushButton("Start measurement")
         self.start_btn.clicked.connect(self.start_measurements)
         try:
             self.start_btn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         self.pause_btn = QPushButton("Pause")
         self.pause_btn.clicked.connect(self.pause_measurements)
         try:
             self.pause_btn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         self.skip_btn = QPushButton("Skip")
         self.skip_btn.clicked.connect(self.skip_current_point)
         try:
             self.skip_btn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self.stop_measurements)
         try:
             self.stop_btn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         self.start_btn.setEnabled(False)
         self.pause_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
@@ -132,7 +160,11 @@ class ZoneMeasurementsUIMixin:
         try:
             self.sidecarStatusLabel.setStyleSheet("color: #666; font-size: 10px;")
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         statusLayout.addWidget(sidecarLabel)
         statusLayout.addWidget(self.sidecarIndicator)
         statusLayout.addWidget(self.sidecarStatusLabel)
@@ -142,14 +174,22 @@ class ZoneMeasurementsUIMixin:
         try:
             self.homeBtn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         statusLayout.addWidget(self.homeBtn)
         self.loadPosBtn = QPushButton("Load Position")
         self.loadPosBtn.clicked.connect(self.load_position_button_clicked)
         try:
             self.loadPosBtn.setMaximumHeight(28)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         statusLayout.addWidget(self.loadPosBtn)
         meas_layout.addLayout(statusLayout)
 
@@ -303,7 +343,11 @@ class ZoneMeasurementsUIMixin:
         try:
             self.measurementLog.setMaximumHeight(80)  # Show ~4-5 lines by default
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in ui_mixin.py",
+                exc_info=True,
+            )
         
         logLayout.addWidget(self.measurementLog)
         self.logCheckBox.toggled.connect(self.measurementLog.setVisible)
@@ -355,6 +399,49 @@ class ZoneMeasurementsUIMixin:
             )
             layout.addWidget(btn)
             self.distance_buttons.append(btn)
+
+    def _create_detector_profile_previews(self, parent_layout):
+        # Previews are rendered inside per-point MeasurementHistoryWidget
+        # under "Zone Points" panel; keep method for backward compatibility.
+        return
+
+    def update_detector_profile_preview(
+        self, alias: str, profile_values, point_uid: str = None
+    ):
+        target_uid = str(point_uid or "").strip()
+        widgets = getattr(self, "measurement_widgets", {}) or {}
+
+        if target_uid:
+            widget = widgets.get(target_uid)
+            if widget is not None and hasattr(widget, "set_detector_profile"):
+                widget.set_detector_profile(alias, profile_values)
+            return
+
+        # Fallback: update all point widgets if caller did not provide uid.
+        for widget in widgets.values():
+            if widget is not None and hasattr(widget, "set_detector_profile"):
+                try:
+                    widget.set_detector_profile(alias, profile_values)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        "Suppressed exception in ui_mixin.py",
+                        exc_info=True,
+                    )
+
+    def clear_detector_profile_previews(self):
+        widgets = getattr(self, "measurement_widgets", {}) or {}
+        for widget in widgets.values():
+            if widget is None or not hasattr(widget, "clear_detector_profiles"):
+                continue
+            try:
+                widget.clear_detector_profiles()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in ui_mixin.py",
+                    exc_info=True,
+                )
 
     def _on_sample_id_changed(self):
         """Handle Sample ID field change - update session container if active and unlocked."""

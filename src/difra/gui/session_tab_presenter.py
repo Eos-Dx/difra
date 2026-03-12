@@ -1,6 +1,7 @@
 """Presenter/service helpers for Session tab data and rendering."""
 
 from dataclasses import dataclass
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -22,11 +23,22 @@ class ActiveSessionViewState:
 class SessionTabPresenter:
     """Helpers for reading session metadata and rendering Session tab tables."""
 
+    _ARCHIVE_STAMP_RE = re.compile(r"(\d{8}_\d{6})(?:_\d+)?$")
+
     @staticmethod
     def decode_attr(value):
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         return value
+
+    @classmethod
+    def _extract_archive_stamp(cls, folder_name: str) -> str:
+        """Extract archive timestamp token from archive folder naming conventions."""
+        raw = str(folder_name or "").strip()
+        if not raw:
+            return ""
+        match = cls._ARCHIVE_STAMP_RE.search(raw)
+        return match.group(1) if match else ""
 
     @staticmethod
     def scan_pending_session_containers(measurements_folder: Path) -> List[Path]:
@@ -61,7 +73,13 @@ class SessionTabPresenter:
             "path": str(path),
             "sample_id": "UNKNOWN",
             "study_name": "UNSPECIFIED",
+            "project_id": "UNSPECIFIED",
             "operator_id": "UNKNOWN",
+            "uploaded_by": "",
+            "upload_timestamp": "",
+            "upload_session_id": "",
+            "upload_status": "",
+            "upload_response_checksum_sha256": "",
             "created": "",
             "status": "UNKNOWN",
             "lock_status": "UNKNOWN",
@@ -80,8 +98,44 @@ class SessionTabPresenter:
                         h5f.attrs.get(schema.ATTR_STUDY_NAME, "UNSPECIFIED")
                     )
                 )
+                info["project_id"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get("project_id", info["study_name"])
+                    )
+                )
                 info["operator_id"] = str(
                     cls.decode_attr(h5f.attrs.get(schema.ATTR_OPERATOR_ID, "UNKNOWN"))
+                )
+                info["uploaded_by"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get(
+                            getattr(schema, "ATTR_UPLOADED_BY", "uploaded_by"),
+                            "",
+                        )
+                    )
+                )
+                info["upload_timestamp"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get(
+                            getattr(schema, "ATTR_UPLOAD_TIMESTAMP", "upload_timestamp"),
+                            "",
+                        )
+                    )
+                )
+                info["upload_session_id"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get("upload_session_id", "")
+                    )
+                )
+                info["upload_status"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get("upload_status", "")
+                    )
+                )
+                info["upload_response_checksum_sha256"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get("upload_response_checksum_sha256", "")
+                    )
                 )
                 info["created"] = str(
                     cls.decode_attr(
@@ -119,8 +173,7 @@ class SessionTabPresenter:
 
         try:
             parent_name = path.parent.name
-            if "_" in parent_name:
-                info["archived"] = parent_name.rsplit("_", 1)[-1]
+            info["archived"] = cls._extract_archive_stamp(parent_name)
         except Exception:
             pass
         if not info["archived"]:
@@ -197,6 +250,7 @@ class SessionTabPresenter:
                     "sample_id",
                     "study_name",
                     "operator_id",
+                    "uploaded_by",
                     "created",
                     "status",
                 ],
@@ -204,7 +258,7 @@ class SessionTabPresenter:
             ):
                 table.setItem(row_index, col, cls._readonly_item(row_data.get(key, "")))
 
-            table.setItem(row_index, 7, cls._readonly_item(row_data.get("path", "")))
+            table.setItem(row_index, 8, cls._readonly_item(row_data.get("path", "")))
 
     @classmethod
     def populate_archive_table(
@@ -220,15 +274,18 @@ class SessionTabPresenter:
                 [
                     "file_name",
                     "sample_id",
+                    "project_id",
                     "study_name",
                     "operator_id",
+                    "uploaded_by",
                     "created",
                     "archived",
+                    "status",
                 ]
             ):
                 table.setItem(row_index, col, cls._readonly_item(row_data.get(key, "")))
 
-            table.setItem(row_index, 6, cls._readonly_item(row_data.get("path", "")))
+            table.setItem(row_index, 9, cls._readonly_item(row_data.get("path", "")))
 
     @staticmethod
     def format_active_session_info(info: Dict[str, Any]) -> str:

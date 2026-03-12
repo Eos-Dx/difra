@@ -1,12 +1,15 @@
 # zone_measurements/logic/file_mixin.py
 
 import json
+import logging
 import os
 from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog, QListWidgetItem
+
+logger = logging.getLogger(__name__)
 
 
 class ZoneMeasurementsFileMixin:
@@ -45,6 +48,7 @@ class ZoneMeasurementsFileMixin:
         and updates the UI list widget. Used for auxiliary or technical measurements.
         """
         if not success:
+            logger.warning("[%s] capture failed", typ)
             print(f"[{typ}] capture failed.")
             if hasattr(self, "_aux_timer"):
                 self._aux_timer.stop()
@@ -52,6 +56,7 @@ class ZoneMeasurementsFileMixin:
                 self._aux_status.setText("")
             return {}
         else:
+            logger.info("[%s] capture successful: %s", typ, result_files)
             print(f"[{typ}] capture successful: {result_files}")
             if hasattr(self, "_aux_timer"):
                 self._aux_timer.stop()
@@ -69,6 +74,13 @@ class ZoneMeasurementsFileMixin:
                 else:
                     new_txt_file = txt_path
             except Exception as e:
+                logger.warning(
+                    "Failed moving file %s -> %s: %s",
+                    txt_path,
+                    new_txt_file,
+                    e,
+                    exc_info=True,
+                )
                 print(f"[ERROR] Moving file {txt_path} → {new_txt_file}: {e}")
                 new_txt_file = txt_path
             try:
@@ -76,6 +88,7 @@ class ZoneMeasurementsFileMixin:
                 npy = new_txt_file.with_suffix(".npy")
                 np.save(npy, data)
             except Exception as e:
+                logger.warning("Conversion error for %s: %s", alias, e, exc_info=True)
                 print(f"Conversion error for {alias}: {e}")
                 npy = new_txt_file
             file_map[alias] = str(npy)

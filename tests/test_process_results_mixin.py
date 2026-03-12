@@ -346,6 +346,45 @@ def test_get_point_id_from_table_row_returns_only_id():
     assert ZoneMeasurementsProcessResultsMixin._get_point_id_from_table_row(owner, 3) == 9
 
 
+def test_update_profile_previews_targets_specific_point_uid():
+    calls = []
+    owner = SimpleNamespace(
+        _extract_profile_from_measurement=lambda measurement_ref: [1.0, 2.0, 3.0],
+        update_detector_profile_preview=lambda alias, profile, point_uid=None: calls.append(
+            (alias, tuple(profile), point_uid)
+        ),
+    )
+
+    ZoneMeasurementsProcessResultsMixin._update_profile_previews_from_result_files(
+        owner,
+        {"PRIMARY": "/tmp/a.npy", "SECONDARY": "/tmp/b.npy"},
+        point_uid="7_deadbeef",
+    )
+
+    assert calls == [
+        ("PRIMARY", (1.0, 2.0, 3.0), "7_deadbeef"),
+        ("SECONDARY", (1.0, 2.0, 3.0), "7_deadbeef"),
+    ]
+
+
+def test_update_profile_previews_falls_back_to_legacy_updater_signature():
+    calls = []
+    owner = SimpleNamespace(
+        _extract_profile_from_measurement=lambda measurement_ref: [1.0, 2.0],
+        update_detector_profile_preview=lambda alias, profile: calls.append(
+            (alias, tuple(profile))
+        ),
+    )
+
+    ZoneMeasurementsProcessResultsMixin._update_profile_previews_from_result_files(
+        owner,
+        {"PRIMARY": "/tmp/a.npy"},
+        point_uid="9_feedbeef",
+    )
+
+    assert calls == [("PRIMARY", (1.0, 2.0))]
+
+
 def test_get_or_create_measurement_widget_prefers_existing_widget(monkeypatch):
     _patch_pm(monkeypatch)
     widget = _MeasurementWidget()

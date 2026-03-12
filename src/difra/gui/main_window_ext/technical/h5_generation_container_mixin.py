@@ -404,6 +404,26 @@ class H5GenerationContainerMixin:
                     fake_poni_data[alias] = single_poni[alias]
             poni_data = fake_poni_data
 
+        center_errors, center_warnings = self._validate_poni_center_rules_for_data(
+            poni_data
+        )
+        if center_errors:
+            details = "\n".join(f"- {msg}" for msg in center_errors[:8])
+            if len(center_errors) > 8:
+                details += f"\n- ... and {len(center_errors) - 8} more"
+            QMessageBox.warning(
+                self,
+                "PONI Center Validation Failed",
+                "PONI center validation failed for configured detector rules.\n\n"
+                + details
+                + "\n\nFix PONI files or adjust JSON rules before generating H5.",
+            )
+            return
+        if center_warnings:
+            self._log_technical_event(
+                f"PONI center validation warnings: {len(center_warnings)}"
+            )
+
         # Get technical temp folder for HDF5 generation
         tech_temp_folder = _get_technical_temp_folder(self.config if hasattr(self, "config") else None)
         

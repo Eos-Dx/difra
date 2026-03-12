@@ -147,13 +147,19 @@ def _get_technical_imports():
         return _TECHNICAL_IMPORTS_AVAILABLE
 
     try:
-        from difra.gui.technical.capture import CaptureWorker, show_measurement_window, validate_folder
+        from difra.gui.technical.capture import (
+            CaptureWorker,
+            show_measurement_window,
+            show_poni_centers_preview_window,
+            validate_folder,
+        )
         from difra.gui.technical.measurement_worker import MeasurementWorker
 
         _technical_modules.update(
             {
                 "CaptureWorker": CaptureWorker,
                 "show_measurement_window": show_measurement_window,
+                "show_poni_centers_preview_window": show_poni_centers_preview_window,
                 "validate_folder": validate_folder,
                 "MeasurementWorker": MeasurementWorker,
             }
@@ -189,6 +195,7 @@ def _get_technical_module(name):
         "show_measurement_window": lambda *args, **kwargs: print(
             "Technical measurement window not available - imports failed"
         ),
+        "show_poni_centers_preview_window": lambda *args, **kwargs: None,
         "validate_folder": lambda path: str(path) if path else "",
         "MeasurementWorker": type(
             "MeasurementWorker",
@@ -331,7 +338,21 @@ class TechnicalMeasurementsMixin(
         return _get_technical_module(name)
 
     def _log_technical_event(self, message: str):
+        payload = f"[TECH] {message}"
         try:
-            self._append_measurement_log(f"[TECH] {message}")
+            self._append_measurement_log(payload)
         except Exception:
             print(f"[TECH] {message}")
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="TECH", source="technical_measurements")
+        except Exception:
+            logger.debug(
+                "Suppressed exception in technical_measurements.py",
+                exc_info=True,
+            )

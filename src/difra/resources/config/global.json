@@ -24,5 +24,26 @@
             "text": "+17cm",
             "append_text": "_17cm"
         }
-    ]
+    ],
+    "poni_center_validation": {
+        "enabled": true,
+        "apply_in_dev_mode": false,
+        "defaults": {
+            "row_tolerance_percent": 5.0
+        },
+        "detectors": {
+            "PRIMARY": {
+                "row_target_px": 128,
+                "row_tolerance_px": 13,
+                "col_target_px": 10,
+                "col_tolerance_px": 10,
+                "col_max_px": 20
+            },
+            "SECONDARY": {
+                "row_target_px": 128,
+                "row_tolerance_px": 13,
+                "col_gt_px": 256
+            }
+        }
+    }
 }

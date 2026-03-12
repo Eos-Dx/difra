@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import h5py
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -80,15 +81,32 @@ def test_build_archived_rows_scans_nested_archive_tree(tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["sample_id"] == "SAMPLE_Z"
-    assert rows[0]["archived"]
+    assert rows[0]["archived"] == "20260213_120000"
+
+
+def test_build_archived_rows_extracts_stamp_with_numeric_suffix(tmp_path):
+    archive_root = tmp_path / "archive" / "measurements"
+    archived_dir = archive_root / "session_sad_SAMPLE_Z_STUDY_Z_20260213_120000_2"
+    archived_dir.mkdir(parents=True, exist_ok=True)
+
+    _create_session_file(archived_dir, "SAMPLE_Z", "STUDY_Z")
+
+    rows = SessionTabPresenter.build_archived_rows(
+        archive_root,
+        schema=schema,
+        container_manager=_ContainerManagerStub(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["archived"] == "20260213_120000"
 
 
 def test_presenter_populates_pending_and_archive_tables(qapp):
     pending_table = QTableWidget()
-    pending_table.setColumnCount(8)
+    pending_table.setColumnCount(9)
 
     archive_table = QTableWidget()
-    archive_table.setColumnCount(7)
+    archive_table.setColumnCount(10)
 
     pending_rows = [
         {
@@ -96,6 +114,7 @@ def test_presenter_populates_pending_and_archive_tables(qapp):
             "sample_id": "SAMPLE_A",
             "study_name": "STUDY_A",
             "operator_id": "sad",
+            "uploaded_by": "",
             "created": "2026-02-13",
             "status": "LOCKED / UNSENT",
             "path": "/tmp/session_a.nxs.h5",
@@ -105,10 +124,13 @@ def test_presenter_populates_pending_and_archive_tables(qapp):
         {
             "file_name": "session_b.nxs.h5",
             "sample_id": "SAMPLE_B",
+            "project_id": "PROJ_B",
             "study_name": "STUDY_B",
             "operator_id": "sad",
+            "uploaded_by": "matador_user",
             "created": "2026-02-13",
             "archived": "20260213_120000",
+            "status": "LOCKED / SENT",
             "path": "/tmp/archive/session_b.nxs.h5",
         }
     ]
@@ -126,11 +148,41 @@ def test_presenter_populates_pending_and_archive_tables(qapp):
     pending_file_item = pending_table.item(0, 1)
     assert pending_file_item.text() == "session_a.nxs.h5"
     assert pending_file_item.flags() == (Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-    assert pending_table.item(0, 7).text() == "/tmp/session_a.nxs.h5"
+    assert pending_table.item(0, 8).text() == "/tmp/session_a.nxs.h5"
 
     assert archive_table.item(0, 0).text() == "session_b.nxs.h5"
-    assert archive_table.item(0, 5).text() == "20260213_120000"
-    assert archive_table.item(0, 6).text() == "/tmp/archive/session_b.nxs.h5"
+    assert archive_table.item(0, 2).text() == "PROJ_B"
+    assert archive_table.item(0, 5).text() == "matador_user"
+    assert archive_table.item(0, 7).text() == "20260213_120000"
+    assert archive_table.item(0, 8).text() == "LOCKED / SENT"
+    assert archive_table.item(0, 9).text() == "/tmp/archive/session_b.nxs.h5"
+
+
+def test_read_session_container_metadata_includes_uploaded_by(tmp_path):
+    archive_root = tmp_path / "archive" / "measurements"
+    archived_dir = archive_root / "SAMPLE_Z_20260213_120000"
+    archived_dir.mkdir(parents=True, exist_ok=True)
+    session_path = _create_session_file(archived_dir, "SAMPLE_Z", "STUDY_Z")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["uploaded_by"] = "matador_user"
+        h5f.attrs["upload_timestamp"] = "2026-03-09 12:00:00"
+        h5f.attrs["upload_session_id"] = "upload_matador_user_20260309_120000"
+        h5f.attrs["upload_status"] = "success"
+        h5f.attrs["upload_response_checksum_sha256"] = "abc123"
+
+    row = SessionTabPresenter.read_session_container_metadata(
+        session_path,
+        schema=schema,
+        container_manager=_ContainerManagerStub(),
+    )
+
+    assert row["project_id"] == "STUDY_Z"
+    assert row["uploaded_by"] == "matador_user"
+    assert row["upload_timestamp"] == "2026-03-09 12:00:00"
+    assert row["upload_session_id"] == "upload_matador_user_20260309_120000"
+    assert row["upload_status"] == "success"
+    assert row["upload_response_checksum_sha256"] == "abc123"
 
 
 def test_build_active_session_view_state():

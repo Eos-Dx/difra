@@ -24,8 +24,12 @@ class SessionFlowMixin:
                 folder_text = self.folderLineEdit.text().strip()
                 if folder_text:
                     return Path(folder_text)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read measurements folder from folderLineEdit: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         if hasattr(self, "config") and isinstance(self.config, dict):
             folder = self.config.get("measurements_folder")
@@ -49,7 +53,12 @@ class SessionFlowMixin:
 
         try:
             self.attenuationCheckBox.setChecked(True)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to set attenuationCheckBox during session restore: %s",
+                exc,
+                exc_info=True,
+            )
             return
 
         if hasattr(self, "_append_session_log"):
@@ -86,7 +95,12 @@ class SessionFlowMixin:
         if hasattr(self, "integrationSpinBox"):
             try:
                 integration_time_ms = float(self.integrationSpinBox.value()) * 1000.0
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read integrationSpinBox value for recovery; using 0ms: %s",
+                    exc,
+                    exc_info=True,
+                )
                 integration_time_ms = 0.0
 
         for item in incomplete:
@@ -215,8 +229,12 @@ class SessionFlowMixin:
                     meas_group = f[schema.GROUP_MEASUREMENTS]
                     # Check if any point groups exist
                     has_measurements = any(key.startswith('pt_') for key in meas_group.keys())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to inspect session measurements before replacement: %s",
+                exc,
+                exc_info=True,
+            )
         
         # Build status message
         status_lines = [
@@ -496,12 +514,22 @@ class SessionFlowMixin:
             if hasattr(self, "real_x_pos_mm") and hasattr(self.real_x_pos_mm, "value"):
                 try:
                     ref_x_mm = float(self.real_x_pos_mm.value())
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to read real_x_pos_mm for mapping payload: %s",
+                        exc,
+                        exc_info=True,
+                    )
                     ref_x_mm = 0.0
             if hasattr(self, "real_y_pos_mm") and hasattr(self.real_y_pos_mm, "value"):
                 try:
                     ref_y_mm = float(self.real_y_pos_mm.value())
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to read real_y_pos_mm for mapping payload: %s",
+                        exc,
+                        exc_info=True,
+                    )
                     ref_y_mm = 0.0
 
             # Create pixel-to-mm conversion dict
@@ -631,8 +659,14 @@ class SessionFlowMixin:
         try:
             if current_path.resolve() == Path(target_path).resolve():
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to resolve session path comparison (%s vs %s): %s",
+                current_path,
+                target_path,
+                exc,
+                exc_info=True,
+            )
 
         container_manager = get_container_manager(self.config if hasattr(self, "config") else None)
         current_locked = bool(container_manager.is_container_locked(current_path))
@@ -648,7 +682,12 @@ class SessionFlowMixin:
         info = {}
         try:
             info = self.session_manager.get_session_info() or {}
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to read active session info before container switch: %s",
+                exc,
+                exc_info=True,
+            )
             info = {}
 
         sample_id = info.get("sample_id") or self.session_manager.sample_id or "UNKNOWN"

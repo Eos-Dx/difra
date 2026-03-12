@@ -51,6 +51,10 @@ class ZoneMeasurementsMixin(
             # Keep this dock easy to shrink; the main window sets only an initial width bias.
             self.zoneMeasurementsDock.setMinimumHeight(110)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in zone_measurements_mixin.py",
+                exc_info=True,
+            )
         
         self.addDockWidget(Qt.BottomDockWidgetArea, self.zoneMeasurementsDock)

@@ -2,7 +2,7 @@
 # Calibration done on Fri Aug 29 15:06:15 2025 (DEMO MODE - FAKE DATA)
 poni_version: 2.1
 Detector: Detector
-Detector_config: {"pixel1": 9.999999999999999e-05, "pixel2": 9.999999999999999e-05, "max_shape": [128, 128], "orientation": 3}
+Detector_config: {"pixel1": 9.999999999999999e-05, "pixel2": 9.999999999999999e-05, "max_shape": [256, 256], "orientation": 3}
 Distance: 0.114803
 Poni1: 0.005788
 Poni2: 0.00141

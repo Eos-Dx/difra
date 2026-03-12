@@ -16,7 +16,11 @@ class StageManualMotionMixin:
             try:
                 widget.setEnabled(bool(enabled))
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in stage_manual_motion_mixin.py",
+                    exc_info=True,
+                )
 
     def _start_manual_motion_async(
         self,
@@ -59,7 +63,11 @@ class StageManualMotionMixin:
             try:
                 self.update_xy_pos()
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in stage_manual_motion_mixin.py",
+                    exc_info=True,
+                )
 
             if not getattr(self, "_manual_motion_done", False):
                 return
@@ -162,7 +170,7 @@ class StageManualMotionMixin:
         logging.info("Stage home operation started")
         if not getattr(self, "hardware_initialized", False):
             logging.warning("Home operation failed: Stage not initialized")
-            print("Stage not initialized.")
+            logging.warning("Stage not initialized.")
             return
 
         try:
@@ -226,7 +234,7 @@ class StageManualMotionMixin:
         logging.info("Stage load position operation started")
         if not getattr(self, "hardware_initialized", False):
             logging.warning("Load operation failed: Stage not initialized")
-            print("Stage not initialized.")
+            logging.warning("Stage not initialized.")
             return
 
         try:

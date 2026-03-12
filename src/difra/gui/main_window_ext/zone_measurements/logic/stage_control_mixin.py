@@ -21,7 +21,11 @@ class StageControlMixin(StageManualMotionMixin):
         try:
             self._append_measurement_log(f"[HW] {message}")
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in stage_control_mixin.py",
+                exc_info=True,
+            )
 
     @staticmethod
     def _active_detector_configs(config: Dict) -> List[Dict]:
@@ -231,7 +235,11 @@ class StageControlMixin(StageManualMotionMixin):
                     "Measurement controls are locked until sidecar is active again.",
                 )
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in stage_control_mixin.py",
+                    exc_info=True,
+                )
         return False
 
     @staticmethod
@@ -339,7 +347,11 @@ class StageControlMixin(StageManualMotionMixin):
                 if hasattr(self.stage_controller, "get_limits"):
                     return self.stage_controller.get_limits()
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in stage_control_mixin.py",
+                    exc_info=True,
+                )
 
         stage_cfg = self._selected_stage_config()
         limits_cfg = stage_cfg.get("settings", {}).get("limits_mm", {})
@@ -360,7 +372,11 @@ class StageControlMixin(StageManualMotionMixin):
                 if hasattr(self.stage_controller, "get_home_load_positions"):
                     return self.stage_controller.get_home_load_positions()
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in stage_control_mixin.py",
+                    exc_info=True,
+                )
 
         stage_cfg = self._selected_stage_config()
         settings = stage_cfg.get("settings", {})
@@ -598,7 +614,7 @@ class StageControlMixin(StageManualMotionMixin):
             for itm in old:
                 self.image_view.scene.removeItem(itm)
         except Exception as exc:
-            print("Error removing old beam cross:", exc)
+            logging.warning("Error removing old beam cross: %s", exc, exc_info=True)
 
         x_pix, y_pix = self.mm_to_pixels(x, y)
 

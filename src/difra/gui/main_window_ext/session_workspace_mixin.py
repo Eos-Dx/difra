@@ -17,7 +17,13 @@ class SessionWorkspaceMixin:
         if isinstance(value, (list, tuple)) and len(value) >= 2:
             try:
                 return (float(value[0]), float(value[1]))
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to normalize XY pair %r: %s",
+                    value,
+                    exc,
+                    exc_info=True,
+                )
                 return None
         return None
 
@@ -29,8 +35,14 @@ class SessionWorkspaceMixin:
         if callable(setter):
             try:
                 setter(float(value))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to set %s value=%r: %s",
+                    attr_name,
+                    value,
+                    exc,
+                    exc_info=True,
+                )
 
     def _get_stage_reference_mm(self):
         ref_x = 0.0
@@ -43,12 +55,22 @@ class SessionWorkspaceMixin:
         if callable(x_value):
             try:
                 ref_x = float(x_value())
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read real_x_pos_mm: %s",
+                    exc,
+                    exc_info=True,
+                )
                 ref_x = 0.0
         if callable(y_value):
             try:
                 ref_y = float(y_value())
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read real_y_pos_mm: %s",
+                    exc,
+                    exc_info=True,
+                )
                 ref_y = 0.0
 
         return ref_x, ref_y
@@ -62,7 +84,12 @@ class SessionWorkspaceMixin:
     def _pixel_to_physical_mm(self, x_px: float, y_px: float):
         try:
             ratio = float(getattr(self, "pixel_to_mm_ratio", 0.0))
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to parse pixel_to_mm_ratio for point conversion: %s",
+                exc,
+                exc_info=True,
+            )
             ratio = 0.0
         if ratio == 0.0:
             return (0.0, 0.0)
@@ -76,7 +103,12 @@ class SessionWorkspaceMixin:
     def _build_mapping_conversion_payload(self):
         try:
             ratio = float(getattr(self, "pixel_to_mm_ratio", 0.0))
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to parse pixel_to_mm_ratio for mapping payload: %s",
+                exc,
+                exc_info=True,
+            )
             ratio = 0.0
         center_x, center_y = self._get_include_center_px()
         ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
@@ -107,7 +139,13 @@ class SessionWorkspaceMixin:
                 "size": int(stat.st_size),
                 "mtime_ns": int(stat.st_mtime_ns),
             }
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to read image signature metadata for %s: %s",
+                path,
+                exc,
+                exc_info=True,
+            )
             return {"path": str(path)}
 
     @staticmethod
@@ -134,8 +172,13 @@ class SessionWorkspaceMixin:
                     elif channels == 4:
                         image_array = cv2.cvtColor(image_array, cv2.COLOR_BGRA2RGBA)
                 return image_array
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "OpenCV image load failed for %s, falling back to PIL: %s",
+                image_path,
+                exc,
+                exc_info=True,
+            )
 
         try:
             import numpy as np

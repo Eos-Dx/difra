@@ -1,5 +1,6 @@
 # zone_measurements/detector_param_mixin.py
 
+import logging
 import os
 from functools import partial
 from pathlib import Path
@@ -15,6 +16,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+logger = logging.getLogger(__name__)
+
 # Defer problematic import to avoid pyFAI crashes on startup
 def _get_create_mask():
     """Lazy import of create_mask to avoid startup crashes."""
@@ -22,10 +25,10 @@ def _get_create_mask():
         from difra.gui.technical.analysis_compat import create_mask
         return create_mask
     except Exception as e:
-        print(f"Warning: create_mask import failed: {e}")
+        logger.warning("create_mask import failed: %s", e, exc_info=True)
         # Return a stub function
         def create_mask_stub(*args, **kwargs):
-            print("create_mask not available - import failed")
+            logger.warning("create_mask is unavailable due to previous import failure")
             return None
         return create_mask_stub
 
@@ -96,7 +99,10 @@ class DetectorParamMixin:
                     if pth:
                         poni_lineedit.setText(str(pth))
             except Exception:
-                pass
+                logger.debug(
+                    "Suppressed exception in detector_param_mixin.py",
+                    exc_info=True,
+                )
             setattr(self, f"{alias.lower()}_poni_lineedit", poni_lineedit)
             poni_layout.addWidget(poni_lineedit)
             poni_btn = QPushButton("Browse...")
@@ -230,9 +236,14 @@ Wavelength: {wavelength}
             try:
                 with open(poni_path, "w") as f:
                     f.write(poni_content)
-                print(f"Created demo PONI file: {poni_path}")
+                logger.info("Created demo PONI file: %s", poni_path)
             except Exception as e:
-                print(f"Failed to create demo PONI file for {alias}: {e}")
+                logger.warning(
+                    "Failed to create demo PONI file for %s: %s",
+                    alias,
+                    e,
+                    exc_info=True,
+                )
 
     def load_default_masks_and_ponis(self):
         """Loads default masks/ponis from config for each ACTIVE detector alias.
@@ -285,7 +296,12 @@ Wavelength: {wavelength}
                     mask = create_mask(faulty_pixels, size=det_size)
                     self.masks[alias] = mask
                 except Exception as e:
-                    print(f"Failed to load faulty pixels for {alias}: {e}")
+                    logger.warning(
+                        "Failed to load faulty pixels for %s: %s",
+                        alias,
+                        e,
+                        exc_info=True,
+                    )
                     self.masks[alias] = None
             else:
                 self.masks[alias] = None
@@ -307,7 +323,12 @@ Wavelength: {wavelength}
                     meta_path = str(poni_path)
                     meta_name = os.path.basename(meta_path)
                 except Exception as e:
-                    print(f"Failed to load explicit poni file for {alias}: {e}")
+                    logger.warning(
+                        "Failed to load explicit PONI file for %s: %s",
+                        alias,
+                        e,
+                        exc_info=True,
+                    )
 
             # If dev mode and no explicit poni file, try the generated demo PONI file
             if not poni_value and dev_mode:
@@ -319,15 +340,20 @@ Wavelength: {wavelength}
                             poni_value = f.read()
                         meta_path = str(demo_poni_file)
                         meta_name = os.path.basename(meta_path)
-                        print(f"Using demo PONI file for {alias}: {meta_name}")
+                        logger.info("Using demo PONI file for %s: %s", alias, meta_name)
                     except Exception as e:
-                        print(f"Failed to load demo PONI for {alias}: {e}")
+                        logger.warning(
+                            "Failed to load demo PONI for %s: %s",
+                            alias,
+                            e,
+                            exc_info=True,
+                        )
 
             # Fallback to default_poni if still no value
             if not poni_value:
                 poni_value = det_cfg.get("default_poni", "")
                 if poni_value:
-                    print(f"Using default_poni for {alias}")
+                    logger.info("Using default_poni for %s", alias)
             self.ponis[alias] = poni_value
             self.poni_files[alias] = {
                 "path": meta_path,
@@ -342,7 +368,7 @@ Wavelength: {wavelength}
             create_mask = _get_create_mask()
             self.masks[detector] = create_mask(data)
         except Exception as e:
-            print(f"Error loading mask file for {detector}:", e)
+            logger.warning("Error loading mask file for %s: %s", detector, e, exc_info=True)
 
     def load_poni_file(self, poni_file, detector):
         """Loads a poni file for a given detector."""
@@ -356,8 +382,20 @@ Wavelength: {wavelength}
                 "path": str(poni_file),
                 "name": os.path.basename(str(poni_file)),
             }
+            try:
+                path_getter = getattr(self, "_active_technical_container_path_obj", None)
+                show_preview = getattr(self, "_show_poni_center_preview_for_container", None)
+                if callable(path_getter) and callable(show_preview):
+                    active_path = path_getter()
+                    if active_path is not None and active_path.exists():
+                        show_preview(str(active_path))
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in detector_param_mixin.py",
+                    exc_info=True,
+                )
         except Exception as e:
-            print(f"Error loading PONI file for {detector}:", e)
+            logger.warning("Error loading PONI file for %s: %s", detector, e, exc_info=True)
 
     def get_current_poni_settings(self):
         """Captures current PONI settings from UI line edits for active detectors."""
@@ -374,13 +412,13 @@ Wavelength: {wavelength}
                         "value": self.ponis.get(alias, ""),
                     }
         except Exception as e:
-            print(f"Error capturing current PONI settings: {e}")
+            logger.warning("Error capturing current PONI settings: %s", e, exc_info=True)
         return current_settings
 
     def refresh_detector_tabs_for_mode_switch(self):
         """Explicitly refresh detector tabs when switching between demo/production modes.
         This can be called manually or automatically when config changes."""
-        print("Refreshing detector tabs for mode switch...")
+        logger.info("Refreshing detector tabs for mode switch")
 
         self._detector_param_tabs_enabled = self._are_detector_param_tabs_enabled()
         if self._detector_param_tabs_enabled:
@@ -401,7 +439,7 @@ Wavelength: {wavelength}
         else:
             self.clear_detector_param_tabs()
 
-        print(
+        logger.info(
             f"Detector tabs refreshed. Active detectors: {getattr(self, 'detector_aliases', [])}"
         )
 
@@ -409,7 +447,7 @@ Wavelength: {wavelength}
         """Called when DEV mode is toggled in the config.
         Updates detector tabs to reflect the new mode without requiring hardware restart.
         """
-        print(f"Config mode changed to: {'DEMO' if dev_mode else 'PRODUCTION'}")
+        logger.info("Config mode changed to: %s", "DEMO" if dev_mode else "PRODUCTION")
 
         # Update the config DEV flag if needed
         self.config["DEV"] = dev_mode
@@ -423,25 +461,38 @@ Wavelength: {wavelength}
                         "[HW] Mode switch detected; deinitializing hardware to apply new profile"
                     )
             except Exception:
-                pass
+                logger.debug(
+                    "Suppressed exception in detector_param_mixin.py",
+                    exc_info=True,
+                )
             try:
                 if hasattr(self, "toggle_hardware"):
                     self.toggle_hardware()  # deinitialize branch
             except Exception as exc:
-                print(f"Warning: failed to deinitialize during mode switch: {exc}")
+                logger.warning(
+                    "Failed to deinitialize during mode switch: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         # Always drop runtime handles so next initialize builds a fresh client/controller
         # against current config mode.
         try:
             self.hardware_client = None
         except Exception:
-            pass
+            logger.debug(
+                "Suppressed exception in detector_param_mixin.py",
+                exc_info=True,
+            )
         try:
             self.hardware_controller = None
             self.stage_controller = None
             self.detector_controller = None
         except Exception:
-            pass
+            logger.debug(
+                "Suppressed exception in detector_param_mixin.py",
+                exc_info=True,
+            )
 
         # Refresh detector tabs immediately for the new mode
         self.refresh_detector_tabs_for_mode_switch()
@@ -451,8 +502,12 @@ Wavelength: {wavelength}
             if hasattr(self, "refresh_sidecar_status"):
                 self.refresh_sidecar_status(show_message=False)
         except Exception as exc:
-            print(f"Warning: failed to refresh sidecar status after mode switch: {exc}")
+            logger.warning(
+                "Failed to refresh sidecar status after mode switch: %s",
+                exc,
+                exc_info=True,
+            )
 
-        print(
+        logger.info(
             "Mode switch applied. Next hardware initialization will use current mode settings."
         )

@@ -1,5 +1,6 @@
 """Main zone points extension functionality."""
 
+import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,8 @@ from .points.zone_points_constants import ZonePointsConstants
 from .points.zone_points_renderer import ZonePointsRenderer, ZonePointsTableManager
 from .points.zone_points_ui_builder import ZonePointsGeometry, ZonePointsUIBuilder
 from . import zone_points_actions
+
+logger = logging.getLogger(__name__)
 
 
 class ZonePointsMixin:
@@ -209,7 +212,7 @@ class ZonePointsMixin:
         # Get shapes for inclusion and exclusion
         include_shape, exclude_shapes = self._get_inclusion_exclusion_shapes()
         if include_shape is None:
-            print("No include shape defined. Cannot generate points.")
+            logger.info("No include shape defined. Cannot generate points.")
             return
 
         # Generate candidate points
@@ -217,7 +220,7 @@ class ZonePointsMixin:
             include_shape, exclude_shapes, shrink_factor, edge_clearance_px
         )
         if not candidates:
-            print("No candidate points found in allowed region.")
+            logger.info("No candidate points found in allowed region.")
             return
 
         # Sample final points and compute ideal radius
@@ -504,7 +507,7 @@ class ZonePointsMixin:
             if item in self.image_view.scene.items():
                 self.image_view.scene.removeItem(item)
         except Exception as e:
-            print(f"Error removing item: {e}")
+            logger.warning("Error removing item from scene: %s", e, exc_info=True)
 
     def on_points_table_selection(self, selected, deselected):
         """Handle table row selection by highlighting corresponding points in the scene."""
@@ -1158,7 +1161,7 @@ class ZonePointsMixin:
         if not hasattr(self, "image_view") or not hasattr(
             self.image_view, "points_dict"
         ):
-            print("Warning: image_view or points_dict not available")
+            logger.warning("image_view or points_dict not available while building points snapshot")
             return points
 
         try:
@@ -1184,7 +1187,7 @@ class ZonePointsMixin:
                     )
                     fallback_display_id = max(fallback_display_id + 1, int(pid) + 1 if pid is not None else fallback_display_id + 1)
                 except Exception as e:
-                    print(f"Error processing generated point: {e}")
+                    logger.warning("Error processing generated point: %s", e, exc_info=True)
                     continue
 
             # User points
@@ -1209,11 +1212,11 @@ class ZonePointsMixin:
                     )
                     fallback_display_id = max(fallback_display_id + 1, int(pid) + 1 if pid is not None else fallback_display_id + 1)
                 except Exception as e:
-                    print(f"Error processing user point: {e}")
+                    logger.warning("Error processing user point: %s", e, exc_info=True)
                     continue
 
         except Exception as e:
-            print(f"Error building points snapshot: {e}")
+            logger.warning("Error building points snapshot: %s", e, exc_info=True)
 
         return points
 
@@ -1231,7 +1234,7 @@ class ZonePointsMixin:
             uid_txt = str(point_uid).strip()
             if uid_txt and uid_txt not in current_point_uids:
                 self.remove_measurement_widget_from_panel(uid_txt)
-                print(f"Cleaned up widget for deleted point UID {uid_txt}")
+                logger.debug("Cleaned up widget for deleted point UID %s", uid_txt)
 
     def _populate_table_rows(
         self, points: List[Tuple[float, float, str, Optional[int], str]]

@@ -205,7 +205,9 @@ class TechnicalCaptureMixin:
         tm = _tm()
         if not self._technical_imports_available():
             self._log_technical_event("Cannot start Aux measurement - technical imports not available")
-            print("Cannot start Aux measurement - technical measurements disabled due to import errors")
+            logger.warning(
+                "Cannot start Aux measurement - technical measurements disabled due to import errors"
+            )
             tm.QMessageBox.warning(
                 self,
                 "Technical Measurements Unavailable",
@@ -300,7 +302,9 @@ class TechnicalCaptureMixin:
         env = self.config.get("pyfai_conda") or self.config.get("conda")
         if not env:
             self._log_technical_event("Error: No conda environment configured")
-            print("No conda env set in self.config['pyfai_conda'] or self.config['conda']")
+            logger.warning(
+                "No conda env set in self.config['pyfai_conda'] or self.config['conda']"
+            )
             return
 
         validate_folder = self._get_technical_module("validate_folder")
@@ -312,10 +316,10 @@ class TechnicalCaptureMixin:
             try:
                 subprocess.Popen(start_cmd, shell=True)
                 self._log_technical_event("PyFAI calibration launched in new window")
-                print("Launched PyFai in new cmd window.")
+                logger.info("Launched PyFAI in new cmd window")
             except Exception as e:
                 self._log_technical_event(f"Failed to launch PyFAI on Windows: {e}")
-                print("Failed to launch PyFai on Windows:", e)
+                logger.warning("Failed to launch PyFAI on Windows: %s", e, exc_info=True)
             return
 
         try:
@@ -356,10 +360,10 @@ fi
                     except FileNotFoundError:
                         continue
             self._log_technical_event("PyFAI calibration launched in new terminal window")
-            print("Launched PyFai in new terminal window.")
+            logger.info("Launched PyFAI in new terminal window")
         except Exception as e:
             self._log_technical_event(f"Failed to launch PyFAI on Unix: {e}")
-            print("Failed to launch PyFai on Unix:", e)
+            logger.warning("Failed to launch PyFAI on Unix: %s", e, exc_info=True)
 
     def _update_aux_status(self):
         elapsed = int(time.time() - self._aux_start)

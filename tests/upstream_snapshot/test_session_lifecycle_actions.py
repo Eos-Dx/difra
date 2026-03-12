@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import h5py
 from container.v0_2 import container_manager, writer as session_writer
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 
@@ -61,6 +62,9 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
     assert result.failed == []
     assert result.moved == 2
     assert result.archived_active_session is True
+    assert result.upload_session_id.startswith("upload_sad_")
+    assert result.upload_success == 2
+    assert result.upload_failed == 0
     assert len(result.archived_paths) == 2
     assert all(path.exists() for path in result.archived_paths)
     assert result.old_format_failed == []
@@ -76,6 +80,21 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
         container_manager.get_transfer_status(path) == "sent"
         for path in result.archived_paths
     )
+    for archived_path in result.archived_paths:
+        with h5py.File(archived_path, "r") as h5f:
+            assert h5f.attrs.get("uploaded_by") == "sad"
+            assert str(h5f.attrs.get("upload_timestamp", "")).strip()
+            assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_sad_")
+            assert h5f.attrs.get("upload_status") == "success"
+            local_checksum = str(h5f.attrs.get("upload_local_checksum_sha256", ""))
+            response_checksum = str(
+                h5f.attrs.get("upload_response_checksum_sha256", "")
+            )
+            assert len(local_checksum) == 64
+            assert response_checksum == local_checksum
+            attempt_log = str(h5f.attrs.get("upload_attempts_log", ""))
+            assert "operator=sad" in attempt_log
+            assert "status=success" in attempt_log
 
 
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):
@@ -162,3 +181,82 @@ def test_send_and_archive_exports_old_format_before_archive_move(tmp_path):
     assert result.failed == []
     assert [item[0] for item in call_order] == ["export", "archive"]
     assert call_order[0][1] == path_a
+
+
+def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        simulate_upload_failure=True,
+    )
+
+    assert result.moved == 1
+    assert result.upload_success == 0
+    assert result.upload_failed == 1
+    assert result.failed
+    archived = result.archived_paths[0]
+    assert container_manager.get_transfer_status(archived) == "unsent"
+    with h5py.File(archived, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "failed"
+        assert str(h5f.attrs.get("upload_result_message", "")).lower().find("failed") >= 0
+        assert str(h5f.attrs.get("upload_response_checksum_sha256", "")) == ""
+        assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
+
+
+def test_send_and_archive_continues_after_lock_validation_error(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    with patch.object(
+        container_manager,
+        "lock_container",
+        side_effect=RuntimeError("validation_failed"),
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a},
+            config={"upload_stub_failure_probability": 0.0},
+        )
+
+    assert result.moved == 1
+    assert len(result.archived_paths) == 1
+    assert result.archived_paths[0].exists() is True
+    assert any("lock/validation skipped" in msg for msg in result.failed)
+
+
+def test_send_and_archive_metadata_write_failure_marks_unsent(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    with patch.object(
+        SessionLifecycleActions,
+        "_write_container_attrs",
+        return_value=False,
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a},
+            config={"upload_stub_failure_probability": 0.0},
+        )
+
+    assert result.moved == 1
+    assert result.upload_success == 0
+    assert result.upload_failed == 1
+    assert any("metadata write failed" in msg for msg in result.failed)
+    archived = result.archived_paths[0]
+    assert container_manager.get_transfer_status(archived) == "unsent"

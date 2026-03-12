@@ -16,16 +16,54 @@ _DEFAULT_PM = _pm
 
 class ZoneMeasurementsProcessStartMixin:
     def _append_capture_log(self, message: str):
+        payload = f"[CAPTURE] {message}"
         try:
-            self._append_measurement_log(f"[CAPTURE] {message}")
+            self._append_measurement_log(payload)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="CAPTURE", source="process_start")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
 
     def _append_session_log(self, message: str):
+        payload = f"[SESSION] {message}"
         try:
-            self._append_measurement_log(f"[SESSION] {message}")
+            self._append_measurement_log(payload)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="SESSION", source="process_start")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
 
     @staticmethod
     def _as_text(value) -> str:
@@ -46,7 +84,11 @@ class ZoneMeasurementsProcessStartMixin:
             if isinstance(value, np.ndarray):
                 return value.tolist()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
 
         if isinstance(value, Path):
             return str(value)
@@ -72,13 +114,21 @@ class ZoneMeasurementsProcessStartMixin:
             if isinstance(existing, str) and existing.strip():
                 return existing.strip()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
 
         uid = self._new_measurement_point_uid(counter)
         try:
             point_item.setData(2, uid)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in process_start_mixin.py",
+                exc_info=True,
+            )
         return uid
 
     @staticmethod
@@ -294,7 +344,11 @@ class ZoneMeasurementsProcessStartMixin:
             try:
                 self.update_session_status()
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in process_start_mixin.py",
+                    exc_info=True,
+                )
 
         pm.QMessageBox.information(
             self,
