@@ -480,6 +480,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         msg += f"Beam Energy: {info['beam_energy_kev']} keV\n\n"
         msg += f"Container: {Path(info['session_path']).name}\n\n"
         msg += f"Transfer Status: {str(info.get('transfer_status', 'unsent')).upper()}\n\n"
+        msg += f"Session State: {str(info.get('session_state', 'draft'))}\n\n"
         msg += "Attenuation Status:\n"
         msg += f"  I₀ recorded: {'✓' if info['i0_recorded'] else '✗'}\n"
         msg += f"  I recorded: {'✓' if info['i_recorded'] else '✗'}\n"

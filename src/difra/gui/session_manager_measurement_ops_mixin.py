@@ -104,6 +104,10 @@ class SessionManagerMeasurementOpsMixin:
             event_type="points_generated",
             details={"count": len(points)},
         )
+        set_state = getattr(self, "_set_session_state", None)
+        prepared_state = getattr(self, "SESSION_STATE_PREPARED", "prepared")
+        if callable(set_state):
+            set_state(prepared_state, reason="points_initialized")
 
         logger.info("Added points to session", num_points=len(points))
         return paths
@@ -232,6 +236,10 @@ class SessionManagerMeasurementOpsMixin:
                 "measurement_path": meas_path,
             },
         )
+        set_state = getattr(self, "_set_session_state", None)
+        measuring_state = getattr(self, "SESSION_STATE_MEASURING", "measuring")
+        if callable(set_state):
+            set_state(measuring_state, reason="measurement_started")
         logger.info("Started point measurement", point_index=point_index, path=meas_path)
         return meas_path
 

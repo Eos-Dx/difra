@@ -27,6 +27,26 @@ logger = get_module_logger(__name__)
 class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMixin):
     """Manages HDF5 session containers for DIFRA measurements."""
 
+    SESSION_STATE_ATTR = "session_state"
+    SESSION_STATE_REASON_ATTR = "session_state_reason"
+    SESSION_STATE_UPDATED_ATTR = "session_state_updated_at"
+
+    SESSION_STATE_DRAFT = "draft"
+    SESSION_STATE_PREPARED = "prepared"
+    SESSION_STATE_MEASURING = "measuring"
+    SESSION_STATE_RECOVERY_REQUIRED = "recovery_required"
+    SESSION_STATE_LOCKED = "locked"
+    SESSION_STATE_ARCHIVED = "archived"
+
+    VALID_SESSION_STATES = {
+        SESSION_STATE_DRAFT,
+        SESSION_STATE_PREPARED,
+        SESSION_STATE_MEASURING,
+        SESSION_STATE_RECOVERY_REQUIRED,
+        SESSION_STATE_LOCKED,
+        SESSION_STATE_ARCHIVED,
+    }
+
     @staticmethod
     def _resolve_machine_name(config: Dict) -> str:
         """Resolve machine name from explicit field or selected setup identity."""
@@ -166,6 +186,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.sample_id: Optional[str] = None
         self.study_name: Optional[str] = None
         self.technical_container_path: Optional[Path] = None
+        self.session_state: str = self.SESSION_STATE_DRAFT
         
         # Track counters for linking
         self.i0_counter: Optional[int] = None  # Attenuation without sample
@@ -200,6 +221,181 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             self.site_id: str = "DIFRA_LAB"
             self.machine_name: str = "DIFRA-01"
             self.beam_energy_kev: float = 17.5
+
+    def _set_session_state(self, state: str, reason: str = "") -> bool:
+        """Persist session workflow state into the active container attrs."""
+        if not self.is_session_active():
+            return False
+
+        state_token = str(state or "").strip().lower()
+        if state_token not in self.VALID_SESSION_STATES:
+            logger.warning(
+                "Ignoring invalid session state update",
+                requested_state=state_token,
+            )
+            return False
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with h5py.File(self.session_path, "a") as h5f:
+                h5f.attrs[self.SESSION_STATE_ATTR] = state_token
+                h5f.attrs[self.SESSION_STATE_REASON_ATTR] = str(reason or "").strip()
+                h5f.attrs[self.SESSION_STATE_UPDATED_ATTR] = timestamp
+            self.session_state = state_token
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist session state",
+                session_path=str(self.session_path),
+                state=state_token,
+                reason=str(reason or ""),
+                error=str(exc),
+                exc_info=True,
+            )
+            return False
+
+    def _count_measurement_records(self) -> int:
+        """Count persisted point-measurement records in active session."""
+        self._check_active()
+        with h5py.File(self.session_path, "r") as h5f:
+            measurements_group = h5f.get(self.schema.GROUP_MEASUREMENTS)
+            if measurements_group is None:
+                return 0
+            total = 0
+            for point_group in measurements_group.values():
+                try:
+                    total += int(len(list(point_group.keys())))
+                except Exception:
+                    continue
+        return int(total)
+
+    def has_point_measurements(self) -> bool:
+        """Return True once any point measurement record exists (incl. in-progress)."""
+        if not self.is_session_active():
+            return False
+        if self._pending_measurements:
+            return True
+        try:
+            return self._count_measurement_records() > 0
+        except Exception:
+            return False
+
+    def _infer_session_state_from_h5(self, h5f) -> str:
+        """Infer session workflow state from container contents."""
+        raw_state = self._as_text(
+            h5f.attrs.get(self.SESSION_STATE_ATTR),
+            "",
+        ).strip().lower()
+        if raw_state in self.VALID_SESSION_STATES:
+            return raw_state
+
+        locked = bool(self.container_manager.is_container_locked(self.session_path))
+        if locked:
+            return self.SESSION_STATE_LOCKED
+
+        measurements_group = h5f.get(self.schema.GROUP_MEASUREMENTS)
+        has_measurements = False
+        has_in_progress = False
+        if measurements_group is not None:
+            for point_group in measurements_group.values():
+                for measurement_group in point_group.values():
+                    has_measurements = True
+                    status = self._as_text(
+                        measurement_group.attrs.get(
+                            self.schema.ATTR_MEASUREMENT_STATUS, ""
+                        ),
+                        "",
+                    ).strip().lower()
+                    if status == self.schema.STATUS_IN_PROGRESS:
+                        has_in_progress = True
+                        break
+                if has_in_progress:
+                    break
+
+        if has_in_progress:
+            return self.SESSION_STATE_RECOVERY_REQUIRED
+        if has_measurements:
+            return self.SESSION_STATE_MEASURING
+
+        points_group = h5f.get(self.schema.GROUP_POINTS)
+        has_points = bool(points_group is not None and len(points_group.keys()) > 0)
+        zones_group = h5f.get(self.schema.GROUP_IMAGES_ZONES)
+        has_zones = bool(zones_group is not None and len(zones_group.keys()) > 0)
+        has_mapping = bool(
+            f"{self.schema.GROUP_IMAGES_MAPPING}/mapping" in h5f
+        )
+        if has_points or has_zones or has_mapping:
+            return self.SESSION_STATE_PREPARED
+        return self.SESSION_STATE_DRAFT
+
+    def reset_for_image_reform(
+        self,
+        *,
+        image_data=None,
+        reset_attenuation: bool = True,
+    ) -> None:
+        """Reset session workspace for image reform before first point measurement."""
+        self._check_active()
+        if self.is_locked():
+            raise RuntimeError(
+                "Cannot reform image: session container is locked."
+            )
+        if self.has_point_measurements():
+            raise RuntimeError(
+                "Cannot reform image: point measurements already exist."
+            )
+
+        ana_group = getattr(
+            self.schema, "GROUP_ANALYTICAL_MEASUREMENTS", "/analytical_measurements"
+        )
+        groups_to_delete = [
+            self.schema.GROUP_IMAGES,
+            self.schema.GROUP_POINTS,
+            self.schema.GROUP_MEASUREMENTS,
+        ]
+        if reset_attenuation:
+            groups_to_delete.append(ana_group)
+
+        with h5py.File(self.session_path, "a") as h5f:
+            for group_path in groups_to_delete:
+                if group_path in h5f:
+                    del h5f[group_path]
+
+            h5f.require_group(self.schema.GROUP_IMAGES.lstrip("/"))
+            h5f.require_group(self.schema.GROUP_IMAGES_ZONES.lstrip("/"))
+            h5f.require_group(self.schema.GROUP_IMAGES_MAPPING.lstrip("/"))
+            h5f.require_group(self.schema.GROUP_POINTS.lstrip("/"))
+            h5f.require_group(self.schema.GROUP_MEASUREMENTS.lstrip("/"))
+            if reset_attenuation:
+                h5f.require_group(ana_group.lstrip("/"))
+
+            measurement_counter_attr = getattr(
+                self.schema, "ATTR_MEASUREMENT_COUNTER", "measurement_counter"
+            )
+            h5f.attrs[measurement_counter_attr] = int(0)
+
+        self._pending_measurements = {}
+        if reset_attenuation:
+            self.i0_counter = None
+            self.i_counter = None
+
+        if image_data is not None:
+            self.writer.add_image(
+                file_path=self.session_path,
+                image_index=1,
+                image_data=image_data,
+                image_type="sample",
+            )
+
+        self._set_session_state(
+            self.SESSION_STATE_DRAFT,
+            reason="image_reformed_workspace_reset",
+        )
+        self.log_event(
+            message="Session workspace reset for image reform",
+            event_type="workspace_reformed",
+            details={"attenuation_reset": bool(reset_attenuation)},
+        )
 
     def log_event(
         self,
@@ -490,6 +686,10 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             event_type="technical_snapshot_copied",
             details={"technical_container": str(tech_path)},
         )
+        self._set_session_state(
+            self.SESSION_STATE_DRAFT,
+            reason="session_created",
+        )
         
         logger.info(
             "Session created successfully",
@@ -521,6 +721,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.i0_counter = None
         self.i_counter = None
         self._pending_measurements = {}
+        self.session_state = self.SESSION_STATE_DRAFT
 
     def open_existing_session(self, session_file: Path) -> Dict:
         """Load metadata from an existing session container into manager state."""
@@ -576,6 +777,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
                 self.technical_container_path = None
 
             self._restore_attenuation_counters_from_h5(f)
+            self.session_state = self._infer_session_state_from_h5(f)
 
         # Rebuild pending map from in-progress measurements for crash recovery.
         incomplete = self._load_incomplete_measurements_from_container(session_file)
@@ -663,6 +865,17 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         if not self.is_session_active():
             return {"active": False}
 
+        try:
+            with h5py.File(self.session_path, "r") as h5f:
+                persisted_state = self._as_text(
+                    h5f.attrs.get(self.SESSION_STATE_ATTR),
+                    "",
+                ).strip().lower()
+                if persisted_state in self.VALID_SESSION_STATES:
+                    self.session_state = persisted_state
+        except Exception:
+            pass
+
         transfer_status = "unsent"
         get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)
         if callable(get_transfer_status):
@@ -682,6 +895,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             "beam_energy_kev": self.beam_energy_kev,
             "is_locked": self.is_locked(),
             "transfer_status": transfer_status,
+            "session_state": str(self.session_state or self.SESSION_STATE_DRAFT),
             "i0_recorded": self.i0_counter is not None,
             "i_recorded": self.i_counter is not None,
             "attenuation_complete": (

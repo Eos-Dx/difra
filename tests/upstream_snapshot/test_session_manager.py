@@ -710,5 +710,99 @@ def test_session_manager_replace_technical_container(temp_dir, technical_contain
         assert source_file == str(new_tech_path)
 
 
+def test_session_manager_reset_for_image_reform_clears_points_and_attenuation(
+    temp_dir, technical_container
+):
+    """Reform reset must clear workspace payload before first point measurements."""
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_REFORM",
+        distance_cm=17.0,
+    )
+
+    manager.add_sample_image(
+        image_data=np.full((8, 8), 11, dtype=np.uint8),
+        image_index=1,
+        image_type="sample",
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    manager.add_attenuation_measurement(
+        measurement_data={"DET1": np.random.rand(8, 8).astype(np.float32)},
+        detector_metadata={"DET1": {"integration_time_ms": 10.0}},
+        poni_alias_map={"DET1": "DET1"},
+        mode="without",
+    )
+    assert manager.i0_counter is not None
+
+    manager.reset_for_image_reform(
+        image_data=np.full((8, 8), 77, dtype=np.uint8),
+        reset_attenuation=True,
+    )
+
+    assert manager.i0_counter is None
+    assert manager.i_counter is None
+    with h5py.File(session_path, "r") as session_file:
+        assert len(session_file[schema.GROUP_POINTS].keys()) == 0
+        assert len(session_file[schema.GROUP_MEASUREMENTS].keys()) == 0
+        assert len(session_file[schema.GROUP_ANALYTICAL_MEASUREMENTS].keys()) == 0
+        img = session_file[f"{schema.GROUP_IMAGES}/img_001/data"][()]
+        assert int(img[0, 0]) == 77
+        assert session_file.attrs.get("session_state") == "draft"
+
+
+def test_session_manager_reset_for_image_reform_rejected_when_measurement_started(
+    temp_dir, technical_container
+):
+    """Reform reset is forbidden once point measurement records exist."""
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_REFORM_BLOCKED",
+        distance_cm=17.0,
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-12 12:00:00",
+    )
+
+    with pytest.raises(RuntimeError, match="point measurements already exist"):
+        manager.reset_for_image_reform(
+            image_data=np.full((4, 4), 5, dtype=np.uint8),
+            reset_attenuation=True,
+        )
+
+
+def test_session_manager_session_state_transitions_basic(temp_dir, technical_container):
+    """Session state attrs should follow basic draft->prepared->measuring flow."""
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_STATE",
+        distance_cm=17.0,
+    )
+
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get("session_state") == "draft"
+
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get("session_state") == "prepared"
+
+    manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-12 12:01:00",
+    )
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get("session_state") == "measuring"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -55,6 +55,10 @@ class UploadStubResult:
 class SessionLifecycleActions:
     """Shared lifecycle actions used by session-related GUI flows."""
 
+    SESSION_STATE_ATTR = "session_state"
+    SESSION_STATE_REASON_ATTR = "session_state_reason"
+    SESSION_STATE_UPDATED_ATTR = "session_state_updated_at"
+
     DEFAULT_MEASUREMENT_CLEANUP_PATTERNS = [
         "*.txt",
         "*.dsc",
@@ -416,6 +420,16 @@ class SessionLifecycleActions:
         mark_transferred = getattr(container_manager, "mark_container_transferred", None)
         if callable(mark_transferred):
             mark_transferred(Path(session_path), sent=False)
+        SessionLifecycleActions._write_container_attrs(
+            Path(session_path),
+            {
+                SessionLifecycleActions.SESSION_STATE_ATTR: "locked",
+                SessionLifecycleActions.SESSION_STATE_REASON_ATTR: "finalized_ready_for_send",
+                SessionLifecycleActions.SESSION_STATE_UPDATED_ATTR: time.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            },
+        )
         return changed
 
     @classmethod
@@ -434,10 +448,14 @@ class SessionLifecycleActions:
         simulate_upload_failure: bool = False,
         session_ids: Optional[Dict[str, str]] = None,
         config: Optional[Dict[str, Any]] = None,
-        export_old_format: bool = True,
+        export_old_format: Optional[bool] = None,
     ) -> SendArchiveResult:
         """Lock (if needed) and archive selected session containers."""
         result = SendArchiveResult()
+        if export_old_format is None:
+            export_old_format = bool(
+                (config or {}).get("enable_old_format_export", False)
+            )
         resolved_uploader_id = cls._resolve_uploader_id(
             explicit_uploader_id=uploader_id,
             lock_user=lock_user,
@@ -601,6 +619,16 @@ class SessionLifecycleActions:
                         )
                 result.archived_paths.append(archived_path)
                 result.moved += 1
+                cls._write_container_attrs(
+                    Path(archived_path),
+                    {
+                        cls.SESSION_STATE_ATTR: "archived",
+                        cls.SESSION_STATE_REASON_ATTR: "archived_after_send_queue",
+                        cls.SESSION_STATE_UPDATED_ATTR: time.strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                    },
+                )
                 cls._archive_measurement_artifacts(
                     measurements_folder=candidate.parent,
                     destination_folder=archived_path.parent,

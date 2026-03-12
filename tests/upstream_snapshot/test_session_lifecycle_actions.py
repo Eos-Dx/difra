@@ -33,6 +33,8 @@ def test_finalize_session_container_locks_once(tmp_path):
     assert changed is True
     assert container_manager.is_container_locked(session_path) is True
     assert container_manager.get_transfer_status(session_path) == "unsent"
+    with h5py.File(session_path, "r") as h5f:
+        assert h5f.attrs.get("session_state") == "locked"
 
     changed_again = SessionLifecycleActions.finalize_session_container(
         session_path=session_path,
@@ -56,7 +58,10 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
         active_session_path=path_a,
         lock_user="sad",
         session_ids={str(path_a): sid_a, str(path_b): sid_b},
-        config={"old_format_export_folder": str(old_format_folder)},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
     )
 
     assert result.failed == []
@@ -86,6 +91,7 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
             assert str(h5f.attrs.get("upload_timestamp", "")).strip()
             assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_sad_")
             assert h5f.attrs.get("upload_status") == "success"
+            assert h5f.attrs.get("session_state") == "archived"
             local_checksum = str(h5f.attrs.get("upload_local_checksum_sha256", ""))
             response_checksum = str(
                 h5f.attrs.get("upload_response_checksum_sha256", "")
@@ -117,7 +123,10 @@ def test_send_and_archive_cleans_measurement_artifacts(tmp_path):
         archive_folder=archive_folder,
         lock_user="sad",
         session_ids={str(path_a): sid_a},
-        config={"old_format_export_folder": str(old_format_folder)},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
     )
 
     assert result.failed == []
@@ -174,7 +183,10 @@ def test_send_and_archive_exports_old_format_before_archive_move(tmp_path):
             archive_folder=archive_folder,
             lock_user="sad",
             session_ids={str(path_a): sid_a},
-            config={"old_format_export_folder": str(tmp_path / "old_format")},
+            config={
+                "old_format_export_folder": str(tmp_path / "old_format"),
+                "enable_old_format_export": True,
+            },
             export_old_format=True,
         )
 
@@ -208,6 +220,25 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
         assert str(h5f.attrs.get("upload_result_message", "")).lower().find("failed") >= 0
         assert str(h5f.attrs.get("upload_response_checksum_sha256", "")) == ""
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
+
+
+def test_send_and_archive_old_format_export_disabled_by_default(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={"old_format_export_folder": str(tmp_path / "old_format")},
+    )
+
+    assert result.moved == 1
+    assert result.old_format_paths == []
+    assert result.old_format_failed == []
 
 
 def test_send_and_archive_continues_after_lock_validation_error(tmp_path):

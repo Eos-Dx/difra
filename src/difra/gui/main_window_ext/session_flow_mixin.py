@@ -17,6 +17,92 @@ from difra.gui.main_window_ext import session_flow_actions
 
 
 class SessionFlowMixin:
+    def _try_reform_active_session_for_new_image(self, image_path: str) -> bool:
+        """Reuse active unlocked session by resetting workspace before first measurements."""
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            return False
+        if not self.session_manager.is_session_active():
+            return False
+        if self.session_manager.is_locked():
+            return False
+
+        has_measurements = False
+        has_measurements_fn = getattr(self.session_manager, "has_point_measurements", None)
+        if callable(has_measurements_fn):
+            try:
+                has_measurements = bool(has_measurements_fn())
+            except Exception as exc:
+                logger.debug(
+                    "Failed to check point-measurement presence before image reform: %s",
+                    exc,
+                    exc_info=True,
+                )
+                has_measurements = False
+        if has_measurements:
+            return False
+
+        image_array = None
+        if hasattr(self, "_load_image_array_from_path"):
+            try:
+                image_array = self._load_image_array_from_path(image_path)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load image for session reform reset: %s",
+                    exc,
+                    exc_info=True,
+                )
+                image_array = None
+
+        try:
+            self.session_manager.reset_for_image_reform(
+                image_data=image_array,
+                reset_attenuation=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Session image reform reset failed; falling back to replacement flow: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
+        if hasattr(self, "state") and isinstance(self.state, dict):
+            self.state["shapes"] = []
+            self.state["zone_points"] = []
+            self.state["measurement_points"] = []
+            self.state["skipped_points"] = []
+        if hasattr(self, "state_measurements") and isinstance(self.state_measurements, dict):
+            self.state_measurements["measurement_points"] = []
+            self.state_measurements["skipped_points"] = []
+            self.state_measurements["attenuation_files"] = {}
+            self.state_measurements["measurements_meta"] = {}
+
+        if hasattr(self, "_session_sync_cache_session_path"):
+            self._session_sync_cache_session_path = None
+            self._session_sync_shapes_sig = None
+            self._session_sync_mapping_sig = None
+            self._session_sync_points_sig = None
+            self._session_sync_last_image_sig = None
+            self._session_sync_overall_sig = None
+
+        if hasattr(self, "_append_session_log"):
+            self._append_session_log(
+                "Image reformed in active session: points and attenuation reset"
+            )
+        QMessageBox.information(
+            self,
+            "Session Image Reformed",
+            "Active session was reused.\n\n"
+            "Workspace has been reset for the new image:\n"
+            "• zones removed\n"
+            "• points removed\n"
+            "• attenuation reset\n\n"
+            "Define zones and points again before measurements.",
+        )
+        if hasattr(self, "update_session_status"):
+            self.update_session_status()
+        return True
+
     def _resolve_measurements_folder_for_recovery(self, session_path: Path) -> Path:
         """Resolve folder where raw/session measurement files are stored."""
         if hasattr(self, "folderLineEdit"):
@@ -89,6 +175,11 @@ class SessionFlowMixin:
 
         if not incomplete:
             return
+
+        set_state = getattr(session_manager, "_set_session_state", None)
+        recovery_state = getattr(session_manager, "SESSION_STATE_RECOVERY_REQUIRED", "recovery_required")
+        if callable(set_state):
+            set_state(recovery_state, reason="incomplete_measurements_detected")
 
         measurements_folder = self._resolve_measurements_folder_for_recovery(session_path)
         integration_time_ms = 0.0

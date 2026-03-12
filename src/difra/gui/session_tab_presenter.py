@@ -86,6 +86,7 @@ class SessionTabPresenter:
             "transfer_status": "UNSENT",
             "session_id": "",
             "archived": "",
+            "session_state": "",
         }
 
         try:
@@ -144,6 +145,11 @@ class SessionTabPresenter:
                 )
                 info["session_id"] = str(
                     cls.decode_attr(h5f.attrs.get(schema.ATTR_SESSION_ID, ""))
+                )
+                info["session_state"] = str(
+                    cls.decode_attr(
+                        h5f.attrs.get("session_state", "")
+                    )
                 )
                 locked = container_manager.is_container_locked(path)
                 info["lock_status"] = "LOCKED" if locked else "UNLOCKED"
@@ -291,13 +297,15 @@ class SessionTabPresenter:
     def format_active_session_info(info: Dict[str, Any]) -> str:
         """Format active session info as HTML for QLabel."""
         transfer_status = str(info.get("transfer_status") or "unsent").upper()
+        session_state = str(info.get("session_state") or "").strip()
+        state_suffix = f" ({session_state})" if session_state else ""
         return (
             f"<b>Sample ID:</b> {info['sample_id']}<br>"
             f"<b>Study:</b> {info.get('study_name', 'UNSPECIFIED')}<br>"
             f"<b>Session ID:</b> {info['session_id']}<br>"
             f"<b>Operator:</b> {info['operator_id']}<br>"
             f"<b>Container:</b> {Path(info['session_path']).name}<br>"
-            f"<b>Status:</b> {'🔒 Locked' if info['is_locked'] else '🔓 Unlocked'} / {transfer_status}"
+            f"<b>Status:</b> {'🔒 Locked' if info['is_locked'] else '🔓 Unlocked'} / {transfer_status}{state_suffix}"
         )
 
     @classmethod
