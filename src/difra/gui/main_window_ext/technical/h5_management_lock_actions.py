@@ -90,6 +90,12 @@ def _ensure_distances_configured(owner, *, action_name: str) -> bool:
 
     missing = [alias for alias in aliases if alias not in distance_map]
     if not missing:
+        sync_state = getattr(owner, "_sync_container_state", None)
+        active_getter = getattr(owner, "_active_technical_container_path_obj", None)
+        if callable(sync_state) and callable(active_getter):
+            active_path = active_getter()
+            if active_path is not None:
+                sync_state(Path(active_path), reason=f"distances_verified:{action_name}")
         return True
 
     QMessageBox.information(
@@ -119,8 +125,20 @@ def _ensure_distances_configured(owner, *, action_name: str) -> bool:
             distance_map = {}
     missing = [alias for alias in aliases if alias not in distance_map]
     if not missing:
+        sync_state = getattr(owner, "_sync_container_state", None)
+        active_getter = getattr(owner, "_active_technical_container_path_obj", None)
+        if callable(sync_state) and callable(active_getter):
+            active_path = active_getter()
+            if active_path is not None:
+                sync_state(Path(active_path), reason=f"distances_configured:{action_name}")
         return True
 
+    set_state = getattr(owner, "_set_active_container_state", None)
+    if callable(set_state):
+        set_state(
+            state=getattr(owner, "STATE_PENDING_DISTANCES", "pending_distances"),
+            reason=f"missing_distances:{action_name}",
+        )
     QMessageBox.warning(
         owner,
         "Distances Not Configured",
@@ -231,11 +249,29 @@ def archive_existing_containers(owner, storage_folder: str) -> int:
                         file_handle.attrs["created_by_error"] = True
                         file_handle.attrs["error_reason"] = error_reason
                         file_handle.attrs["archived_timestamp"] = timestamp
+                        file_handle.attrs["container_state"] = "archived"
+                        file_handle.attrs["container_state_reason"] = "archived_during_container_replacement"
+                        file_handle.attrs["container_state_updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     owner._log_technical_event(
                         f"Added error attributes to archived container: {h5_file.name}"
                     )
                 except Exception as exc:
                     logger.warning("Failed to add error attributes to %s: %s", h5_file.name, exc)
+            else:
+                try:
+                    import h5py
+
+                    with h5py.File(dest_h5, "a") as file_handle:
+                        file_handle.attrs["container_state"] = "archived"
+                        file_handle.attrs["container_state_reason"] = "archived_during_container_replacement"
+                        file_handle.attrs["container_state_updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to persist archive state marker for %s: %s",
+                        h5_file.name,
+                        exc,
+                        exc_info=True,
+                    )
 
             owner._log_technical_event(
                 f"Archived H5 container: {h5_file.name} -> {archive_folder.name}/"
@@ -423,6 +459,13 @@ def archive_active_technical_container(owner):
     owner._log_technical_event(
         f"Archived active technical container: {container_path.name} -> {Path(archived_path).name}"
     )
+    set_state = getattr(owner, "_set_container_state", None)
+    if callable(set_state):
+        set_state(
+            Path(archived_path),
+            state=getattr(owner, "STATE_ARCHIVED", "archived"),
+            reason="manual_archive_completed",
+        )
     QMessageBox.information(
         owner,
         "Container Archived",
@@ -471,6 +514,13 @@ def lock_active_technical_container(owner):
 
     container_manager = get_container_manager(owner.config if hasattr(owner, "config") else None)
     if container_manager.is_container_locked(container_path):
+        set_state = getattr(owner, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(container_path),
+                state=getattr(owner, "STATE_LOCKED", "locked"),
+                reason="already_locked",
+            )
         QMessageBox.information(
             owner,
             "Already Locked",
@@ -493,22 +543,45 @@ def lock_active_technical_container(owner):
         pass
 
     if not owner._ensure_poni_before_lock(container_path, container_id):
+        sync_state = getattr(owner, "_sync_container_state", None)
+        if callable(sync_state):
+            sync_state(Path(container_path), reason="lock_blocked_missing_poni")
         return False
 
     if not owner._validate_container_before_lock(container_path, container_id):
+        set_state = getattr(owner, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(container_path),
+                state=getattr(owner, "STATE_VALIDATION_FAILED", "validation_failed"),
+                reason="lock_blocked_validation",
+            )
         return False
 
     confirm_preview = getattr(owner, "_confirm_poni_center_preview_before_lock", None)
     if callable(confirm_preview):
         if not confirm_preview(container_path, container_id):
+            sync_state = getattr(owner, "_sync_container_state", None)
+            if callable(sync_state):
+                sync_state(Path(container_path), reason="lock_blocked_review")
             return False
 
     lock_result = owner._lock_container(str(container_path), container_id)
     if lock_result is False:
+        sync_state = getattr(owner, "_sync_container_state", None)
+        if callable(sync_state):
+            sync_state(Path(container_path), reason="lock_failed")
         return False
     owner._active_technical_container_locked = bool(
         container_manager.is_container_locked(container_path)
     ) or bool(lock_result is not False)
+    set_state = getattr(owner, "_set_container_state", None)
+    if callable(set_state) and bool(owner._active_technical_container_locked):
+        set_state(
+            Path(container_path),
+            state=getattr(owner, "STATE_LOCKED", "locked"),
+            reason="lock_completed",
+        )
     return bool(owner._active_technical_container_locked)
 
 
@@ -534,6 +607,13 @@ def update_active_technical_container_poni(owner):
 
     container_manager = get_container_manager(owner.config if hasattr(owner, "config") else None)
     if container_manager.is_container_locked(container_path):
+        set_state = getattr(owner, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(container_path),
+                state=getattr(owner, "STATE_LOCKED", "locked"),
+                reason="poni_update_blocked_locked",
+            )
         QMessageBox.warning(
             owner,
             "Container Locked",
@@ -544,6 +624,14 @@ def update_active_technical_container_poni(owner):
 
     if not _ensure_distances_configured(owner, action_name="Upload PONI"):
         return False
+
+    set_state = getattr(owner, "_set_container_state", None)
+    if callable(set_state):
+        set_state(
+            Path(container_path),
+            state=getattr(owner, "STATE_PENDING_PONI", "pending_poni"),
+            reason="poni_update_requested",
+        )
 
     aliases = []
     collect_aliases = getattr(owner, "_collect_lock_detector_aliases", None)
@@ -593,6 +681,12 @@ def update_active_technical_container_poni(owner):
 
     synced = bool(sync_fn(show_errors=False))
     if not synced:
+        if callable(set_state):
+            set_state(
+                Path(container_path),
+                state=getattr(owner, "STATE_PENDING_PONI", "pending_poni"),
+                reason="poni_sync_failed",
+            )
         QMessageBox.warning(
             owner,
             "PONI Sync Failed",
@@ -604,6 +698,13 @@ def update_active_technical_container_poni(owner):
                 f"PONI update failed: container sync failed for {container_path.name}"
             )
         return False
+
+    if callable(set_state):
+        set_state(
+            Path(container_path),
+            state=getattr(owner, "STATE_PENDING_PONI_REVIEW", "pending_poni_review"),
+            reason="poni_synced_review_required",
+        )
 
     show_preview = getattr(owner, "_show_poni_center_preview_for_container", None)
     run_review = getattr(owner, "_run_poni_center_review_workflow", None)
@@ -620,8 +721,18 @@ def update_active_technical_container_poni(owner):
     elif callable(show_preview):
         try:
             show_preview(str(container_path))
+            if callable(set_state):
+                set_state(
+                    Path(container_path),
+                    state=getattr(owner, "STATE_PENDING_PONI_REVIEW", "pending_poni_review"),
+                    reason="poni_preview_shown",
+                )
         except Exception:
             logger.debug("Suppressed PONI center preview error after update", exc_info=True)
+
+    sync_state = getattr(owner, "_sync_container_state", None)
+    if callable(sync_state):
+        sync_state(Path(container_path), reason="poni_update_completed")
 
     if hasattr(owner, "_log_technical_event"):
         owner._log_technical_event(
@@ -661,6 +772,13 @@ def lock_container(owner, container_path: str, container_id: str):
             locked_by=operator_id,
             notes="Auto-locked after generation and validation",
         )
+        set_state = getattr(owner, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(container_path),
+                state=getattr(owner, "STATE_LOCKED", "locked"),
+                reason="lock_container_api_success",
+            )
 
         owner._log_technical_event(f"Container {container_id} locked by {operator_id}")
         logger.info("Technical container locked: id=%s operator=%s", container_id, str(operator_id))

@@ -352,6 +352,14 @@ class TechnicalAuxTableMixin:
                 )
                 self._log_technical_event("Technical file recovery failed during sync")
                 return
+            sync_state = getattr(self, "_sync_container_state", None)
+            if callable(sync_state):
+                active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+                if active_path:
+                    sync_state(
+                        Path(active_path),
+                        reason="recovery_files_synced",
+                    )
 
         self._log_technical_event(
             f"Loaded {len(valid_files)} technical file(s) in recovery mode"
@@ -371,6 +379,11 @@ class TechnicalAuxTableMixin:
                 configure_distances()
             finally:
                 setattr(self, "_suppress_distance_auto_container_creation", False)
+            sync_state = getattr(self, "_sync_container_state", None)
+            if callable(sync_state):
+                active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+                if active_path:
+                    sync_state(Path(active_path), reason="recovery_distances_step")
 
         update_poni = getattr(self, "update_active_technical_container_poni", None)
         if callable(update_poni):

@@ -337,6 +337,8 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
         if not active_is_stale and not finalize_active_session_for_new_technical_container(owner):
             return None
 
+    refreshed_distances = dict(distances_by_alias or {})
+
     # For new container creation always prompt distance configuration first.
     # If user cancels, creation still continues, but lock/PONI flows will require
     # configured distances later.
@@ -380,6 +382,20 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     )
 
     owner._set_active_technical_container(file_path)
+    set_state = getattr(owner, "_set_container_state", None)
+    if callable(set_state):
+        if refreshed_distances:
+            set_state(
+                Path(file_path),
+                state=getattr(owner, "STATE_PENDING_PONI", "pending_poni"),
+                reason="container_created_distances_confirmed",
+            )
+        else:
+            set_state(
+                Path(file_path),
+                state=getattr(owner, "STATE_PENDING_DISTANCES", "pending_distances"),
+                reason="container_created_without_distances",
+            )
     owner._log_technical_event(
         f"Created technical container: {Path(file_path).name} (id={container_id})"
     )
