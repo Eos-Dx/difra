@@ -544,6 +544,55 @@ def test_poni_reject_requires_reason_code(monkeypatch):
             assert h5f.attrs.get("poni_center_review_reason") == "user_rejected_preview"
 
 
+def test_smoke_review_happy_then_reject_updates_state_machine(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        container_path = Path(tmp) / "technical_test.nxs.h5"
+        _create_container(container_path, schema_version="0.2")
+        harness = _Harness(container_path)
+        harness.config["poni_center_validation"] = {"enabled": True, "detectors": {"SAXS": {}}}
+        _MessageBoxStub.reset()
+
+        monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+        monkeypatch.setattr(
+            harness,
+            "_show_poni_center_preview_for_container",
+            lambda *_a, **_k: True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            harness,
+            "_validate_poni_centers_for_container",
+            lambda *_a, **_k: ([], []),
+        )
+
+        happy = harness._run_poni_center_review_workflow(
+            container_path,
+            container_id="tech_test_001",
+            prompt_reload_on_reject=False,
+        )
+        assert happy is True
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("poni_center_review_status") == "accepted"
+            assert h5f.attrs.get("container_state") == "ready_to_lock"
+
+        monkeypatch.setattr(
+            harness,
+            "_show_poni_center_preview_for_container",
+            lambda *_a, **_k: False,
+            raising=False,
+        )
+        reject = harness._run_poni_center_review_workflow(
+            container_path,
+            container_id="tech_test_001",
+            prompt_reload_on_reject=False,
+        )
+        assert reject is False
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("poni_center_review_status") == "rejected"
+            assert h5f.attrs.get("poni_center_review_reason") == "user_rejected_preview"
+            assert h5f.attrs.get("container_state") == "rejected_blocked"
+
+
 def test_demo_fake_poni_generation_uses_center_validation_targets():
     harness = _Harness(Path("/tmp/nonexistent_demo_container.nxs.h5"))
     harness.config = {
