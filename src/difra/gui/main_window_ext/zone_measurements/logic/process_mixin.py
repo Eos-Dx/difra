@@ -43,8 +43,8 @@ def _get_zone_technical_imports():
         _ZONE_TECHNICAL_IMPORTS_AVAILABLE = True
         return True
     except Exception as e:
-        print(f"Warning: Zone technical measurement imports failed: {e}")
-        print("Zone measurements will be disabled.")
+        logger.warning("Zone technical measurement imports failed: %s", e, exc_info=True)
+        logger.warning("Zone measurements will be disabled.")
         _ZONE_TECHNICAL_IMPORTS_AVAILABLE = False
         return False
 

@@ -1,15 +1,20 @@
 """Session management tab for Zone Measurements."""
 
+from datetime import datetime, timedelta
+import os
 from pathlib import Path
 from typing import List
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -37,8 +42,41 @@ class SessionTabMixin:
     def _container_manager(self):
         return get_container_manager(self.config if hasattr(self, "config") else None)
 
+    def _request_upload_login_context(self, fallback_operator: str):
+        """Collect Matador login credentials for upload workflow (stub)."""
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        if not bool(cfg.get("upload_prompt_login", True)):
+            return {"uploader_id": fallback_operator, "password": ""}
+        if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+            return {"uploader_id": fallback_operator, "password": ""}
+
+        login_text, login_ok = QInputDialog.getText(
+            self,
+            "Matador Login",
+            "Matador user:",
+            QLineEdit.Normal,
+            str(fallback_operator or ""),
+        )
+        if not login_ok:
+            return None
+        login_text = str(login_text or "").strip()
+        if not login_text:
+            QMessageBox.warning(self, "Upload Cancelled", "Matador user is required.")
+            return None
+
+        password, password_ok = QInputDialog.getText(
+            self,
+            "Matador Login",
+            "Password:",
+            QLineEdit.Password,
+        )
+        if not password_ok:
+            return None
+
+        return {"uploader_id": login_text, "password": str(password or "")}
+
     def create_session_tab(self):
-        """Create session management tab with queue and archive views."""
+        """Create session management tab with active/pending queue."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -113,7 +151,7 @@ class SessionTabMixin:
         queue_layout.addLayout(queue_btn_layout)
 
         self.pending_sessions_table = QTableWidget()
-        self.pending_sessions_table.setColumnCount(8)
+        self.pending_sessions_table.setColumnCount(9)
         self.pending_sessions_table.setHorizontalHeaderLabels(
             [
                 "Select",
@@ -121,12 +159,13 @@ class SessionTabMixin:
                 "Sample",
                 "Study",
                 "Operator",
+                "Uploaded By",
                 "Created",
                 "Status",
                 "Path",
             ]
         )
-        self.pending_sessions_table.setColumnHidden(7, True)
+        self.pending_sessions_table.setColumnHidden(8, True)
         self.pending_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.pending_sessions_table.customContextMenuRequested.connect(
             self._show_pending_sessions_context_menu
@@ -135,33 +174,97 @@ class SessionTabMixin:
 
         layout.addWidget(queue_group)
 
-        archive_group = QGroupBox("Archived Session Containers")
-        archive_layout = QVBoxLayout(archive_group)
-
-        self.archive_path_label = QLabel("")
-        self.archive_path_label.setStyleSheet("color: #555; padding: 4px;")
-        archive_layout.addWidget(self.archive_path_label)
-
-        self.archived_sessions_table = QTableWidget()
-        self.archived_sessions_table.setColumnCount(7)
-        self.archived_sessions_table.setHorizontalHeaderLabels(
-            ["File", "Sample", "Study", "Operator", "Created", "Archived", "Path"]
-        )
-        self.archived_sessions_table.setColumnHidden(6, True)
-        self.archived_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.archived_sessions_table.customContextMenuRequested.connect(
-            self._show_archived_sessions_context_menu
-        )
-        archive_layout.addWidget(self.archived_sessions_table)
-
-        layout.addWidget(archive_group)
         layout.addStretch()
 
         if hasattr(self, "tabs"):
             self.tabs.addTab(tab, "Session")
+            self.create_archive_tab()
 
         self._update_session_tab_info()
         self._refresh_session_container_lists()
+
+    def create_archive_tab(self):
+        """Create dedicated archive browser tab with filters and sorting."""
+        if not hasattr(self, "tabs"):
+            return
+        if hasattr(self, "archive_path_label"):
+            return
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.archive_path_label = QLabel("")
+        self.archive_path_label.setStyleSheet("color: #555; padding: 4px;")
+        layout.addWidget(self.archive_path_label)
+
+        filter_row = QHBoxLayout()
+        self.archive_date_filter_combo = QComboBox()
+        self.archive_date_filter_combo.addItems(
+            ["All dates", "Today", "Last 7 days", "Last 30 days"]
+        )
+        self.archive_date_filter_combo.currentIndexChanged.connect(
+            self._apply_archive_filters
+        )
+        filter_row.addWidget(self.archive_date_filter_combo)
+
+        self.archive_project_filter_edit = QLineEdit()
+        self.archive_project_filter_edit.setPlaceholderText("Project filter")
+        self.archive_project_filter_edit.textChanged.connect(self._apply_archive_filters)
+        filter_row.addWidget(self.archive_project_filter_edit)
+
+        self.archive_operator_filter_edit = QLineEdit()
+        self.archive_operator_filter_edit.setPlaceholderText("Operator filter")
+        self.archive_operator_filter_edit.textChanged.connect(self._apply_archive_filters)
+        filter_row.addWidget(self.archive_operator_filter_edit)
+
+        self.archive_search_edit = QLineEdit()
+        self.archive_search_edit.setPlaceholderText("Search file/sample/study...")
+        self.archive_search_edit.textChanged.connect(self._apply_archive_filters)
+        filter_row.addWidget(self.archive_search_edit)
+
+        self.archive_sort_combo = QComboBox()
+        self.archive_sort_combo.addItems(
+            [
+                "Archived: newest first",
+                "Archived: oldest first",
+                "Project: A-Z",
+                "Operator: A-Z",
+            ]
+        )
+        self.archive_sort_combo.currentIndexChanged.connect(self._apply_archive_filters)
+        filter_row.addWidget(self.archive_sort_combo)
+
+        self.refresh_archive_btn = QPushButton("Refresh")
+        self.refresh_archive_btn.clicked.connect(self._refresh_session_container_lists)
+        filter_row.addWidget(self.refresh_archive_btn)
+        layout.addLayout(filter_row)
+
+        self.archived_sessions_table = QTableWidget()
+        self.archived_sessions_table.setColumnCount(10)
+        self.archived_sessions_table.setHorizontalHeaderLabels(
+            [
+                "File",
+                "Sample",
+                "Project",
+                "Study",
+                "Operator",
+                "Uploaded By",
+                "Created",
+                "Archived",
+                "Status",
+                "Path",
+            ]
+        )
+        self.archived_sessions_table.setColumnHidden(9, True)
+        self.archived_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.archived_sessions_table.customContextMenuRequested.connect(
+            self._show_archived_sessions_context_menu
+        )
+        self.archived_sessions_table.setSortingEnabled(True)
+        layout.addWidget(self.archived_sessions_table)
+        layout.addStretch()
+
+        self.tabs.addTab(tab, "Archive")
 
     def _get_measurements_folder_for_queue(self) -> Path:
         if hasattr(self, "config") and self.config:
@@ -193,9 +296,7 @@ class SessionTabMixin:
         )
 
     def _refresh_session_container_lists(self):
-        if not hasattr(self, "pending_sessions_table") or not hasattr(
-            self, "archived_sessions_table"
-        ):
+        if not hasattr(self, "pending_sessions_table"):
             return
 
         schema = self._container_schema()
@@ -211,10 +312,117 @@ class SessionTabMixin:
             container_manager=container_manager,
         )
         SessionTabPresenter.populate_pending_table(self.pending_sessions_table, pending_rows)
-        SessionTabPresenter.populate_archive_table(self.archived_sessions_table, archived_rows)
+        self._archived_rows_all = list(archived_rows)
+        if hasattr(self, "archived_sessions_table"):
+            self._apply_archive_filters()
 
-        archive_folder = self._get_session_archive_folder()
-        self.archive_path_label.setText(f"Archive folder: {archive_folder}")
+        if hasattr(self, "archive_path_label"):
+            archive_folder = self._get_session_archive_folder()
+            self.archive_path_label.setText(f"Archive folder: {archive_folder}")
+
+    @staticmethod
+    def _parse_archive_datetime(value: str):
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        for fmt in (
+            "%Y%m%d_%H%M%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y%m%d",
+        ):
+            try:
+                return datetime.strptime(raw, fmt)
+            except Exception:
+                continue
+        return None
+
+    def _row_sort_datetime(self, row):
+        archived_dt = self._parse_archive_datetime(row.get("archived", ""))
+        if archived_dt is not None:
+            return archived_dt
+        created_dt = self._parse_archive_datetime(row.get("created", ""))
+        if created_dt is not None:
+            return created_dt
+        return datetime.min
+
+    def _apply_archive_filters(self):
+        if not hasattr(self, "archived_sessions_table"):
+            return
+
+        rows = list(getattr(self, "_archived_rows_all", []) or [])
+        date_mode = (
+            self.archive_date_filter_combo.currentText()
+            if hasattr(self, "archive_date_filter_combo")
+            else "All dates"
+        )
+        project_filter = (
+            str(self.archive_project_filter_edit.text() or "").strip().lower()
+            if hasattr(self, "archive_project_filter_edit")
+            else ""
+        )
+        operator_filter = (
+            str(self.archive_operator_filter_edit.text() or "").strip().lower()
+            if hasattr(self, "archive_operator_filter_edit")
+            else ""
+        )
+        search_filter = (
+            str(self.archive_search_edit.text() or "").strip().lower()
+            if hasattr(self, "archive_search_edit")
+            else ""
+        )
+
+        now = datetime.now()
+        filtered = []
+        for row in rows:
+            row_dt = self._row_sort_datetime(row)
+
+            if date_mode == "Today" and row_dt.date() != now.date():
+                continue
+            if date_mode == "Last 7 days" and row_dt < (now - timedelta(days=7)):
+                continue
+            if date_mode == "Last 30 days" and row_dt < (now - timedelta(days=30)):
+                continue
+
+            project_value = str(row.get("project_id") or row.get("study_name") or "")
+            operator_value = str(row.get("operator_id") or "")
+            if project_filter and project_filter not in project_value.lower():
+                continue
+            if operator_filter and operator_filter not in operator_value.lower():
+                continue
+
+            if search_filter:
+                haystack = " ".join(
+                    [
+                        str(row.get("file_name", "")),
+                        str(row.get("sample_id", "")),
+                        str(row.get("project_id", "")),
+                        str(row.get("study_name", "")),
+                        str(row.get("operator_id", "")),
+                        str(row.get("uploaded_by", "")),
+                        str(row.get("status", "")),
+                    ]
+                ).lower()
+                if search_filter not in haystack:
+                    continue
+
+            filtered.append(row)
+
+        sort_mode = (
+            self.archive_sort_combo.currentText()
+            if hasattr(self, "archive_sort_combo")
+            else "Archived: newest first"
+        )
+        if sort_mode == "Archived: oldest first":
+            filtered.sort(key=self._row_sort_datetime)
+        elif sort_mode == "Project: A-Z":
+            filtered.sort(key=lambda row: str(row.get("project_id") or row.get("study_name") or "").lower())
+        elif sort_mode == "Operator: A-Z":
+            filtered.sort(key=lambda row: str(row.get("operator_id") or "").lower())
+        else:
+            filtered.sort(key=self._row_sort_datetime, reverse=True)
+
+        SessionTabPresenter.populate_archive_table(self.archived_sessions_table, filtered)
 
     def _set_all_pending_selection(self, checked: bool):
         for row in range(self.pending_sessions_table.rowCount()):
@@ -231,7 +439,7 @@ class SessionTabMixin:
             checkbox = checkbox_widget.findChild(QCheckBox) if checkbox_widget else None
             if checkbox is None or not checkbox.isChecked():
                 continue
-            path_item = self.pending_sessions_table.item(row, 7)
+            path_item = self.pending_sessions_table.item(row, 8)
             if path_item is None:
                 continue
             selected.append(Path(path_item.text()))
@@ -240,7 +448,7 @@ class SessionTabMixin:
     def _all_pending_containers(self) -> List[Path]:
         containers: List[Path] = []
         for row in range(self.pending_sessions_table.rowCount()):
-            path_item = self.pending_sessions_table.item(row, 7)
+            path_item = self.pending_sessions_table.item(row, 8)
             if path_item is not None:
                 containers.append(Path(path_item.text()))
         return containers
@@ -280,7 +488,7 @@ class SessionTabMixin:
         row = table.rowAt(pos.y())
         if row < 0:
             return
-        container_path = self._path_from_table_row(table, row, 7)
+        container_path = self._path_from_table_row(table, row, 8)
         if container_path is None:
             return
 
@@ -295,7 +503,7 @@ class SessionTabMixin:
         row = table.rowAt(pos.y())
         if row < 0:
             return
-        container_path = self._path_from_table_row(table, row, 6)
+        container_path = self._path_from_table_row(table, row, 9)
         if container_path is None:
             return
 
@@ -344,7 +552,7 @@ class SessionTabMixin:
                 container_manager=container_manager,
             )
             logger.info(
-                "Fake cloud send completed",
+                "Queued session for Matador upload stub",
                 session_path=str(container_path),
                 sample_id=info.get("sample_id"),
             )
@@ -355,6 +563,28 @@ class SessionTabMixin:
         lock_user = None
         if hasattr(self, "session_manager") and self.session_manager:
             lock_user = getattr(self.session_manager, "operator_id", None)
+        uploader_id = None
+        if hasattr(self, "operator_manager") and self.operator_manager:
+            get_current_operator_id = getattr(
+                self.operator_manager, "get_current_operator_id", None
+            )
+            if callable(get_current_operator_id):
+                uploader_id = get_current_operator_id()
+        if not uploader_id and hasattr(self, "config") and isinstance(self.config, dict):
+            uploader_id = self.config.get("operator_id")
+        upload_context = self._request_upload_login_context(
+            fallback_operator=str(uploader_id or lock_user or "unknown")
+        )
+        if upload_context is None:
+            QMessageBox.information(self, "Upload Cancelled", "Upload was cancelled by operator.")
+            return
+        uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
+        upload_password = str(upload_context.get("password") or "")
+        simulate_upload_failure = False
+        if hasattr(self, "config") and isinstance(self.config, dict):
+            simulate_upload_failure = bool(
+                self.config.get("upload_stub_force_failure", False)
+            )
 
         workflow_result = SessionLifecycleActions.send_and_archive_session_containers(
             container_paths=container_paths,
@@ -362,6 +592,11 @@ class SessionTabMixin:
             archive_folder=archive_folder,
             active_session_path=active_session_path,
             lock_user=lock_user,
+            uploader_id=uploader_id,
+            upload_username=uploader_id,
+            upload_password=upload_password,
+            upload_session_id=None,
+            simulate_upload_failure=simulate_upload_failure,
             session_ids=batch_session_ids,
             config=self.config if hasattr(self, "config") else None,
         )
@@ -370,6 +605,13 @@ class SessionTabMixin:
             self.session_manager.close_session()
 
         summary = [f"Sent+archived {workflow_result.moved} session container(s)."]
+        if workflow_result.upload_session_id:
+            summary.append(f"Upload session: {workflow_result.upload_session_id}")
+        summary.append(
+            "Upload result: "
+            f"{workflow_result.upload_success} success / "
+            f"{workflow_result.upload_failed} failed"
+        )
         summary.append(f"Cleaned measurement artifacts: {workflow_result.cleaned_artifacts}")
         summary.append(f"Old-format exports: {len(workflow_result.old_format_paths)}")
         if workflow_result.old_format_paths:
@@ -407,7 +649,10 @@ class SessionTabMixin:
         reply = QMessageBox.question(
             self,
             "Close && Send Selected",
-            f"Close, fake-send, and archive {len(selected)} selected session container(s)?",
+            (
+                f"Close, upload, and archive {len(selected)} selected session container(s)?\n\n"
+                "Upload uses Matador stub workflow in this build."
+            ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -427,7 +672,10 @@ class SessionTabMixin:
         reply = QMessageBox.question(
             self,
             "Close && Send All",
-            f"Close, fake-send, and archive ALL {len(all_containers)} queued session container(s)?",
+            (
+                f"Close, upload, and archive ALL {len(all_containers)} queued session container(s)?\n\n"
+                "Upload uses Matador stub workflow in this build."
+            ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -515,7 +763,7 @@ class SessionTabMixin:
             logger.error(f"Failed to finalize session: {exc}", exc_info=True)
 
     def _on_upload_session(self):
-        """Fake upload action for currently active session."""
+        """Upload stub action for currently active session."""
         if not hasattr(self, "session_manager") or not self.session_manager.is_session_active():
             QMessageBox.warning(self, "No Active Session", "No session is currently active.")
             return
@@ -531,8 +779,8 @@ class SessionTabMixin:
 
         QMessageBox.information(
             self,
-            "Upload to Cloud (Fake)",
-            f"Fake cloud upload executed for active session '{info['sample_id']}'.\n\n"
+            "Upload to Cloud (Stub)",
+            f"Matador upload stub executed for active session '{info['sample_id']}'.\n\n"
             f"Use 'Close && Send Selected/All' in the queue for archival transfer.",
         )
-        logger.info("Cloud upload requested", sample_id=info["sample_id"])
+        logger.info("Cloud upload stub requested", sample_id=info["sample_id"])

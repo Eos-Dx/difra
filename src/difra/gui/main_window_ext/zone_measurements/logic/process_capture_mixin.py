@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import time
@@ -11,6 +12,9 @@ def _pm():
     from difra.gui.main_window_ext.zone_measurements.logic import process_mixin as pm
 
     return pm
+
+
+logger = logging.getLogger(__name__)
 
 
 def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = True) -> None:
@@ -31,7 +35,7 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
         try:
             shutil.move(str(src_path), str(target_txt))
             moved = True
-        except Exception:
+        except (OSError, shutil.Error):
             moved = False
 
     if not moved:
@@ -41,7 +45,7 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
         if moved:
             try:
                 shutil.move(str(src_dsc), str(dst_dsc))
-            except Exception:
+            except (OSError, shutil.Error):
                 shutil.copy2(src_dsc, dst_dsc)
         else:
             shutil.copy2(src_dsc, dst_dsc)
@@ -49,29 +53,66 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
 
 class ZoneMeasurementsProcessCaptureMixin:
     def _append_capture_log(self, message: str):
+        payload = f"[CAPTURE] {message}"
         try:
-            self._append_measurement_log(f"[CAPTURE] {message}")
-        except Exception:
-            pass
+            self._append_measurement_log(payload)
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="CAPTURE", source="process_capture")
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
 
     def _append_session_log(self, message: str):
+        payload = f"[SESSION] {message}"
         try:
-            self._append_measurement_log(f"[SESSION] {message}")
-        except Exception:
-            pass
+            self._append_measurement_log(payload)
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="SESSION", source="process_capture")
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
 
     def _current_session_point_index(self) -> int:
         try:
             current_index = int(getattr(self, "current_measurement_sorted_index", 0))
-        except Exception:
+        except (TypeError, ValueError):
             current_index = 0
 
         mapped = getattr(self, "_session_point_indices", None)
         if isinstance(mapped, (list, tuple)) and 0 <= current_index < len(mapped):
             try:
                 return int(mapped[current_index])
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
         return current_index + 1
 
     def _move_stage(self, x_mm: float, y_mm: float, timeout_s: float):
@@ -126,15 +167,21 @@ class ZoneMeasurementsProcessCaptureMixin:
             self.total_points = sorted_count
             try:
                 self.progressBar.setMaximum(self.total_points)
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
 
         if self.current_measurement_sorted_index >= sorted_count:
             pm.logger.info("All points measured")
             try:
                 self.progressBar.setValue(sorted_count)
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
             self.start_btn.setEnabled(True)
             self.pause_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
@@ -164,7 +211,7 @@ class ZoneMeasurementsProcessCaptureMixin:
             planned = planned_points[self.current_measurement_sorted_index]
             try:
                 planned_xy = (float(planned.get("x")), float(planned.get("y")))
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 planned_xy = None
 
         if planned_xy is not None:
@@ -215,7 +262,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                 "Stage movement timed out. Please check the hardware and try again. That's SAD",
             )
             return
-        except Exception as e:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
             pm.logger.error(
                 "Stage movement failed before capture",
                 point_index=point_index_1based,
@@ -237,8 +284,11 @@ class ZoneMeasurementsProcessCaptureMixin:
             pm.logger.error("Cannot start normal capture - technical imports not available")
             try:
                 self._append_capture_log("Error: technical imports unavailable")
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
             return
 
         point_index_1based = self.current_measurement_sorted_index + 1
@@ -271,7 +321,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                             "integration_time_s": float(getattr(self, "integration_time", 0.0)),
                         },
                     )
-            except Exception as exc:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
                 pm.logger.warning(
                     "Failed to mark measurement start in session container",
                     error=str(exc),
@@ -316,15 +366,18 @@ class ZoneMeasurementsProcessCaptureMixin:
             pos = att.get("loading_position")
             if pos and isinstance(pos, dict):
                 return float(pos.get("x")), float(pos.get("y"))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
         try:
             if hasattr(self, "_get_home_load_positions"):
                 positions = self._get_home_load_positions()
             else:
                 positions = self.stage_controller.get_home_load_positions()
             return positions.get("load", (None, None))
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError):
             return (None, None)
 
     def _capture_attenuation_background(self):
@@ -347,7 +400,7 @@ class ZoneMeasurementsProcessCaptureMixin:
         try:
             self._move_stage(load_x, load_y, timeout_s=20)
             self._append_hw_log(f"Stage moved to load position: ({load_x:.3f}, {load_y:.3f}) mm")
-        except Exception as e:
+        except (AttributeError, OSError, RuntimeError, TimeoutError, TypeError, ValueError) as e:
             pm.logger.warning(
                 "Failed to move to loading position; skipping attenuation background capture",
                 error=str(e),
@@ -382,7 +435,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                 frames=max(int(frames), 1),
                 timeout_s=max(30.0, float(short_t) * max(int(frames), 1) + 30.0),
             )
-        except Exception as e:
+        except (AttributeError, OSError, RuntimeError, TimeoutError, TypeError, ValueError) as e:
             pm.logger.warning(
                 "Hardware client attenuation capture failed",
                 error=str(e),
@@ -399,7 +452,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                 continue
             try:
                 source_usage[str(Path(src_raw).resolve())] += 1
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 source_usage[str(src_raw)] += 1
 
         results = {}
@@ -424,7 +477,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                     str(target_txt), container_version
                 )
                 results[alias] = npy_path
-            except Exception as e:
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 pm.logger.warning("Error capturing attenuation background", detector=alias, error=str(e))
                 results[alias] = None
 
@@ -469,7 +522,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                     self._append_session_log(
                         f"I0 saved to session container ({len(all_data)} detector(s))"
                     )
-            except Exception as e:
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 pm.logger.error(f"Failed to add I₀ to session container: {e}", exc_info=True)
                 self._append_session_log(f"I0 session save failed: {type(e).__name__}")
 
@@ -478,7 +531,7 @@ class ZoneMeasurementsProcessCaptureMixin:
             mp = self.state_measurements.get("measurement_points", [])
             idx = self.current_measurement_sorted_index
             uid = mp[idx].get("unique_id") if 0 <= idx < len(mp) else None
-        except Exception:
+        except (AttributeError, IndexError, TypeError, ValueError):
             uid = None
         if uid is None:
             return
@@ -494,8 +547,10 @@ class ZoneMeasurementsProcessCaptureMixin:
 
                     with open(self.state_path_measurements, "w") as f:
                         json.dump(self.state_measurements, f, indent=4)
-        except Exception as e:
-            print(f"Warning: failed to record attenuation files: {e}")
+        except (OSError, TypeError, ValueError) as e:
+            _pm().logger.warning(
+                "Failed to record attenuation files: %s", e, exc_info=True
+            )
 
     def _start_attenuation_then_normal(self, txt_filename_base: str):
         pm = _pm()
@@ -506,8 +561,11 @@ class ZoneMeasurementsProcessCaptureMixin:
         if getattr(self, "_attenuation_bg_files", None):
             try:
                 self._record_attenuation_files("without_sample", self._attenuation_bg_files)
-            except Exception:
-                pass
+            except (AttributeError, OSError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
         elif reuse_existing_i0:
             pm.logger.info("Using previously recorded I0 from restored session")
             self._append_capture_log("I0 reused from session container")
@@ -521,15 +579,21 @@ class ZoneMeasurementsProcessCaptureMixin:
         try:
             self._move_stage(self._x_mm, self._y_mm, timeout_s=15)
             self._append_hw_log(f"Stage returned to point: ({self._x_mm:.3f}, {self._y_mm:.3f}) mm")
-        except Exception:
-            pass
+        except (RuntimeError, TimeoutError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
 
         if not self._zone_technical_imports_available():
             pm.logger.error("Cannot start attenuation capture - technical imports not available")
             try:
                 self._append_capture_log("Error: technical imports unavailable for attenuation")
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
             return
 
         self._append_capture_log(
@@ -563,8 +627,11 @@ class ZoneMeasurementsProcessCaptureMixin:
 
             try:
                 self._record_attenuation_files("with_sample", moved_map)
-            except Exception:
-                pass
+            except (AttributeError, OSError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
 
             if hasattr(self, "session_manager") and self.session_manager.is_session_active():
                 try:
@@ -614,7 +681,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                             self._append_session_log(
                                 f"Attenuation linked to point {session_point_index}"
                             )
-                        except Exception as e:
+                        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                             pm.logger.warning(f"Failed to link attenuation to point: {e}", exc_info=True)
                             self._append_session_log(
                                 f"Attenuation link failed: {type(e).__name__}"
@@ -624,7 +691,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                             f"Added I (with sample) to session container at point {session_point_index}",
                             detectors=list(all_data.keys()),
                         )
-                except Exception as e:
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                     pm.logger.error(f"Failed to add I to session container: {e}", exc_info=True)
                     self._append_session_log(f"I session save failed: {type(e).__name__}")
 

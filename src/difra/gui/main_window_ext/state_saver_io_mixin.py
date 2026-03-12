@@ -1,5 +1,7 @@
 """State saver I/O and serialization responsibilities."""
 
+import logging
+
 from . import state_saver_extension as _module
 
 base64 = _module.base64
@@ -21,6 +23,8 @@ QGraphicsEllipseItem = _module.QGraphicsEllipseItem
 QGraphicsRectItem = _module.QGraphicsRectItem
 
 null_dict = _module.null_dict
+
+logger = logging.getLogger(__name__)
 
 
 class StateSaverIOMixin:
@@ -45,105 +49,6 @@ class StateSaverIOMixin:
     AUTO_STATE_FILE = _AUTOSAVE_DRIVE / "autosave_state.json"
     PREV_STATE_FILE = _AUTOSAVE_DRIVE / "autosave_state_prev.json"
 
-    def restore_state(self, file_path=None):
-        # Signal to UI code that we are restoring and should not create measurement widgets
-        self._restoring_state = True
-        self.measurement_widgets = {}
-        state = self._load_state(file_path)
-        self.state = state
-
-        # Remove Measurement Points when restoring state and clear related UI
-        if state:
-            # Drop measurement-related entries so they are not carried over
-            state.pop("measurement_points", None)
-            state.pop("skipped_points", None)
-            try:
-                # Clear right-panel measurement widgets/tree if present
-                if (
-                    hasattr(self, "measurementsTree")
-                    and self.measurementsTree is not None
-                ):
-                    self.measurementsTree.clear()
-                if hasattr(self, "_measurement_items") and isinstance(
-                    self._measurement_items, dict
-                ):
-                    # Remove any existing widgets safely
-                    if hasattr(self, "remove_measurement_widget_from_panel"):
-                        for pid in list(self._measurement_items.keys()):
-                            try:
-                                self.remove_measurement_widget_from_panel(pid)
-                            except Exception:
-                                pass
-                    self._measurement_items.clear()
-                # Reset mapping container
-                if hasattr(self, "measurement_widgets") and isinstance(
-                    self.measurement_widgets, dict
-                ):
-                    self.measurement_widgets.clear()
-            except Exception as e:
-                print(
-                    f"Warning: failed to clear measurement widgets during restore: {e}"
-                )
-
-        if not state:
-            self._restoring_state = False
-            return
-
-        # Handle PONI file restoration with user confirmation
-        self._handle_poni_restoration(state)
-
-        # Pass the state file directory to improve path resolution
-        self._restore_image(
-            state.get("image"),
-            state_dir=(
-                getattr(self, "_last_state_path", None).parent
-                if getattr(self, "_last_state_path", None)
-                else None
-            ),
-        )
-        self._restore_rotation(state.get("rotation_angle", 0))
-        self._restore_crop_rect(state.get("crop_rect"))
-        self._restore_shapes(state.get("shapes", []))
-        self._restore_points(state.get("zone_points", []))
-        # Restore technical aux table, if available
-        try:
-            if hasattr(self, "restore_technical_aux_rows"):
-                self.restore_technical_aux_rows(state.get("technical_aux", []))
-        except Exception as e:
-            print(f"Warning: failed to restore technical aux rows: {e}")
-        # Restore dock widget layout and sizes
-        try:
-            self._restore_dock_geometry(state.get("dock_geometry"))
-        except Exception as e:
-            print(f"Warning: failed to restore dock geometry: {e}")
-        self._refresh_id_counter()
-        # Update UI while suppressing widget creation in the points table
-        try:
-            if hasattr(self, "update_points_table"):
-                print(
-                    "Attempting to update points table after restore (no measurement widgets)..."
-                )
-                self.update_points_table()
-            else:
-                print("update_points_table method not available, skipping")
-        except Exception as e:
-            print(f"Skipping points table update due to error: {e}")
-
-        try:
-            if hasattr(self, "update_shape_table"):
-                self.update_shape_table()
-        except Exception as e:
-            print(f"Error updating shape table: {e}")
-
-        try:
-            if hasattr(self, "update_coordinates"):
-                self.update_coordinates()
-        except Exception as e:
-            print(f"Error updating coordinates: {e}")
-        finally:
-            # Re-enable widget creation for subsequent operations
-            self._restoring_state = False
-
     def auto_save_state(self):
         # Autosave is container-first: keep runtime state in session container, not sidecar files.
         self._save_state(target_file=None, is_auto=True)
@@ -153,26 +58,6 @@ class StateSaverIOMixin:
         self.autoSaveTimer.timeout.connect(self.auto_save_state)
         self.autoSaveTimer.start(interval)
 
-    # ---- Internal Helpers ----
-    def _load_state(self, file_path):
-        for path in [file_path, self.PREV_STATE_FILE, self.AUTO_STATE_FILE]:
-            if path and os.path.exists(path):
-                with open(path, "r") as f:
-                    try:
-                        state = json.load(f)
-                        # Remember from where we loaded the state for path resolution
-                        try:
-                            self._last_state_path = Path(path)
-                        except Exception:
-                            self._last_state_path = None
-                        return state
-                    except Exception as e:
-                        print("Error loading state:", e)
-        print("No saved state file found. Nothing to restore.")
-        # Clear marker if nothing loaded
-        self._last_state_path = None
-        return None
-
     def _save_state(self, target_file, is_auto):
         img_path = getattr(self.image_view, "current_image_path", None)
         try:
@@ -180,7 +65,10 @@ class StateSaverIOMixin:
                 # Persist absolute normalized path for robustness
                 img_path = str(Path(img_path).resolve())
         except Exception:
-            pass
+            logger.debug(
+                "Suppressed exception in state_saver_io_mixin.py",
+                exc_info=True,
+            )
         state = {
             "measurement_points": self.generate_measurement_points(),
             "image": img_path,
@@ -251,29 +139,33 @@ class StateSaverIOMixin:
         try:
             if hasattr(self, "build_aux_state"):
                 state["technical_aux"] = self.build_aux_state()
-        except Exception as e:
-            print(f"Warning: failed to collect technical aux rows: {e}")
+        except Exception as exc:
+            logger.warning("Failed to collect technical aux rows: %s", exc, exc_info=True)
 
         self.state = state
         if target_file:
             if is_auto and os.path.exists(self.AUTO_STATE_FILE):
                 try:
                     shutil.copyfile(self.AUTO_STATE_FILE, self.PREV_STATE_FILE)
-                except Exception as e:
-                    print("Error copying autosave file:", e)
+                except Exception as exc:
+                    logger.warning("Failed to copy autosave file: %s", exc, exc_info=True)
             try:
                 with open(target_file, "w") as f:
                     json.dump(state, f, indent=4)
-            except Exception as e:
-                print("Error saving state:", e)
+            except Exception as exc:
+                logger.error("Failed to save state file %s: %s", target_file, exc, exc_info=True)
 
         # Keep active unlocked session containers in sync with latest workspace state
         # so crash recovery can restore from container content.
         try:
             if hasattr(self, "sync_workspace_to_session_container"):
                 self.sync_workspace_to_session_container(state=state)
-        except Exception as e:
-            print("Warning: failed to sync workspace to session container:", e)
+        except Exception as exc:
+            logger.warning(
+                "Failed to sync workspace to session container: %s",
+                exc,
+                exc_info=True,
+            )
 
     def _get_crop_rect(self):
         r = getattr(self.image_view, "crop_rect", None)
@@ -324,7 +216,10 @@ class StateSaverIOMixin:
                             rect = zone.rect()
                             radius = rect.width() / 2.0
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Suppressed exception in state_saver_io_mixin.py",
+                        exc_info=True,
+                    )
                 out.append(
                     {
                         "x": center.x(),
@@ -345,8 +240,8 @@ class StateSaverIOMixin:
                 "window_geometry": self.saveGeometry().toBase64().data().decode('ascii'),
                 "window_state": self.saveState().toBase64().data().decode('ascii'),
             }
-        except Exception as e:
-            print(f"Error saving dock geometry: {e}")
+        except Exception as exc:
+            logger.warning("Failed to save dock geometry: %s", exc, exc_info=True)
             return None
 
     def _restore_dock_geometry(self, dock_geometry):
@@ -363,5 +258,5 @@ class StateSaverIOMixin:
             if "window_state" in dock_geometry:
                 state_bytes = dock_geometry["window_state"].encode('ascii')
                 self.restoreState(QByteArray.fromBase64(state_bytes))
-        except Exception as e:
-            print(f"Error restoring dock geometry: {e}")
+        except Exception as exc:
+            logger.warning("Failed to restore dock geometry: %s", exc, exc_info=True)

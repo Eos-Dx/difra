@@ -131,6 +131,9 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
     )
     harness.show()
     qapp.processEvents()
+    tab_names = [harness.tabs.tabText(idx) for idx in range(harness.tabs.count())]
+    assert "Session" in tab_names
+    assert "Archive" in tab_names
 
     harness._refresh_session_container_lists()
     assert harness.pending_sessions_table.rowCount() == 2
@@ -152,6 +155,11 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
         assert bool(h5f.attrs.get("locked", False)) is True
         assert h5f.attrs.get(schema.ATTR_SAMPLE_ID) in {"SAMPLE_A", "SAMPLE_B"}
         assert h5f.attrs.get(schema.ATTR_STUDY_NAME) in {"STUDY_A", "STUDY_B"}
+        assert h5f.attrs.get("uploaded_by") == "sad"
+        assert str(h5f.attrs.get("upload_timestamp", "")).strip()
+        assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_sad_")
+        assert h5f.attrs.get("upload_status") == "success"
+        assert "status=success" in str(h5f.attrs.get("upload_attempts_log", ""))
 
     # Active session got closed if it was the one sent
     assert session_manager.close_calls in {0, 1}
@@ -169,6 +177,15 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
     for archived in archived_files:
         with h5py.File(archived, "r") as h5f:
             assert bool(h5f.attrs.get("locked", False)) is True
+            assert h5f.attrs.get("uploaded_by") == "sad"
+            assert h5f.attrs.get("upload_status") == "success"
+
+    harness.archive_project_filter_edit.setText("STUDY_A")
+    harness._apply_archive_filters()
+    qapp.processEvents()
+    assert harness.archived_sessions_table.rowCount() == 1
+    harness.archive_project_filter_edit.setText("")
+    harness._apply_archive_filters()
 
 
 def test_session_tab_close_finalize_active_session(qapp, tmp_path, monkeypatch):

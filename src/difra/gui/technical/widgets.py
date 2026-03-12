@@ -1,14 +1,116 @@
 import logging
 
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QDialog,
     QHeaderView,
+    QHBoxLayout,
+    QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+
+class DetectorProfilePreview(QWidget):
+    """Compact line-profile preview widget."""
+
+    def __init__(self, line_color: str, parent=None):
+        super().__init__(parent)
+        self._line_color = QColor(line_color)
+        self._profile = []
+        self._has_profile = False
+        self.setFixedSize(self._cm_to_px(2.0, axis="x"), self._cm_to_px(1.5, axis="y"))
+
+    def _cm_to_px(self, cm: float, axis: str = "x") -> int:
+        dpi = float(self.logicalDpiX() if axis == "x" else self.logicalDpiY())
+        if dpi <= 0:
+            dpi = 96.0
+        return max(52, int(round((float(cm) / 2.54) * dpi)))
+
+    def clear_profile(self):
+        self._profile = []
+        self._has_profile = False
+        self.update()
+
+    def set_profile(self, values):
+        try:
+            import numpy as np
+
+            arr = np.asarray(values, dtype=float).ravel()
+            if arr.size < 2:
+                self.clear_profile()
+                return
+
+            finite = np.isfinite(arr)
+            if not np.any(finite):
+                self.clear_profile()
+                return
+            arr = arr[finite]
+            if arr.size < 2:
+                self.clear_profile()
+                return
+
+            sample_size = min(int(arr.size), 240)
+            if arr.size > sample_size:
+                idx = np.linspace(0, arr.size - 1, sample_size).astype(int)
+                arr = arr[idx]
+
+            min_v = float(arr.min())
+            max_v = float(arr.max())
+            span = max_v - min_v
+            if span <= 1e-12:
+                normalized = np.full(arr.shape, 0.5, dtype=float)
+            else:
+                normalized = (arr - min_v) / span
+
+            self._profile = normalized.tolist()
+            self._has_profile = True
+            self.update()
+        except Exception:
+            self.clear_profile()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        painter.fillRect(rect, QColor("#f6f7f9"))
+        painter.setPen(QPen(QColor("#c8ced6"), 1.0))
+        painter.drawRect(rect)
+
+        left = rect.left() + 4
+        right = rect.right() - 4
+        top = rect.top() + 4
+        bottom = rect.bottom() - 4
+        mid_y = (top + bottom) / 2.0
+
+        baseline_pen = QPen(QColor("#d4dae3"), 1.0, Qt.DashLine)
+        painter.setPen(baseline_pen)
+        painter.drawLine(left, int(round(mid_y)), right, int(round(mid_y)))
+
+        if not self._has_profile or len(self._profile) < 2:
+            painter.end()
+            return
+
+        line_pen = QPen(self._line_color, 1.6)
+        painter.setPen(line_pen)
+        path = QPainterPath()
+        width = max(float(right - left), 1.0)
+        height = max(float(bottom - top), 1.0)
+
+        for i, value in enumerate(self._profile):
+            x = left + (i / float(len(self._profile) - 1)) * width
+            y = bottom - float(value) * height
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        painter.drawPath(path)
+        painter.end()
 
 
 class MeasurementHistoryWidget(QWidget):
@@ -28,6 +130,7 @@ class MeasurementHistoryWidget(QWidget):
             self.summary_btn = QPushButton("No measurements")
             self.summary_btn.clicked.connect(self.show_history_dialog)
             self.layout.addWidget(self.summary_btn)
+            self._create_detector_profile_previews()
             self.layout.setContentsMargins(0, 0, 0, 0)
             self.setLayout(self.layout)
             self.update_summary()
@@ -35,6 +138,46 @@ class MeasurementHistoryWidget(QWidget):
             logging.getLogger(__name__).exception(
                 "Error initializing MeasurementHistoryWidget: %s", e
             )
+
+    def _create_detector_profile_previews(self):
+        self.detector_profile_previews = {}
+        for alias, color in (("PRIMARY", "#2b7a78"), ("SECONDARY", "#cc5c3c")):
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            label = QLabel(f"{alias} profile:")
+            label.setStyleSheet("color: #444; font-size: 10px;")
+            label.setFixedWidth(92)
+            preview = DetectorProfilePreview(color, self)
+            row.addWidget(label)
+            row.addWidget(preview)
+            row.addStretch(1)
+            self.layout.addLayout(row)
+            self.detector_profile_previews[alias] = preview
+
+    @staticmethod
+    def _normalize_profile_alias(alias: str) -> str:
+        key = str(alias or "").strip().upper()
+        if key == "SAXS":
+            return "PRIMARY"
+        if key == "WAXS":
+            return "SECONDARY"
+        return key
+
+    def set_detector_profile(self, alias: str, profile_values):
+        preview_map = getattr(self, "detector_profile_previews", {}) or {}
+        key = self._normalize_profile_alias(alias)
+        preview = preview_map.get(key)
+        if preview is None:
+            return
+        preview.set_profile(profile_values)
+
+    def clear_detector_profiles(self):
+        preview_map = getattr(self, "detector_profile_previews", {}) or {}
+        for preview in preview_map.values():
+            try:
+                preview.clear_profile()
+            except Exception:
+                pass
 
     def add_measurement(self, results, timestamp):
         try:

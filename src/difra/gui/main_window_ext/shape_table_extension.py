@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from PyQt5.QtCore import Qt
@@ -12,6 +13,8 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ShapeTableMixin:
@@ -32,6 +35,8 @@ class ShapeTableMixin:
             shape_info.pop(key, None)
 
     def _get_stage_reference_mm(self):
+        # Keep stage-limit overlay in the same coordinate frame as mm_to_pixels(),
+        # which uses these spinboxes as stage reference for beam-cross conversion.
         x_widget = getattr(self, "real_x_pos_mm", None)
         y_widget = getattr(self, "real_y_pos_mm", None)
         try:
@@ -232,7 +237,7 @@ class ShapeTableMixin:
                     break
             self.update_shape_table()  # Refresh the table to display the updated role.
         except Exception as e:
-            print("Error updating shape role:", e)
+            logger.warning("Error updating shape role: %s", e, exc_info=True)
 
     def update_shape_table(self):
         shapes = getattr(self.image_view, "shapes", [])
@@ -308,7 +313,7 @@ class ShapeTableMixin:
                             self.apply_shape_role(shape_info)
                         break
         except Exception as e:
-            print("Error updating shape from table:", e)
+            logger.warning("Error updating shape from table: %s", e, exc_info=True)
 
     def setupDeleteShortcut(self):
         # Override the keyPressEvent for the shape table to capture the Delete key.

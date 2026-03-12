@@ -1,3 +1,4 @@
+import logging
 import json
 import time
 from pathlib import Path
@@ -13,18 +14,102 @@ def _pm():
     return pm
 
 
+logger = logging.getLogger(__name__)
+
+
 class ZoneMeasurementsProcessResultsMixin:
     def _append_capture_log(self, message: str):
+        payload = f"[CAPTURE] {message}"
         try:
-            self._append_measurement_log(f"[CAPTURE] {message}")
-        except Exception:
-            pass
+            self._append_measurement_log(payload)
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="CAPTURE", source="process_results")
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
 
     def _append_session_log(self, message: str):
+        payload = f"[SESSION] {message}"
         try:
-            self._append_measurement_log(f"[SESSION] {message}")
+            self._append_measurement_log(payload)
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(payload, channel="SESSION", source="process_results")
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
+
+    def _extract_profile_from_measurement(self, measurement_ref: str):
+        value = str(measurement_ref or "").strip()
+        if not value:
+            return None
+        try:
+            from difra.gui.technical.capture import _load_measurement_array
+
+            data = _load_measurement_array(value)
+            arr = np.asarray(data, dtype=float)
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+            return np.nanmean(arr, axis=0)
         except Exception:
-            pass
+            logger.debug(
+                "Failed to extract detector profile from '%s'",
+                value,
+                exc_info=True,
+            )
+            return None
+
+    def _update_profile_previews_from_result_files(
+        self,
+        result_files: dict,
+        point_uid: Optional[str] = None,
+    ):
+        updater = getattr(self, "update_detector_profile_preview", None)
+        if not callable(updater):
+            return
+        uid = str(point_uid or "").strip() or None
+        for alias, measurement_ref in (result_files or {}).items():
+            profile = self._extract_profile_from_measurement(measurement_ref)
+            if profile is None:
+                continue
+            try:
+                if uid is None:
+                    updater(alias, profile)
+                else:
+                    try:
+                        updater(alias, profile, uid)
+                    except TypeError:
+                        updater(alias, profile)
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in process_results_mixin.py",
+                    exc_info=True,
+                )
 
     def _build_session_measurement_result_refs(
         self,
@@ -55,7 +140,7 @@ class ZoneMeasurementsProcessResultsMixin:
             if callable(format_detector_role):
                 try:
                     role = str(format_detector_role(alias) or "").strip()
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     role = None
 
             if not role:
@@ -102,7 +187,7 @@ class ZoneMeasurementsProcessResultsMixin:
                         timestamp_end=time.strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     marked_failed = True
-                except Exception:
+                except (AttributeError, RuntimeError, TypeError, ValueError):
                     pm.logger.warning("Failed to mark failed measurement in session container", exc_info=True)
             self._append_capture_log(f"Point {point_index_1based}: capture failed")
             if marked_failed:
@@ -137,6 +222,19 @@ class ZoneMeasurementsProcessResultsMixin:
                 measurement_points_count=int(len(measurement_points)),
                 session_point_index=int(point_index_1based),
             )
+        add_to_panel = getattr(self, "add_measurement_widget_to_panel", None)
+        if callable(add_to_panel):
+            try:
+                add_to_panel(point_unique_id)
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in process_results_mixin.py",
+                    exc_info=True,
+                )
+        self._update_profile_previews_from_result_files(
+            result_files,
+            point_uid=point_unique_id,
+        )
 
         for alias, npy_filename in result_files.items():
             if not npy_filename:
@@ -170,7 +268,7 @@ class ZoneMeasurementsProcessResultsMixin:
             else:
                 with open(self.state_path_measurements, "w") as f:
                     json.dump(self.state_measurements, f, indent=4)
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             pm.logger.warning(
                 "Failed to persist measurement state file",
                 error=str(exc),
@@ -235,7 +333,7 @@ class ZoneMeasurementsProcessResultsMixin:
                                     blob_key = f"raw_{file_format}"
                                     raw_files[blob_key] = f.read()
                                 pm.logger.debug(f"Read raw file for blob: {raw_file.name} -> {blob_key}")
-                            except Exception as e:
+                            except OSError as e:
                                 pm.logger.warning(f"Failed to read raw file {raw_file}: {e}")
 
                     if raw_files:
@@ -307,7 +405,7 @@ class ZoneMeasurementsProcessResultsMixin:
                 self._append_session_log(
                     f"Point {point_index_1based}: saved to session ({len(all_data)} detector(s))"
                 )
-            except Exception as e:
+            except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as e:
                 pm.logger.error("=" * 60)
                 pm.logger.error("✗ CRITICAL ERROR: Failed to add measurement to H5")
                 pm.logger.error("=" * 60)
@@ -333,7 +431,7 @@ class ZoneMeasurementsProcessResultsMixin:
                         self._append_session_log(
                             f"Point {point_index_1based}: marked failed after session write error"
                         )
-                    except Exception:
+                    except (AttributeError, RuntimeError, TypeError, ValueError):
                         pm.logger.warning("Failed to persist failed status for point measurement", exc_info=True)
         else:
             pm.logger.warning("⚠ Session manager not active - measurements will NOT be saved to H5!")
@@ -360,7 +458,7 @@ class ZoneMeasurementsProcessResultsMixin:
                 green_zone = pm.QColor(0, 255, 0)
                 green_zone.setAlphaF(0.2)
                 self._zone_item.setBrush(green_zone)
-        except Exception as e:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as e:
             pm.logger.warning("Error updating zone item color", error=str(e))
 
         pm.logger.info("Scheduling measurement_finished in 1000ms...")
@@ -454,8 +552,11 @@ class ZoneMeasurementsProcessResultsMixin:
             if x_item is not None and y_item is not None:
                 x_mm = float(x_item.text()) if x_item.text() not in (None, "", "N/A") else None
                 y_mm = float(y_item.text()) if y_item.text() not in (None, "", "N/A") else None
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
 
         add_to_panel = getattr(self, "add_measurement_widget_to_panel", None)
         if callable(add_to_panel):
@@ -486,8 +587,11 @@ class ZoneMeasurementsProcessResultsMixin:
                     )
             else:
                 widget.setWindowTitle(f"Measurement History: Point {point_label}")
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
 
         try:
             items_map = getattr(self, "_measurement_items", {})
@@ -502,8 +606,11 @@ class ZoneMeasurementsProcessResultsMixin:
                         )
                     else:
                         top_item.setText(0, f"Point {point_label}")
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in process_results_mixin.py",
+                exc_info=True,
+            )
 
         widget.add_measurement(results, timestamp or getattr(self, "_timestamp", ""))
         pm.logger.debug(
@@ -521,8 +628,11 @@ class ZoneMeasurementsProcessResultsMixin:
         if callable(getter):
             try:
                 return getter(row)
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in process_results_mixin.py",
+                    exc_info=True,
+                )
 
         point_uid: Optional[str] = None
         point_id = None
@@ -534,20 +644,23 @@ class ZoneMeasurementsProcessResultsMixin:
                     uid_txt = str(uid_data).strip()
                     if uid_txt:
                         point_uid = uid_txt
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 point_uid = None
             try:
                 role_data = item0.data(Qt.UserRole)
                 if role_data is not None:
                     point_id = int(role_data)
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 point_id = None
             txt = item0.text().strip()
             if txt and point_id is None:
                 try:
                     point_id = int(txt)
                 except ValueError:
-                    pass
+                    logger.debug(
+                        "Suppressed exception in process_results_mixin.py",
+                        exc_info=True,
+                    )
 
         point_item = None
         if point_id is None or not point_uid:
@@ -575,7 +688,7 @@ class ZoneMeasurementsProcessResultsMixin:
         if point_id is None and point_uid:
             try:
                 point_id = int(str(point_uid).split("_", 1)[0])
-            except Exception:
+            except (TypeError, ValueError):
                 point_id = None
 
         if not point_uid and point_id is not None:
@@ -586,8 +699,11 @@ class ZoneMeasurementsProcessResultsMixin:
             if point_item is not None:
                 try:
                     point_item.setData(2, point_uid)
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in process_results_mixin.py",
+                        exc_info=True,
+                    )
 
         return point_uid, point_id
 
@@ -687,6 +803,9 @@ class ZoneMeasurementsProcessResultsMixin:
         self.stopped = True
         self.paused = False
         self.current_measurement_sorted_index = 0
+        clear_previews = getattr(self, "clear_detector_profile_previews", None)
+        if callable(clear_previews):
+            clear_previews()
         self.progressBar.setValue(0)
         self.timeRemainingLabel.setText("Measurement stopped.")
         self.start_btn.setEnabled(True)
@@ -701,7 +820,7 @@ class ZoneMeasurementsProcessResultsMixin:
         pm = _pm()
         try:
             active_aliases = self.hardware_controller.active_detector_aliases
-        except Exception:
+        except (AttributeError, RuntimeError):
             dev_mode = self.config.get("DEV", False)
             ids = self.config.get("dev_active_detectors", []) if dev_mode else self.config.get("active_detectors", [])
             active_aliases = [d.get("alias") for d in self.config.get("detectors", []) if d.get("id") in ids]

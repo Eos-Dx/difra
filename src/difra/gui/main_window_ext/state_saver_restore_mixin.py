@@ -1,5 +1,8 @@
 """State saver restoration and reconstruction responsibilities."""
 
+import logging
+import binascii
+
 from . import state_saver_extension as _module
 
 base64 = _module.base64
@@ -21,6 +24,8 @@ QGraphicsRectItem = _module.QGraphicsRectItem
 
 null_dict = _module.null_dict
 
+logger = logging.getLogger(__name__)
+
 
 class StateSaverRestoreMixin:
     def _restore_image(self, image_path, state_dir: Path = None):
@@ -40,8 +45,11 @@ class StateSaverRestoreMixin:
                     ):
                         local = local.lstrip("/")
                     image_path = local
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
         def try_load(candidate_path) -> bool:
             try:
@@ -51,7 +59,7 @@ class StateSaverRestoreMixin:
                     if not pm.isNull():
                         self.image_view.set_image(pm, image_path=cp)
                         return True
-            except Exception:
+            except (AttributeError, OSError, TypeError, ValueError):
                 return False
             return False
 
@@ -70,8 +78,11 @@ class StateSaverRestoreMixin:
                 candidate = (Path(state_dir) / image_path).resolve()
                 if try_load(candidate):
                     return
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
         # 3) Try folderLineEdit (user-selected root) if available
         try:
@@ -85,8 +96,11 @@ class StateSaverRestoreMixin:
                 candidate = (root / Path(image_path).name).resolve()
                 if try_load(candidate):
                     return
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
         # 4) Try config default_image_folder/default_folder
         try:
@@ -99,21 +113,27 @@ class StateSaverRestoreMixin:
                 candidate = (Path(default_folder) / Path(image_path).name).resolve()
                 if try_load(candidate):
                     return
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
         # 5) Try basename search in likely roots (state_dir, folderLineEdit, default_folder, cwd)
         base = None
         try:
             base = Path(image_path).name if image_path else None
-        except Exception:
+        except (TypeError, ValueError):
             base = None
         roots = []
         try:
             if state_dir:
                 roots.append(Path(state_dir))
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
         try:
             if (
                 hasattr(self, "folderLineEdit")
@@ -121,8 +141,11 @@ class StateSaverRestoreMixin:
                 and self.folderLineEdit.text()
             ):
                 roots.append(Path(self.folderLineEdit.text()))
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
         try:
             default_folder = None
             if hasattr(self, "config") and isinstance(self.config, dict):
@@ -131,15 +154,18 @@ class StateSaverRestoreMixin:
                 ) or self.config.get("default_folder")
             if default_folder:
                 roots.append(Path(default_folder))
-        except Exception:
-            pass
+        except (AttributeError, OSError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
         roots.append(Path.cwd())
         if base:
             try:
                 for root in roots:
                     try:
                         candidates = list(root.rglob(base))
-                    except Exception:
+                    except (OSError, RuntimeError, ValueError):
                         candidates = []
                     if not candidates:
                         # Try same stem any image extension
@@ -151,7 +177,7 @@ class StateSaverRestoreMixin:
                                 if p.suffix.lower()
                                 in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
                             ]
-                        except Exception:
+                        except (OSError, RuntimeError, ValueError):
                             candidates = []
                     if len(candidates) == 1:
                         if try_load(candidates[0]):
@@ -168,8 +194,11 @@ class StateSaverRestoreMixin:
                         )
                         if chosen and try_load(chosen):
                             return
-            except Exception:
-                pass
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Suppressed exception in state_saver_restore_mixin.py",
+                    exc_info=True,
+                )
 
         # 6) Fallback to base64 embedded image if available
         try:
@@ -182,10 +211,13 @@ class StateSaverRestoreMixin:
                 if pm.loadFromData(data):
                     self.image_view.set_image(pm, image_path=None)
                     return
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError, binascii.Error):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
-        print("No image to restore.")
+        logger.info("No image to restore from saved state")
 
     def _restore_rotation(self, angle):
         self.image_view.rotation_angle = angle
@@ -208,7 +240,7 @@ class StateSaverRestoreMixin:
             raw_id = shape.get("id", None)
             try:
                 shape_id = int(raw_id) if raw_id is not None else i + 1
-            except Exception:
+            except (TypeError, ValueError):
                 shape_id = i + 1
             while shape_id in used_ids:
                 shape_id += 1
@@ -273,8 +305,11 @@ class StateSaverRestoreMixin:
                 self.image_view.shape_counter = (
                     max(used_ids) + 1 if used_ids else 1
                 )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            logger.debug(
+                "Suppressed exception in state_saver_restore_mixin.py",
+                exc_info=True,
+            )
 
     # --- state_saver_extension.py ---
 
@@ -290,7 +325,7 @@ class StateSaverRestoreMixin:
             self.next_point_id = (
                 max(int(x) for x in existing_ids) + 1 if existing_ids else 1
             )
-        except Exception:
+        except (TypeError, ValueError):
             self.next_point_id = 1
 
         # Import ZonePointsRenderer if available (new system)
@@ -298,10 +333,10 @@ class StateSaverRestoreMixin:
             from .points.zone_points_renderer import ZonePointsRenderer
 
             use_new_system = True
-            print("Using new ZonePointsRenderer system for point restoration")
+            logger.info("Using ZonePointsRenderer for point restoration")
         except ImportError:
             use_new_system = False
-            print(
+            logger.info(
                 "Using legacy system for point restoration (ZonePointsRenderer not available)"
             )
 
@@ -316,7 +351,7 @@ class StateSaverRestoreMixin:
             if not pt_uid:
                 try:
                     pt_uid = f"{int(pt_id)}_{os.urandom(4).hex()}"
-                except Exception:
+                except (TypeError, ValueError):
                     pt_uid = f"0_{os.urandom(4).hex()}"
 
             if use_new_system:
@@ -404,7 +439,7 @@ class StateSaverRestoreMixin:
         ]
         try:
             self.next_point_id = max(int(i) for i in all_ids) + 1 if all_ids else 1
-        except Exception:
+        except (TypeError, ValueError):
             self.next_point_id = 1
 
     # ---- As before ----
@@ -450,14 +485,17 @@ class StateSaverRestoreMixin:
                     existing = existing.decode("utf-8", errors="replace")
                 if isinstance(existing, str) and existing.strip():
                     uid = existing.strip()
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 uid = None
             if not uid:
                 uid = f"{idx + 1}_{os.urandom(4).hex()}"
                 try:
                     point_item.setData(2, uid)
-                except Exception:
-                    pass
+                except (AttributeError, TypeError):
+                    logger.debug(
+                        "Suppressed exception in state_saver_restore_mixin.py",
+                        exc_info=True,
+                    )
             measurement_points.append(
                 {
                     "unique_id": uid,
@@ -507,7 +545,7 @@ class StateSaverRestoreMixin:
             # User wants to restore PONI files
             self._restore_poni_files_from_state(detector_poni)
         else:
-            print("User chose to keep existing PONI file settings")
+            logger.info("User kept existing PONI settings")
 
     def _restore_poni_files_from_state(self, detector_poni):
         """Restore PONI file paths from state, checking if files exist."""
@@ -540,7 +578,7 @@ class StateSaverRestoreMixin:
                 if poni_lineedit:
                     poni_lineedit.setText(path)
                 restored_count += 1
-                print(f"Restored PONI path for {alias}: {path}")
+                logger.info("Restored PONI path for %s: %s", alias, path)
             else:
                 # File doesn't exist - clear the path
                 self.poni_files[alias] = {"path": None, "name": None}
@@ -549,7 +587,7 @@ class StateSaverRestoreMixin:
                 if poni_lineedit:
                     poni_lineedit.setText("")
                 missing_files.append(f"{alias}: {path or 'N/A'}")
-                print(f"PONI file missing for {alias}: {path}")
+                logger.warning("PONI file missing for %s: %s", alias, path)
 
         # Show summary
         from PyQt5.QtWidgets import QMessageBox

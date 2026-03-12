@@ -4,9 +4,7 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QAction,
     QApplication,
-    QFileDialog,
     QMainWindow,
     QTabWidget,
     QVBoxLayout,
@@ -149,14 +147,6 @@ class MainWindow(
             # Set a callback so that when shapes change, the shape table updates.
             self.image_view.shape_updated_callback = self.update_shape_table
 
-            # Add "Restore State" action to File menu.
-            logger.debug("Adding restore state action...")
-            self.add_restore_state_action()
-            logger.debug("Adding restore state from file action...")
-            # Add new "Restore State From File" action to the File menu.
-            self.add_restore_state_action_from_file()
-            logger.debug("State actions added")
-
             # If DEV mode, auto-open default image
             logger.debug("Checking dev mode...")
             self.check_dev_mode()
@@ -208,35 +198,3 @@ class MainWindow(
         except Exception as e:
             logger.error(f"Error in setup_main_layout: {e}", exc_info=True)
             raise
-
-    def add_restore_state_action(self):
-        restore_state_act = QAction("Restore State", self, triggered=self.restore_state)
-        if self.menuBar().actions():
-            fileMenu = self.menuBar().actions()[0].menu()
-            if fileMenu:
-                fileMenu.addAction(restore_state_act)
-            else:
-                self.menuBar().addAction(restore_state_act)
-        else:
-            fileMenu = self.menuBar().addMenu("File")
-            fileMenu.addAction(restore_state_act)
-
-    def add_restore_state_action_from_file(self):
-        restore_state_from_file_act = QAction("Restore State From File", self)
-        restore_state_from_file_act.triggered.connect(self.restore_state_from_file)
-        if self.menuBar().actions():
-            fileMenu = self.menuBar().actions()[0].menu()
-            if fileMenu:
-                fileMenu.addAction(restore_state_from_file_act)
-            else:
-                self.menuBar().addAction(restore_state_from_file_act)
-        else:
-            fileMenu = self.menuBar().addMenu("File")
-            fileMenu.addAction(restore_state_from_file_act)
-
-    def restore_state_from_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Restore State From File", "", "JSON Files (*.json)"
-        )
-        if file_path:
-            self.restore_state(file_path)

@@ -274,6 +274,9 @@ def start_measurements(owner):
     owner.stop_btn.setEnabled(True)
     if hasattr(owner, "skip_btn") and owner.skip_btn is not None:
         owner.skip_btn.setEnabled(True)
+    clear_previews = getattr(owner, "clear_detector_profile_previews", None)
+    if callable(clear_previews):
+        clear_previews()
     owner.stopped = False
     owner.paused = False
     owner._session_point_indices = []

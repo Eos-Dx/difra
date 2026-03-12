@@ -41,8 +41,8 @@
             "type": "DummyDetector",
             "id": "DUMMY-0001",
             "size": {
-                "width": 128,
-                "height": 128
+                "width": 256,
+                "height": 256
             },
             "pixel_size_um": [
                 100,
@@ -56,8 +56,8 @@
             "type": "DummyDetector",
             "id": "DUMMY-0002",
             "size": {
-                "width": 128,
-                "height": 128
+                "width": 256,
+                "height": 256
             },
             "pixel_size_um": [
                 100,
@@ -151,6 +151,27 @@
     "technical_archive_folder": "D:\\Data\\archive\\technical",
     "measurements_folder": "D:\\Data\\measurements",
     "measurements_archive_folder": "D:\\Data\\archive\\measurements",
+    "poni_center_validation": {
+        "enabled": true,
+        "apply_in_dev_mode": false,
+        "defaults": {
+            "row_tolerance_percent": 5.0
+        },
+        "detectors": {
+            "PRIMARY": {
+                "row_target_px": 128,
+                "row_tolerance_px": 13,
+                "col_target_px": 10,
+                "col_tolerance_px": 10,
+                "col_max_px": 20
+            },
+            "SECONDARY": {
+                "row_target_px": 128,
+                "row_tolerance_px": 13,
+                "col_gt_px": 256
+            }
+        }
+    },
     "standard_distances": {
         "SAXS": 0.17239906043601042,
         "WAXS": 0.023128625835860867

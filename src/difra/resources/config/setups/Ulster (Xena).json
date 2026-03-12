@@ -38,30 +38,30 @@
             "type": "DummyDetector",
             "id": "DUMMY-0001",
             "size": {
-                "width": 128,
-                "height": 128
+                "width": 256,
+                "height": 256
             },
             "pixel_size_um": [
                 100,
                 100
             ],
             "faulty_pixels": null,
-            "default_poni": "# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis \n# Calibration done at Mon Jun  3 16:40:56 2024\nponi_version: 2.1\nDetector: Detector\nDetector_config: {\"pixel1\": 1.0e-04, \"pixel2\": 1.0e-04, \"max_shape\": [128, 128], \"orientation\": 3}\nDistance: 0.17239906043601042\nPoni1: 0.0070200\nPoni2: 0.00086006\nRot1: 0.0\nRot2: 0.0\nRot3: 0.0\nWavelength: 1.5406e-10\n"
+            "default_poni": "# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis \n# Calibration done at Mon Jun  3 16:40:56 2024\nponi_version: 2.1\nDetector: Detector\nDetector_config: {\"pixel1\": 1.0e-04, \"pixel2\": 1.0e-04, \"max_shape\": [256, 256], \"orientation\": 3}\nDistance: 0.17239906043601042\nPoni1: 0.0070200\nPoni2: 0.00086006\nRot1: 0.0\nRot2: 0.0\nRot3: 0.0\nWavelength: 1.5406e-10\n"
         },
         {
             "alias": "WAXS",
             "type": "DummyDetector",
             "id": "DUMMY-0002",
             "size": {
-                "width": 128,
-                "height": 128
+                "width": 256,
+                "height": 256
             },
             "pixel_size_um": [
                 100,
                 100
             ],
             "faulty_pixels": null,
-            "default_poni": "# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis \n# Calibration done at Mon Jun  3 16:40:56 2024\nponi_version: 2.1\nDetector: Detector\nDetector_config: {\"pixel1\": 1.0e-04, \"pixel2\": 1.0e-04, \"max_shape\": [128, 128], \"orientation\": 3}\nDistance: 0.023128625835860867\nPoni1: 0.0070327\nPoni2: 0.00081060\nRot1: 0.0\nRot2: 0.0\nRot3: 0.0\nWavelength: 1.5406e-10\n"
+            "default_poni": "# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis \n# Calibration done at Mon Jun  3 16:40:56 2024\nponi_version: 2.1\nDetector: Detector\nDetector_config: {\"pixel1\": 1.0e-04, \"pixel2\": 1.0e-04, \"max_shape\": [256, 256], \"orientation\": 3}\nDistance: 0.023128625835860867\nPoni1: 0.0070327\nPoni2: 0.00081060\nRot1: 0.0\nRot2: 0.0\nRot3: 0.0\nWavelength: 1.5406e-10\n"
         }
     ],
     "active_detectors": [
