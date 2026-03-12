@@ -234,6 +234,16 @@ class SessionFinalizeWorkflow:
             destination = archive_folder / f"{source.stem}_{suffix}{source.suffix}"
 
         shutil.move(str(source), str(destination))
+        SessionLifecycleActions._write_container_attrs(
+            Path(destination),
+            {
+                SessionLifecycleActions.SESSION_STATE_ATTR: "archived",
+                SessionLifecycleActions.SESSION_STATE_REASON_ATTR: "archived_after_finalize",
+                SessionLifecycleActions.SESSION_STATE_UPDATED_ATTR: time.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            },
+        )
         if logger:
             logger.info(
                 "Archived locked session container",

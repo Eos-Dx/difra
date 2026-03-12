@@ -14,6 +14,21 @@ logger = logging.getLogger(__name__)
 def handle_new_sample_image(owner, image_path: str):
     """Create a new session when a sample image is loaded or captured."""
     if owner.session_manager.is_session_active():
+        reform_handler = getattr(owner, "_try_reform_active_session_for_new_image", None)
+        if callable(reform_handler):
+            try:
+                if reform_handler(image_path):
+                    if hasattr(owner, "_append_session_log"):
+                        owner._append_session_log(
+                            "Reused active session after image reform reset"
+                        )
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "Image reform handler failed; falling back to replacement flow: %s",
+                    exc,
+                    exc_info=True,
+                )
         if not owner._handle_session_replacement():
             if hasattr(owner, "_append_session_log"):
                 owner._append_session_log("New sample load cancelled")

@@ -126,6 +126,7 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
             "measurements_folder": str(measurements_folder),
             "measurements_archive_folder": str(archive_folder),
             "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
         },
         session_manager=session_manager,
     )
@@ -215,6 +216,7 @@ def test_session_tab_close_finalize_active_session(qapp, tmp_path, monkeypatch):
             "measurements_folder": str(measurements_folder),
             "measurements_archive_folder": str(archive_folder),
             "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
         },
         session_manager=session_manager,
     )

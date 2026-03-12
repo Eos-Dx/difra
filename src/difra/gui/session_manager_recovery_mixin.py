@@ -362,6 +362,10 @@ class SessionManagerRecoveryMixin:
                 "files_by_alias": {alias: str(path) for alias, path in files_by_alias.items()},
             },
         )
+        set_state = getattr(self, "_set_session_state", None)
+        measuring_state = getattr(self, "SESSION_STATE_MEASURING", "measuring")
+        if callable(set_state):
+            set_state(measuring_state, reason="recovery_completed")
         return measurement_path
 
     def abort_incomplete_measurement(
@@ -402,4 +406,8 @@ class SessionManagerRecoveryMixin:
                 "reason": reason or "",
             },
         )
+        set_state = getattr(self, "_set_session_state", None)
+        prepared_state = getattr(self, "SESSION_STATE_PREPARED", "prepared")
+        if callable(set_state):
+            set_state(prepared_state, reason="recovery_remeasure_required")
         return measurement_path
