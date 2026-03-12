@@ -133,6 +133,8 @@ def test_lock_is_blocked_when_validation_fails(monkeypatch):
         assert harness._active_technical_container_locked is False
         assert len(_MessageBoxStub.critical_calls) == 1
         assert "Validation Failed" in _MessageBoxStub.critical_calls[0][0]
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("container_state") == "validation_failed"
 
 
 def test_lock_proceeds_when_validation_passes(monkeypatch):
@@ -160,6 +162,8 @@ def test_lock_proceeds_when_validation_passes(monkeypatch):
         assert len(harness.lock_calls) == 1
         assert harness._active_technical_container_locked is True
         assert _MessageBoxStub.critical_calls == []
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("container_state") == "locked"
 
 
 def test_lock_is_blocked_when_user_declines_poni_selection(monkeypatch):
@@ -297,6 +301,8 @@ def test_lock_is_blocked_when_distances_not_configured(monkeypatch):
         assert harness.lock_calls == []
         assert harness.distance_dialog_calls == 1
         assert len(_MessageBoxStub.warning_calls) >= 1
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("container_state") == "pending_distances"
 
 
 def test_center_validation_failure_suggests_updating_poni_or_main_config(monkeypatch):
@@ -467,6 +473,8 @@ def test_poni_review_accept_persists_accepted_in_valid_zone(monkeypatch):
         with h5py.File(container_path, "r") as h5f:
             assert h5f.attrs.get("poni_center_review_status") == "accepted"
             assert bool(h5f.attrs.get("poni_center_in_allowed_zone", False)) is True
+            assert str(h5f.attrs.get("poni_center_review_reason", "") or "") == ""
+            assert h5f.attrs.get("container_state") == "ready_to_lock"
 
 
 def test_poni_review_accept_out_of_zone_hard_fails_and_blocks_lock(monkeypatch):
@@ -504,7 +512,36 @@ def test_poni_review_accept_out_of_zone_hard_fails_and_blocks_lock(monkeypatch):
         with h5py.File(container_path, "r") as h5f:
             assert h5f.attrs.get("poni_center_review_status") == "rejected"
             assert bool(h5f.attrs.get("poni_center_in_allowed_zone", True)) is False
+            assert h5f.attrs.get("poni_center_review_reason") == "center_out_of_zone"
+            assert h5f.attrs.get("container_state") == "rejected_blocked"
         assert any("Lock Blocked" in args[1] for args, _kwargs in _MessageBoxStub.warning_calls)
+
+
+def test_poni_reject_requires_reason_code(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        container_path = Path(tmp) / "technical_test.nxs.h5"
+        _create_container(container_path, schema_version="0.2")
+        harness = _Harness(container_path)
+        harness.config["poni_center_validation"] = {"enabled": True, "detectors": {"SAXS": {}}}
+        _MessageBoxStub.reset()
+        monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+        monkeypatch.setattr(
+            harness,
+            "_show_poni_center_preview_for_container",
+            lambda *_a, **_k: False,
+            raising=False,
+        )
+
+        result = harness._run_poni_center_review_workflow(
+            container_path,
+            container_id="tech_test_001",
+            prompt_reload_on_reject=False,
+        )
+
+        assert result is False
+        with h5py.File(container_path, "r") as h5f:
+            assert h5f.attrs.get("poni_center_review_status") == "rejected"
+            assert h5f.attrs.get("poni_center_review_reason") == "user_rejected_preview"
 
 
 def test_demo_fake_poni_generation_uses_center_validation_targets():

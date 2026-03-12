@@ -352,6 +352,54 @@ def test_load_technical_files_without_container(qapp, tmp_path, monkeypatch):
     assert harness.auxTable.rowCount() == 4
 
 
+def test_create_container_sets_pending_distances_when_not_confirmed(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+    config = {
+        "DEV": True,
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+        "dev_active_detectors": ["det_primary"],
+        "active_detectors": ["det_primary"],
+        "technical_folder": str(tmp_path / "technical_storage"),
+        "technical_temp_folder": str(tmp_path / "technical_temp"),
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_create_pending_dist")
+    harness.show()
+    qapp.processEvents()
+
+    monkeypatch.setattr(harness, "configure_detector_distances", lambda: None)
+
+    created = harness._create_new_active_technical_container(clear_table=True)
+    assert created is not None
+    with h5py.File(created, "r") as h5f:
+        assert h5f.attrs.get("container_state") == "pending_distances"
+
+
+def test_create_container_sets_pending_poni_when_distances_confirmed(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+    config = {
+        "DEV": True,
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+        "dev_active_detectors": ["det_primary"],
+        "active_detectors": ["det_primary"],
+        "technical_folder": str(tmp_path / "technical_storage"),
+        "technical_temp_folder": str(tmp_path / "technical_temp"),
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_create_pending_poni")
+    harness.show()
+    qapp.processEvents()
+
+    monkeypatch.setattr(
+        harness,
+        "configure_detector_distances",
+        lambda: setattr(harness, "_detector_distances", {"det_primary": 17.0}),
+    )
+
+    created = harness._create_new_active_technical_container(clear_table=True)
+    assert created is not None
+    with h5py.File(created, "r") as h5f:
+        assert h5f.attrs.get("container_state") == "pending_poni"
+
+
 def test_open_existing_session_container_updates_state(qapp, tmp_path, monkeypatch):
     _patch_non_blocking_dialogs(monkeypatch)
 
@@ -1204,6 +1252,8 @@ def test_archive_active_container_locks_then_archives_container_and_related_file
     archived_h5 = list(archive_folder.rglob(tech_path.name))
     assert len(archived_h5) == 1
     archive_subdir = archived_h5[0].parent
+    with h5py.File(archived_h5[0], "r") as h5f:
+        assert h5f.attrs.get("container_state") == "archived"
     assert (archive_subdir / related_txt.name).exists()
     assert (archive_subdir / related_poni.name).exists()
 
