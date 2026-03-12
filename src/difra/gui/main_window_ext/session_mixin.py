@@ -40,11 +40,38 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         return value
 
     def _append_compact_log(self, category: str, message: str):
+        payload = f"[{category}] {message}"
         try:
             if hasattr(self, "_append_measurement_log"):
-                self._append_measurement_log(f"[{category}] {message}")
-        except Exception:
-            pass
+                self._append_measurement_log(payload)
+        except Exception as exc:
+            logger.debug(
+                "Failed to append compact UI log category=%s message=%s error=%s",
+                category,
+                message,
+                exc,
+                exc_info=True,
+            )
+        try:
+            append_runtime = getattr(
+                self,
+                "_append_runtime_log_to_active_technical_container",
+                None,
+            )
+            if callable(append_runtime):
+                append_runtime(
+                    payload,
+                    channel=str(category or "").strip().upper(),
+                    source="session_mixin",
+                )
+        except Exception as exc:
+            logger.debug(
+                "Failed to append compact technical-container log category=%s message=%s error=%s",
+                category,
+                message,
+                exc,
+                exc_info=True,
+            )
 
     def _append_session_log(self, message: str):
         self._append_compact_log("SESSION", message)
@@ -57,8 +84,8 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             distances = getattr(self, "_detector_distances", {}) or {}
             if distances:
                 return float(next(iter(distances.values())))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to read default session distance: %s", exc, exc_info=True)
         return None
 
     def _current_measurement_output_folder(self) -> Path:
@@ -73,8 +100,12 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     session_parent = Path(session_path).parent
                     if Path(session_path).exists():
                         return session_parent
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to resolve active session parent folder: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
         if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
             folder_text = str(self.folderLineEdit.text() or "").strip()
@@ -93,7 +124,12 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             return False
         try:
             return Path(session_path).exists()
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to validate active session path existence: %s",
+                exc,
+                exc_info=True,
+            )
             return False
 
     def _refresh_measurement_output_folder_lock(self):
@@ -101,7 +137,12 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         if self._is_measurement_output_folder_locked():
             try:
                 locked_folder = str(Path(self.session_manager.session_path).parent)
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Failed to resolve locked session folder path: %s",
+                    exc,
+                    exc_info=True,
+                )
                 locked_folder = ""
 
         self._measurement_output_folder_locked_path = locked_folder
@@ -111,16 +152,24 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 self.folderLineEdit.setText(locked_folder)
             try:
                 self.folderLineEdit.setReadOnly(bool(locked_folder))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to toggle folderLineEdit readonly state: %s",
+                    exc,
+                    exc_info=True,
+                )
             try:
                 self.folderLineEdit.setToolTip(
                     "Locked to the active session container folder."
                     if locked_folder
                     else "Measurement output folder for the current session workflow."
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to update folderLineEdit tooltip: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         if hasattr(self, "browseBtn") and self.browseBtn is not None:
             self.browseBtn.setEnabled(not bool(locked_folder))
@@ -130,8 +179,12 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     if locked_folder
                     else "Browse for measurement output folder."
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to update browseBtn tooltip: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     def _enforce_measurement_output_folder_lock(self, show_message: bool = False) -> bool:
         if not self._is_measurement_output_folder_locked():
@@ -346,26 +399,8 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             )
             return
 
-        distances = getattr(self, "_detector_distances", {}) or {}
-        if not distances and hasattr(self, "configure_detector_distances"):
-            self.configure_detector_distances()
-            distances = getattr(self, "_detector_distances", {}) or {}
-            if not distances:
-                return
-
-            active_after_config = str(
-                getattr(self, "_active_technical_container_path", "") or ""
-            ).strip()
-            if active_after_config:
-                QMessageBox.information(
-                    self,
-                    "Technical Container Ready",
-                    f"Technical container ready:\n{Path(active_after_config).name}",
-                )
-            return
-
         try:
-            technical_path = self._create_new_active_technical_container(clear_table=False)
+            technical_path = self._create_new_active_technical_container(clear_table=True)
             if technical_path is None:
                 return
 

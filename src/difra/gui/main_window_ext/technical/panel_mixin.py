@@ -38,7 +38,11 @@ class TechnicalPanelMixin:
             control_font.setPointSize(9)
             container.setFont(control_font)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in panel_mixin.py",
+                exc_info=True,
+            )
 
         it_layout = tm.QHBoxLayout()
         it_layout.addWidget(tm.QLabel("Integration Time (s):"))
@@ -140,7 +144,11 @@ class TechnicalPanelMixin:
 
             self.auxTable.verticalHeader().setDefaultSectionSize(24)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in panel_mixin.py",
+                exc_info=True,
+            )
         self.auxTable.setSelectionBehavior(self.auxTable.SelectRows)
         self.auxTable.setSelectionMode(self.auxTable.ExtendedSelection)
         self.auxTable.cellClicked.connect(self._handle_aux_table_cell_clicked)
@@ -152,27 +160,50 @@ class TechnicalPanelMixin:
         actions_layout = tm.QHBoxLayout()
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(4)
-        actions_layout.addWidget(tm.QLabel("Actions:"))
+        actions_layout.addWidget(tm.QLabel("Workflow:"))
 
-        self.new_h5_btn = tm.QPushButton("Create Technical...")
-        self.new_h5_btn.setToolTip("Create a new technical container for the configured detector distances")
+        self.new_h5_btn = tm.QPushButton("Create Container...")
+        self.new_h5_btn.setToolTip(
+            "Primary path: create a fresh technical container for the current workflow"
+        )
         self.new_h5_btn.clicked.connect(self.on_new_technical_container)
         actions_layout.addWidget(self.new_h5_btn)
 
         self.load_h5_btn = tm.QPushButton("Load Container…")
-        self.load_h5_btn.setToolTip("Load an existing technical HDF5 container")
+        self.load_h5_btn.setToolTip(
+            "Primary path: load an existing technical HDF5 container and continue from it"
+        )
         self.load_h5_btn.clicked.connect(self.load_technical_h5)
         actions_layout.addWidget(self.load_h5_btn)
+
+        self.load_files_btn = tm.QPushButton("Load Files (Recovery)…")
+        self.load_files_btn.setToolTip(
+            "Recovery path: rebuild active technical container state from raw technical files"
+        )
+        self.load_files_btn.clicked.connect(self.load_technical_files)
+        actions_layout.addWidget(self.load_files_btn)
 
         self.dist_btn = tm.QPushButton("Distances...")
         self.dist_btn.setToolTip("Configure detector distances for technical measurements")
         self.dist_btn.clicked.connect(self.configure_detector_distances)
         actions_layout.addWidget(self.dist_btn)
 
+        self.update_poni_btn = tm.QPushButton("Update PONI...")
+        self.update_poni_btn.setToolTip("Update PONI files for active technical container")
+        self.update_poni_btn.clicked.connect(self.update_active_technical_container_poni)
+        actions_layout.addWidget(self.update_poni_btn)
+
         self.lock_h5_btn = tm.QPushButton("Lock Container")
         self.lock_h5_btn.setToolTip("Lock active technical container for production use")
         self.lock_h5_btn.clicked.connect(self.lock_active_technical_container)
         actions_layout.addWidget(self.lock_h5_btn)
+
+        self.archive_h5_btn = tm.QPushButton("Archive Container")
+        self.archive_h5_btn.setToolTip(
+            "Archive active container (irreversible): lock if needed and move container + related files to archive"
+        )
+        self.archive_h5_btn.clicked.connect(self.archive_active_technical_container)
+        actions_layout.addWidget(self.archive_h5_btn)
 
         self.pyfai_btn = tm.QPushButton("PyFAI")
         self.pyfai_btn.setToolTip("Run pyfai-calib2 in this folder")
@@ -203,7 +234,11 @@ class TechnicalPanelMixin:
         try:
             self.measDock.setMinimumWidth(300)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in panel_mixin.py",
+                exc_info=True,
+            )
 
         self.addDockWidget(tm.Qt.LeftDockWidgetArea, self.measDock)
 
@@ -228,10 +263,16 @@ class TechnicalPanelMixin:
         ]
         if hasattr(self, "load_h5_btn"):
             self.load_h5_btn.setEnabled(True)
+        if hasattr(self, "load_files_btn"):
+            self.load_files_btn.setEnabled(True)
         if hasattr(self, "new_h5_btn"):
             self.new_h5_btn.setEnabled(True)
         if hasattr(self, "lock_h5_btn"):
             self.lock_h5_btn.setEnabled(True)
+        if hasattr(self, "archive_h5_btn"):
+            self.archive_h5_btn.setEnabled(True)
+        if hasattr(self, "update_poni_btn"):
+            self.update_poni_btn.setEnabled(True)
 
         for w in widgets:
             w.setEnabled(enable)
@@ -245,6 +286,8 @@ class TechnicalPanelMixin:
             self.auxBtn.setEnabled(has_distances)
         if hasattr(self, "pyfai_btn"):
             self.pyfai_btn.setEnabled(has_distances)
+        if hasattr(self, "update_poni_btn"):
+            self.update_poni_btn.setEnabled(has_distances)
         if hasattr(self, "lock_h5_btn"):
             self.lock_h5_btn.setEnabled(has_distances)
 
@@ -416,7 +459,11 @@ class TechnicalPanelMixin:
             try:
                 self.folderLE.setReadOnly(bool(locked_folder))
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in panel_mixin.py",
+                    exc_info=True,
+                )
             try:
                 self.folderLE.setToolTip(
                     "Locked to the active technical container folder."
@@ -424,7 +471,11 @@ class TechnicalPanelMixin:
                     else "Technical output folder for technical files and container work."
                 )
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in panel_mixin.py",
+                    exc_info=True,
+                )
 
         if hasattr(self, "folderBrowseBtn") and self.folderBrowseBtn is not None:
             self.folderBrowseBtn.setEnabled(not bool(locked_folder))
@@ -435,7 +486,11 @@ class TechnicalPanelMixin:
                     else "Browse for technical output folder."
                 )
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Suppressed exception in panel_mixin.py",
+                    exc_info=True,
+                )
 
     def _on_technical_folder_changed(self):
         if not hasattr(self, "folderLE") or self.folderLE is None:

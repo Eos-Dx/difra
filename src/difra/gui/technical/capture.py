@@ -3,13 +3,14 @@ import shutil
 import logging
 from pathlib import Path
 from collections import Counter
+from typing import Optional
 
 import numpy as np
 import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtWidgets import QDialog, QHBoxLayout
+from PyQt5.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QDialogButtonBox
 
 from difra.gui.container_api import get_container_version
 from difra.gui.technical.analysis_compat import (
@@ -516,6 +517,195 @@ def show_measurement_window(
     dialog.resize(700, 700)
     dialog.show()
 
+    return dialog
+
+
+def _resolve_overlay_zone(rule: dict, width_px: int, height_px: int):
+    """Return (x, y, w, h) for allowed center zone from JSON rule."""
+    if not isinstance(rule, dict):
+        return None
+
+    def _as_float(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    row_target = _as_float(rule.get("row_target_px"))
+    row_tol_px = _as_float(rule.get("row_tolerance_px"))
+    if row_tol_px is None:
+        row_tol_percent = _as_float(rule.get("row_tolerance_percent"))
+        if row_tol_percent is not None:
+            row_tol_px = (float(height_px) * float(row_tol_percent)) / 100.0
+    if row_target is None:
+        row_target = float(height_px) / 2.0
+    if row_tol_px is None:
+        row_tol_px = 0.0
+
+    y_min = row_target - row_tol_px
+    y_max = row_target + row_tol_px
+
+    col_target = _as_float(rule.get("col_target_px"))
+    col_tol_px = _as_float(rule.get("col_tolerance_px"))
+    col_min_px = _as_float(rule.get("col_min_px"))
+    col_max_px = _as_float(rule.get("col_max_px"))
+    col_gt_px = _as_float(rule.get("col_gt_px"))
+    col_lt_px = _as_float(rule.get("col_lt_px"))
+
+    if col_target is not None and col_tol_px is not None:
+        x_min = col_target - col_tol_px
+        x_max = col_target + col_tol_px
+    else:
+        x_min = col_min_px if col_min_px is not None else 0.0
+        x_max = col_max_px if col_max_px is not None else float(width_px)
+        if col_gt_px is not None:
+            x_min = max(x_min, col_gt_px)
+        if col_lt_px is not None:
+            x_max = min(x_max, col_lt_px)
+
+    x_min = max(0.0, min(float(width_px), float(x_min)))
+    x_max = max(0.0, min(float(width_px), float(x_max)))
+    y_min = max(0.0, min(float(height_px), float(y_min)))
+    y_max = max(0.0, min(float(height_px), float(y_max)))
+
+    if x_max <= x_min or y_max <= y_min:
+        return None
+    return (x_min, y_min, x_max - x_min, y_max - y_min)
+
+
+def show_poni_centers_preview_window(
+    *,
+    aliases,
+    poni_by_alias: dict,
+    detector_sizes_by_alias: dict,
+    validation_cfg: dict,
+    agbh_images_by_alias: Optional[dict] = None,
+    decision_mode: bool = False,
+    parent=None,
+):
+    """Show detector previews with PONI centers and allowed center zones."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    from difra.gui.main_window_ext.technical.poni_center_validation import (
+        parse_poni_center_px,
+    )
+
+    aliases = [str(a) for a in aliases if str(a or "").strip()]
+    if not aliases:
+        return None
+
+    data_by_alias = agbh_images_by_alias if isinstance(agbh_images_by_alias, dict) else {}
+    detector_rules = {}
+    if isinstance(validation_cfg, dict):
+        rules = validation_cfg.get("detectors", {})
+        if isinstance(rules, dict):
+            detector_rules = {str(k).upper(): v for k, v in rules.items()}
+        defaults = validation_cfg.get("defaults", {})
+        if not isinstance(defaults, dict):
+            defaults = {}
+    else:
+        defaults = {}
+
+    cols = len(aliases)
+    fig = Figure(figsize=(4.5 * cols, 4.2))
+    canvas = FigureCanvas(fig)
+    axes = fig.subplots(1, cols)
+    if cols == 1:
+        axes = [axes]
+
+    for ax, alias in zip(axes, aliases):
+        alias_key = str(alias).upper()
+        size = detector_sizes_by_alias.get(alias) or detector_sizes_by_alias.get(alias_key) or (256, 256)
+        try:
+            width_px = int(size[0])
+            height_px = int(size[1])
+        except Exception:
+            width_px, height_px = 256, 256
+
+        raw_data = data_by_alias.get(alias)
+        if raw_data is None:
+            raw_data = data_by_alias.get(alias_key)
+        if raw_data is None:
+            img = np.zeros((height_px, width_px), dtype=float)
+            source_label = "fake detector square"
+        else:
+            img = np.asarray(raw_data, dtype=float)
+            if img.ndim != 2:
+                img = np.zeros((height_px, width_px), dtype=float)
+                source_label = "fake detector square"
+            else:
+                source_label = "AGBH"
+
+        h, w = img.shape
+        ax.imshow(img, origin="lower", cmap="gray", aspect="equal")
+        ax.set_xlim(0, max(w - 1, 1))
+        ax.set_ylim(0, max(h - 1, 1))
+        ax.set_title(f"{alias} ({source_label})")
+        ax.set_xlabel("col (px)")
+        ax.set_ylabel("row (px)")
+
+        rule = {}
+        if alias_key in detector_rules and isinstance(detector_rules[alias_key], dict):
+            rule = dict(defaults)
+            rule.update(detector_rules[alias_key])
+        elif isinstance(defaults, dict):
+            rule = dict(defaults)
+
+        zone = _resolve_overlay_zone(rule, w, h)
+        if zone is not None:
+            rect = Rectangle(
+                (zone[0], zone[1]),
+                zone[2],
+                zone[3],
+                facecolor=(0.58, 0.28, 0.78, 0.25),
+                edgecolor=(0.58, 0.28, 0.78, 0.8),
+                linewidth=1.5,
+            )
+            ax.add_patch(rect)
+
+        poni_text = str(poni_by_alias.get(alias) or poni_by_alias.get(alias_key) or "")
+        center = parse_poni_center_px(poni_text, fallback_detector_size=(w, h))
+        if center is not None:
+            ax.plot(
+                [float(center["col_px"])],
+                [float(center["row_px"])],
+                marker="o",
+                markersize=6,
+                markerfacecolor="red",
+                markeredgecolor="white",
+                markeredgewidth=0.8,
+            )
+
+    fig.tight_layout()
+
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("PONI Centers: PRIMARY/SECONDARY")
+    if decision_mode:
+        dialog.setModal(True)
+
+    if decision_mode:
+        layout = QVBoxLayout(dialog)
+    else:
+        layout = QHBoxLayout(dialog)
+    layout.addWidget(canvas)
+
+    if decision_mode:
+        decision_buttons = QDialogButtonBox(dialog)
+        accept_btn = decision_buttons.addButton("Accept", QDialogButtonBox.AcceptRole)
+        reject_btn = decision_buttons.addButton("Reject", QDialogButtonBox.RejectRole)
+        accept_btn.clicked.connect(dialog.accept)
+        reject_btn.clicked.connect(dialog.reject)
+        layout.addWidget(decision_buttons)
+
+    dialog.resize(max(640, 460 * cols), 420)
+    if decision_mode:
+        result = dialog.exec_()
+        return {"dialog": dialog, "accepted": bool(result == QDialog.Accepted)}
+
+    dialog.show()
     return dialog
 
 

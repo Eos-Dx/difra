@@ -6,6 +6,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_technical_container
+from difra.gui.matador_upload_api import build_matador_upload_api
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,50 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
             archive_folder=archive_dest,
             logger=logger,
         )
-        if send_error is None:
-            mark_transferred = getattr(container_manager, "mark_container_transferred", None)
-            if callable(mark_transferred):
-                mark_transferred(Path(archived_session_path), sent=True)
+        uploader_id = None
+        if hasattr(owner, "operator_manager") and owner.operator_manager is not None:
+            get_current_operator_id = getattr(
+                owner.operator_manager, "get_current_operator_id", None
+            )
+            if callable(get_current_operator_id):
+                uploader_id = get_current_operator_id()
+        if not uploader_id and hasattr(owner, "config") and isinstance(owner.config, dict):
+            uploader_id = owner.config.get("operator_id")
+
+        upload_session_id = SessionLifecycleActions.create_upload_session_id(
+            uploader_id=uploader_id,
+            lock_user=lock_user,
+        )
+        upload_api = build_matador_upload_api(
+            owner.config if hasattr(owner, "config") and isinstance(owner.config, dict) else None
+        )
+        upload_result = SessionLifecycleActions.execute_upload_stub(
+            Path(archived_session_path),
+            uploader_id=uploader_id,
+            lock_user=lock_user,
+            upload_session_id=upload_session_id,
+            upload_api=upload_api,
+            simulate_failure=send_error is not None,
+            failure_message=f"Cloud send failed: {send_error}" if send_error is not None else None,
+        )
+
+        mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+        if callable(mark_transferred):
+            mark_transferred(Path(archived_session_path), sent=upload_result.success)
+        SessionLifecycleActions.write_upload_metadata(
+            Path(archived_session_path),
+            uploader_id=uploader_id,
+            lock_user=lock_user,
+        )
+        SessionLifecycleActions.write_upload_result_metadata(
+            Path(archived_session_path),
+            upload_result=upload_result,
+        )
+        SessionLifecycleActions.append_upload_attempt_log(
+            Path(archived_session_path),
+            operator_id=str(uploader_id or lock_user or "unknown"),
+            upload_result=upload_result,
+        )
 
         owner.session_manager.close_session()
         if hasattr(owner, "update_session_status"):
@@ -115,14 +156,15 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
                 f"{archived_session_path.name}"
             )
 
-        if send_error is not None:
+        if not upload_result.success:
             QMessageBox.warning(
                 owner,
                 "Session Send Failed",
                 "The active session was closed automatically before creating a new "
                 "technical container.\n\n"
-                f"Cloud send failed: {send_error}\n\n"
+                f"Upload error: {upload_result.message}\n\n"
                 "The session was archived as LOCKED / UNSENT.\n"
+                f"Upload session: {upload_result.upload_session_id}\n"
                 f"Archived container: {archived_session_path.name}\n"
                 f"Archive folder: {archive_dest}\n"
                 f"Archived measurement files: {archived_count}",
@@ -133,6 +175,7 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
                 "Session Archived",
                 "The active session was closed and sent successfully before "
                 "creating a new technical container.\n\n"
+                f"Upload session: {upload_result.upload_session_id}\n"
                 f"Archived container: {archived_session_path.name}\n"
                 f"Archive folder: {archive_dest}",
             )
@@ -214,13 +257,6 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     from .helpers import _get_technical_storage_folder
 
     distances_by_alias = owner._distance_map_by_alias()
-    if not distances_by_alias:
-        QMessageBox.warning(
-            owner,
-            "Distances Required",
-            "Set detector distances first before creating technical container.",
-        )
-        return None
 
     storage_folder = _get_technical_storage_folder(
         owner.config if hasattr(owner, "config") else None
@@ -229,23 +265,31 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
         owner.config if hasattr(owner, "config") else None
     )
 
-    root_distance_cm = float(next(iter(distances_by_alias.values())))
+    root_distance_cm = (
+        float(next(iter(distances_by_alias.values())))
+        if distances_by_alias
+        else float((owner.config or {}).get("default_technical_distance_cm", 17.0))
+    )
     storage_containers = owner._list_storage_technical_containers(storage_folder)
     active_path = owner._active_technical_container_path_obj()
 
-    matching_candidates = [
-        path
-        for path in storage_containers
-        if owner._distance_matches(
-            owner._read_technical_container_distance_cm(path),
-            root_distance_cm,
-        )
-    ]
-    stale_paths = [
-        path
-        for path in storage_containers
-        if not any(owner._paths_same(path, match) for match in matching_candidates)
-    ]
+    if distances_by_alias:
+        matching_candidates = [
+            path
+            for path in storage_containers
+            if owner._distance_matches(
+                owner._read_technical_container_distance_cm(path),
+                root_distance_cm,
+            )
+        ]
+        stale_paths = [
+            path
+            for path in storage_containers
+            if not any(owner._paths_same(path, match) for match in matching_candidates)
+        ]
+    else:
+        matching_candidates = storage_containers[:1]
+        stale_paths = storage_containers[1:]
 
     if (
         active_path is not None
@@ -253,7 +297,7 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
         and not any(owner._paths_same(active_path, path) for path in storage_containers)
     ):
         active_distance = owner._read_technical_container_distance_cm(active_path)
-        if owner._distance_matches(active_distance, root_distance_cm):
+        if (not distances_by_alias) or owner._distance_matches(active_distance, root_distance_cm):
             matching_candidates.insert(0, active_path)
 
     matching_path = matching_candidates[0] if matching_candidates else None
@@ -292,6 +336,37 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     else:
         if not active_is_stale and not finalize_active_session_for_new_technical_container(owner):
             return None
+
+    # For new container creation always prompt distance configuration first.
+    # If user cancels, creation still continues, but lock/PONI flows will require
+    # configured distances later.
+    if hasattr(owner, "configure_detector_distances") and not bool(
+        getattr(owner, "_skip_distance_prompt_once", False)
+    ):
+        setattr(owner, "_suppress_distance_auto_container_creation", True)
+        try:
+            owner.configure_detector_distances()
+        except Exception as exc:
+            logger.warning(
+                "Distance configuration dialog failed before new technical container creation: %s",
+                exc,
+                exc_info=True,
+            )
+        finally:
+            setattr(owner, "_suppress_distance_auto_container_creation", False)
+
+        try:
+            refreshed_distances = owner._distance_map_by_alias()
+        except Exception:
+            refreshed_distances = {}
+        if refreshed_distances:
+            owner._log_technical_event(
+                f"Detector distances confirmed before new container creation: {refreshed_distances}"
+            )
+        else:
+            owner._log_technical_event(
+                "Detector distances were not confirmed at creation time; deferred until PONI/lock."
+            )
 
     container_id, file_path = technical_container.create_technical_container(
         folder=storage_folder,

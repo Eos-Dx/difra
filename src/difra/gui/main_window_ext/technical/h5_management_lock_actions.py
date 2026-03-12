@@ -64,6 +64,76 @@ from difra.gui.container_api import get_container_manager
 logger = logging.getLogger(__name__)
 
 
+def _ensure_distances_configured(owner, *, action_name: str) -> bool:
+    """Ensure detector distances are configured before sensitive technical actions."""
+    get_aliases = getattr(owner, "_get_active_detector_aliases", None)
+    aliases = []
+    if callable(get_aliases):
+        try:
+            aliases = [str(alias).strip() for alias in (get_aliases() or []) if str(alias).strip()]
+        except Exception:
+            aliases = []
+
+    distance_map = {}
+    get_distance_map = getattr(owner, "_distance_map_by_alias", None)
+    if not callable(get_distance_map):
+        return True
+    if callable(get_distance_map):
+        try:
+            distance_map = {
+                str(alias).strip(): float(value)
+                for alias, value in (get_distance_map() or {}).items()
+                if str(alias).strip()
+            }
+        except Exception:
+            distance_map = {}
+
+    missing = [alias for alias in aliases if alias not in distance_map]
+    if not missing:
+        return True
+
+    QMessageBox.information(
+        owner,
+        "Detector Distances Required",
+        f"Detector distances are required before '{action_name}'.\n\n"
+        "Please set distances now.",
+    )
+
+    configure_distances = getattr(owner, "configure_detector_distances", None)
+    if callable(configure_distances):
+        setattr(owner, "_suppress_distance_auto_container_creation", True)
+        try:
+            configure_distances()
+        finally:
+            setattr(owner, "_suppress_distance_auto_container_creation", False)
+
+    distance_map = {}
+    if callable(get_distance_map):
+        try:
+            distance_map = {
+                str(alias).strip(): float(value)
+                for alias, value in (get_distance_map() or {}).items()
+                if str(alias).strip()
+            }
+        except Exception:
+            distance_map = {}
+    missing = [alias for alias in aliases if alias not in distance_map]
+    if not missing:
+        return True
+
+    QMessageBox.warning(
+        owner,
+        "Distances Not Configured",
+        "Operation cancelled: distances are still missing for detector(s): "
+        + ", ".join(missing),
+    )
+    if hasattr(owner, "_log_technical_event"):
+        owner._log_technical_event(
+            f"{action_name} blocked: detector distances missing for {missing}"
+        )
+    return False
+
+
 def archive_existing_containers(owner, storage_folder: str) -> int:
     """Archive any existing .h5 containers in storage folder before creating new one."""
     from .helpers import _get_technical_archive_folder
@@ -261,12 +331,125 @@ def create_new_technical_container(owner):
     )
 
 
+def archive_active_technical_container(owner):
+    """Archive the active technical container after irreversible confirmation."""
+    active_getter = getattr(owner, "_active_technical_container_path_obj", None)
+    if callable(active_getter):
+        container_path = active_getter()
+    else:
+        raw = str(getattr(owner, "_active_technical_container_path", "") or "").strip()
+        container_path = Path(raw) if raw else None
+
+    if container_path is None:
+        QMessageBox.warning(
+            owner,
+            "No Active Container",
+            "No active technical container loaded or created.",
+        )
+        return False
+
+    container_path = Path(container_path)
+    if not container_path.exists():
+        QMessageBox.warning(
+            owner,
+            "Container Missing",
+            f"Technical container not found:\n{container_path}",
+        )
+        return False
+
+    container_manager = get_container_manager(owner.config if hasattr(owner, "config") else None)
+
+    reply = QMessageBox.question(
+        owner,
+        "Archive Technical Container",
+        "This action cannot be reverted.\n\n"
+        f"Container: {container_path.name}\n\n"
+        "The container will be locked (if needed) and moved to archive together "
+        "with related technical files.\n\n"
+        "Continue?",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No,
+    )
+    if reply != QMessageBox.Yes:
+        owner._log_technical_event(
+            f"Archive cancelled by user for {container_path.name}"
+        )
+        return False
+
+    is_locked = bool(container_manager.is_container_locked(container_path))
+    if not is_locked:
+        lock_reply = QMessageBox.question(
+            owner,
+            "Lock Before Archive",
+            "This container is not locked.\n\n"
+            f"Container: {container_path.name}\n\n"
+            "It must be locked before archive. Lock now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if lock_reply != QMessageBox.Yes:
+            owner._log_technical_event(
+                f"Archive cancelled: user declined lock for {container_path.name}"
+            )
+            return False
+
+        lock_fn = getattr(owner, "lock_active_technical_container", None)
+        if callable(lock_fn):
+            locked_now = bool(lock_fn())
+        else:
+            locked_now = False
+
+        if not locked_now:
+            QMessageBox.warning(
+                owner,
+                "Archive Blocked",
+                "Container could not be locked. Archive was cancelled.",
+            )
+            return False
+
+    try:
+        archived_path = owner._lock_and_archive_technical_container(container_path)
+    except Exception as exc:
+        QMessageBox.critical(
+            owner,
+            "Archive Failed",
+            f"Failed to archive technical container:\n{exc}",
+        )
+        owner._log_technical_event(
+            f"Failed to archive technical container {container_path.name}: {exc}"
+        )
+        return False
+
+    owner._log_technical_event(
+        f"Archived active technical container: {container_path.name} -> {Path(archived_path).name}"
+    )
+    QMessageBox.information(
+        owner,
+        "Container Archived",
+        "Technical container archived successfully.\n\n"
+        f"Archived file: {Path(archived_path).name}\n"
+        f"Archive folder: {Path(archived_path).parent}",
+    )
+    return True
+
+
 def lock_active_technical_container(owner):
     """Lock currently active technical container."""
     import h5py
 
     if hasattr(owner, "_sync_active_technical_container_from_table"):
-        owner._sync_active_technical_container_from_table(show_errors=True)
+        try:
+            synced = owner._sync_active_technical_container_from_table(show_errors=False)
+            if not synced and hasattr(owner, "_log_technical_event"):
+                owner._log_technical_event(
+                    "Pre-lock technical sync skipped/failed silently; proceeding to lock validation"
+                )
+        except Exception as exc:
+            logger.warning(
+                "Pre-lock technical sync raised an exception; continuing with lock validation: %s",
+                exc,
+                exc_info=True,
+            )
 
     active_path = str(getattr(owner, "_active_technical_container_path", "") or "").strip()
     if not active_path:
@@ -275,7 +458,7 @@ def lock_active_technical_container(owner):
             "No Active Container",
             "No active technical container loaded or created.",
         )
-        return
+        return False
 
     container_path = Path(active_path)
     if not container_path.exists():
@@ -284,7 +467,7 @@ def lock_active_technical_container(owner):
             "Container Missing",
             f"Technical container not found:\n{container_path}",
         )
-        return
+        return False
 
     container_manager = get_container_manager(owner.config if hasattr(owner, "config") else None)
     if container_manager.is_container_locked(container_path):
@@ -293,7 +476,10 @@ def lock_active_technical_container(owner):
             "Already Locked",
             f"Container is already locked:\n{container_path.name}",
         )
-        return
+        return True
+
+    if not _ensure_distances_configured(owner, action_name="Lock Container"):
+        return False
 
     container_id = container_path.stem
     try:
@@ -307,13 +493,146 @@ def lock_active_technical_container(owner):
         pass
 
     if not owner._ensure_poni_before_lock(container_path, container_id):
-        return
+        return False
 
     if not owner._validate_container_before_lock(container_path, container_id):
-        return
+        return False
 
-    owner._lock_container(str(container_path), container_id)
-    owner._active_technical_container_locked = True
+    confirm_preview = getattr(owner, "_confirm_poni_center_preview_before_lock", None)
+    if callable(confirm_preview):
+        if not confirm_preview(container_path, container_id):
+            return False
+
+    lock_result = owner._lock_container(str(container_path), container_id)
+    if lock_result is False:
+        return False
+    owner._active_technical_container_locked = bool(
+        container_manager.is_container_locked(container_path)
+    ) or bool(lock_result is not False)
+    return bool(owner._active_technical_container_locked)
+
+
+def update_active_technical_container_poni(owner):
+    """Refresh PONI files for the active technical container."""
+    active_path = str(getattr(owner, "_active_technical_container_path", "") or "").strip()
+    if not active_path:
+        QMessageBox.warning(
+            owner,
+            "No Active Container",
+            "Load or create a technical container before updating PONI files.",
+        )
+        return False
+
+    container_path = Path(active_path)
+    if not container_path.exists():
+        QMessageBox.warning(
+            owner,
+            "Container Missing",
+            f"Technical container not found:\n{container_path}",
+        )
+        return False
+
+    container_manager = get_container_manager(owner.config if hasattr(owner, "config") else None)
+    if container_manager.is_container_locked(container_path):
+        QMessageBox.warning(
+            owner,
+            "Container Locked",
+            "Locked technical container cannot be modified.\n\n"
+            "Archive it and create/load another active container to update PONI files.",
+        )
+        return False
+
+    if not _ensure_distances_configured(owner, action_name="Upload PONI"):
+        return False
+
+    aliases = []
+    collect_aliases = getattr(owner, "_collect_lock_detector_aliases", None)
+    if callable(collect_aliases):
+        try:
+            aliases = list(collect_aliases(container_path) or [])
+        except Exception:
+            aliases = []
+
+    if not aliases:
+        get_active_aliases = getattr(owner, "_get_active_detector_aliases", None)
+        if callable(get_active_aliases):
+            try:
+                aliases = list(get_active_aliases() or [])
+            except Exception:
+                aliases = []
+
+    aliases = sorted({str(alias).strip() for alias in aliases if str(alias).strip()})
+    if not aliases:
+        QMessageBox.warning(
+            owner,
+            "No Detector Aliases",
+            "Could not determine detector aliases for PONI update.",
+        )
+        return False
+
+    prompt_selection = getattr(owner, "_prompt_poni_selection_for_lock", None)
+    if not callable(prompt_selection):
+        QMessageBox.critical(
+            owner,
+            "PONI Update Error",
+            "PONI selection workflow is unavailable in this build.",
+        )
+        return False
+
+    if not prompt_selection(aliases):
+        return False
+
+    sync_fn = getattr(owner, "_sync_active_technical_container_from_table", None)
+    if not callable(sync_fn):
+        QMessageBox.critical(
+            owner,
+            "PONI Update Error",
+            "Container synchronization is unavailable.",
+        )
+        return False
+
+    synced = bool(sync_fn(show_errors=False))
+    if not synced:
+        QMessageBox.warning(
+            owner,
+            "PONI Sync Failed",
+            "PONI files were selected, but active container sync failed.\n\n"
+            "Fix technical rows and retry.",
+        )
+        if hasattr(owner, "_log_technical_event"):
+            owner._log_technical_event(
+                f"PONI update failed: container sync failed for {container_path.name}"
+            )
+        return False
+
+    show_preview = getattr(owner, "_show_poni_center_preview_for_container", None)
+    run_review = getattr(owner, "_run_poni_center_review_workflow", None)
+    if callable(run_review):
+        reviewed = bool(
+            run_review(
+                Path(container_path),
+                container_id=container_path.stem,
+                prompt_reload_on_reject=True,
+            )
+        )
+        if not reviewed:
+            return False
+    elif callable(show_preview):
+        try:
+            show_preview(str(container_path))
+        except Exception:
+            logger.debug("Suppressed PONI center preview error after update", exc_info=True)
+
+    if hasattr(owner, "_log_technical_event"):
+        owner._log_technical_event(
+            f"Updated PONI files for active technical container: {container_path.name}"
+        )
+    QMessageBox.information(
+        owner,
+        "PONI Updated",
+        "PONI calibration files were updated and synced to the active technical container.",
+    )
+    return True
 
 
 def lock_container(owner, container_path: str, container_id: str):
@@ -399,6 +718,7 @@ def lock_container(owner, container_path: str, container_id: str):
             f"Raw data archived: {archived_count} file(s)\n\n"
             f"This container is now ready for session measurements.",
         )
+        return True
     except Exception as exc:
         QMessageBox.critical(
             owner,
@@ -412,3 +732,4 @@ def lock_container(owner, container_path: str, container_id: str):
             str(container_path),
             str(exc),
         )
+        return False
