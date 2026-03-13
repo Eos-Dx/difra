@@ -341,6 +341,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         timestamp_start: Optional[str] = None,
         capture_basename: Optional[str] = None,
         expected_aliases: Optional[List[str]] = None,
+        raw_patterns_by_alias: Optional[Dict[str, List[str]]] = None,
     ) -> bool:
         aliases = [str(alias) for alias in (expected_aliases or []) if str(alias).strip()]
         if not aliases:
@@ -352,6 +353,34 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             expected_path = ""
             if base_path:
                 expected_path = str(Path(f"{base_path}_{alias}").with_suffix(".npy"))
+
+            raw_patterns = []
+            if isinstance(raw_patterns_by_alias, dict):
+                raw_patterns = list(raw_patterns_by_alias.get(alias) or [])
+            required_raw_keys = []
+            raw_section = {}
+            if base_path:
+                raw_base = Path(f"{base_path}_{alias}")
+                for pattern in raw_patterns:
+                    token = str(pattern or "").strip()
+                    if not token:
+                        continue
+                    extension = token
+                    if extension.startswith("*"):
+                        extension = extension[1:]
+                    if extension and not extension.startswith("."):
+                        extension = f".{extension}"
+                    extension = extension or ".bin"
+                    blob_key = f"raw_{extension[1:]}"
+                    required_raw_keys.append(blob_key)
+                    raw_path = raw_base.with_suffix(extension)
+                    raw_section[blob_key] = {
+                        "path": str(raw_path),
+                        "exists": bool(raw_path.exists()),
+                        "size_bytes": int(raw_path.stat().st_size) if raw_path.exists() else 0,
+                        "sha256": self._sha256_file(raw_path) if raw_path.exists() else "",
+                        "status": "ready" if raw_path.exists() else "pending",
+                    }
             files[alias] = {
                 "path": expected_path,
                 "exists": bool(expected_path and Path(expected_path).exists()),
@@ -368,6 +397,8 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
                     if expected_path and Path(expected_path).exists()
                     else "pending"
                 ),
+                "raw": raw_section,
+                "required_raw_keys": required_raw_keys,
             }
 
         manifest = {
@@ -398,6 +429,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         *,
         point_index: int,
         files_by_alias: Dict[str, str],
+        raw_files_by_alias: Optional[Dict[str, Dict[str, str]]] = None,
         source: str = "capture_finished",
     ) -> bool:
         """Update capture manifest with actual file paths and checksums."""
@@ -449,13 +481,69 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             if alias_token not in expected_aliases:
                 expected_aliases.append(alias_token)
 
+        raw_files_by_alias = raw_files_by_alias or {}
+        for alias, raw_mapping in raw_files_by_alias.items():
+            alias_token = str(alias or "").strip()
+            if not alias_token:
+                continue
+            file_entry = files_section.get(alias_token, {})
+            raw_section = file_entry.get("raw")
+            if not isinstance(raw_section, dict):
+                raw_section = {}
+            for blob_key, raw_file_ref in (raw_mapping or {}).items():
+                raw_key = str(blob_key or "").strip()
+                if not raw_key:
+                    continue
+                raw_path = Path(str(raw_file_ref))
+                raw_info = raw_section.get(raw_key, {})
+                raw_info["path"] = str(raw_path)
+                if raw_path.exists():
+                    raw_info["exists"] = True
+                    try:
+                        raw_info["size_bytes"] = int(raw_path.stat().st_size)
+                    except Exception:
+                        raw_info["size_bytes"] = 0
+                    try:
+                        raw_info["sha256"] = self._sha256_file(raw_path)
+                    except Exception:
+                        raw_info["sha256"] = ""
+                    raw_info["status"] = "ready"
+                else:
+                    raw_info["exists"] = False
+                    raw_info["size_bytes"] = 0
+                    raw_info["sha256"] = ""
+                    raw_info["status"] = "missing"
+                raw_section[raw_key] = raw_info
+
+            required_raw_keys = file_entry.get("required_raw_keys")
+            if not isinstance(required_raw_keys, list):
+                required_raw_keys = []
+            for raw_key in raw_section.keys():
+                if raw_key not in required_raw_keys:
+                    required_raw_keys.append(raw_key)
+
+            file_entry["required_raw_keys"] = required_raw_keys
+            file_entry["raw"] = raw_section
+            files_section[alias_token] = file_entry
+
         if not expected_aliases:
             expected_aliases = list(files_section.keys())
 
-        ready_flags = [
-            files_section.get(alias, {}).get("status") == "ready"
-            for alias in expected_aliases
-        ]
+        ready_flags = []
+        for alias in expected_aliases:
+            entry = files_section.get(alias, {})
+            processed_ready = entry.get("status") == "ready"
+            required_raw_keys = entry.get("required_raw_keys")
+            if not isinstance(required_raw_keys, list):
+                required_raw_keys = []
+            raw_section = entry.get("raw")
+            if not isinstance(raw_section, dict):
+                raw_section = {}
+            raw_ready = all(
+                raw_section.get(raw_key, {}).get("status") == "ready"
+                for raw_key in required_raw_keys
+            )
+            ready_flags.append(bool(processed_ready and raw_ready))
         manifest["expected_aliases"] = expected_aliases
         manifest["files"] = files_section
         manifest["status"] = (

@@ -174,7 +174,7 @@ class SessionManagerRecoveryMixin:
         measurement_folder: Union[str, Path],
         expected_aliases: Optional[List[str]] = None,
     ) -> Dict:
-        """Scan measurement folder for npy payload candidates for an in-progress point."""
+        """Resolve recovery files strictly from persisted capture manifest."""
         import numpy as np
 
         folder = Path(measurement_folder)
@@ -188,142 +188,74 @@ class SessionManagerRecoveryMixin:
             except Exception:
                 manifest = {}
 
-        manifest_files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
-        manifest_expected = list(manifest.get("expected_aliases") or []) if isinstance(manifest, dict) else []
-        manifest_has_paths = False
-        if isinstance(manifest_files, dict):
-            for value in manifest_files.values():
-                path_value = ""
-                if isinstance(value, dict):
-                    path_value = str(value.get("path") or "").strip()
-                elif isinstance(value, str):
-                    path_value = value.strip()
-                if path_value:
-                    manifest_has_paths = True
-                    break
-
         if expected_aliases is None:
             expected_aliases = self._expected_detector_aliases()
+        manifest_files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
+        manifest_expected = list(manifest.get("expected_aliases") or []) if isinstance(manifest, dict) else []
 
-        if manifest_has_paths:
-            effective_aliases = [str(alias) for alias in (expected_aliases or []) if str(alias).strip()]
-            if not effective_aliases:
-                effective_aliases = [str(alias) for alias in manifest_expected if str(alias).strip()]
-            if not effective_aliases:
-                effective_aliases = [
-                    str(alias) for alias in manifest_files.keys() if str(alias).strip()
-                ]
+        effective_aliases = [str(alias) for alias in (expected_aliases or []) if str(alias).strip()]
+        if not effective_aliases:
+            effective_aliases = [str(alias) for alias in manifest_expected if str(alias).strip()]
+        if not effective_aliases and isinstance(manifest_files, dict):
+            effective_aliases = [
+                str(alias) for alias in manifest_files.keys() if str(alias).strip()
+            ]
 
-            files_by_alias: Dict[str, str] = {}
-            missing_aliases: List[str] = []
-            for alias in effective_aliases:
-                entry = manifest_files.get(alias, {})
-                if isinstance(entry, dict):
-                    path_str = str(entry.get("path") or "").strip()
-                else:
-                    path_str = str(entry or "").strip()
-                if not path_str:
-                    missing_aliases.append(alias)
-                    continue
-                path_obj = Path(path_str)
-                if not path_obj.exists():
-                    missing_aliases.append(alias)
-                    continue
-                files_by_alias[alias] = str(path_obj)
-
-            unreadable_aliases: List[str] = []
-            for alias, path_str in files_by_alias.items():
-                try:
-                    np.load(path_str, mmap_mode="r")
-                except Exception:
-                    unreadable_aliases.append(alias)
-
+        if not isinstance(manifest, dict) or not manifest:
             return {
                 **context,
                 "measurement_folder": str(folder),
                 "expected_aliases": effective_aliases,
-                "files_by_alias": files_by_alias,
-                "missing_aliases": missing_aliases,
-                "unreadable_aliases": unreadable_aliases,
-                "is_complete": (
-                    not missing_aliases
-                    and not unreadable_aliases
-                    and bool(files_by_alias)
-                ),
-                "recovery_source": "manifest",
-            }
-
-        if not folder.exists():
-            return {
-                **context,
-                "measurement_folder": str(folder),
-                "expected_aliases": expected_aliases,
                 "files_by_alias": {},
-                "missing_aliases": expected_aliases,
+                "missing_aliases": list(effective_aliases),
                 "unreadable_aliases": [],
                 "is_complete": False,
-                "recovery_source": "heuristic",
+                "recovery_source": "manifest",
+                "recovery_reason": "manifest_missing",
             }
-
-        all_npy_files = sorted(folder.glob("*.npy"), key=lambda item: item.stat().st_mtime, reverse=True)
-        x_token = y_token = None
-        if len(context["physical_coordinates_mm"]) >= 2:
-            x_token = f"{float(context['physical_coordinates_mm'][0]):.2f}"
-            y_token = f"{float(context['physical_coordinates_mm'][1]):.2f}"
-        coordinate_token = f"_{x_token}_{y_token}_" if x_token is not None and y_token is not None else None
-
-        timestamp_token = None
-        timestamp_start = context.get("timestamp_start", "")
-        if timestamp_start:
-            try:
-                timestamp_token = datetime.strptime(timestamp_start, "%Y-%m-%d %H:%M:%S").strftime("%Y%m%d_%H%M%S")
-            except Exception:
-                timestamp_token = None
-
-        def _select_best_candidate(alias: str) -> Optional[Path]:
-            alias_upper = alias.upper()
-            candidates = []
-            for candidate in all_npy_files:
-                stem_upper = candidate.stem.upper()
-                if "_ATTENUATION" in stem_upper:
-                    continue
-                if not stem_upper.endswith(f"_{alias_upper}"):
-                    continue
-                candidates.append(candidate)
-            if not candidates:
-                return None
-
-            strict = candidates
-            if coordinate_token is not None:
-                coord_filtered = [item for item in strict if coordinate_token in item.stem]
-                if coord_filtered:
-                    strict = coord_filtered
-            if timestamp_token is not None:
-                timestamp_filtered = [item for item in strict if timestamp_token in item.stem]
-                if timestamp_filtered:
-                    strict = timestamp_filtered
-
-            return strict[0] if strict else None
-
-        if not expected_aliases:
-            inferred = []
-            for item in all_npy_files:
-                stem_upper = item.stem.upper()
-                if "_ATTENUATION" in stem_upper:
-                    continue
-                tail = item.stem.rsplit("_", 1)[-1]
-                if tail and tail not in inferred:
-                    inferred.append(tail)
-            expected_aliases = inferred
 
         files_by_alias: Dict[str, str] = {}
         missing_aliases: List[str] = []
-        for alias in expected_aliases:
-            candidate = _select_best_candidate(alias)
-            if candidate is None:
-                missing_aliases.append(alias)
+        if not isinstance(manifest_files, dict):
+            manifest_files = {}
+
+        for alias in effective_aliases:
+            entry = manifest_files.get(alias, {})
+            if isinstance(entry, dict):
+                path_str = str(entry.get("path") or "").strip()
             else:
-                files_by_alias[alias] = str(candidate)
+                path_str = str(entry or "").strip()
+            if not path_str:
+                missing_aliases.append(alias)
+                continue
+            path_obj = Path(path_str)
+            if not path_obj.exists():
+                missing_aliases.append(alias)
+                continue
+            files_by_alias[alias] = str(path_obj)
+
+        missing_raw_by_alias: Dict[str, List[str]] = {}
+        for alias in effective_aliases:
+            entry = manifest_files.get(alias, {})
+            if not isinstance(entry, dict):
+                continue
+            required_raw_keys = entry.get("required_raw_keys")
+            if not isinstance(required_raw_keys, list):
+                required_raw_keys = []
+            raw_section = entry.get("raw")
+            if not isinstance(raw_section, dict):
+                raw_section = {}
+            missing_for_alias = []
+            for raw_key in required_raw_keys:
+                raw_info = raw_section.get(raw_key, {})
+                raw_path = str(raw_info.get("path") or "").strip()
+                if not raw_path:
+                    missing_for_alias.append(str(raw_key))
+                    continue
+                if not Path(raw_path).exists():
+                    missing_for_alias.append(str(raw_key))
+            if missing_for_alias:
+                missing_raw_by_alias[str(alias)] = missing_for_alias
 
         unreadable_aliases: List[str] = []
         for alias, path_str in files_by_alias.items():
@@ -332,15 +264,49 @@ class SessionManagerRecoveryMixin:
             except Exception:
                 unreadable_aliases.append(alias)
 
+        if not effective_aliases and files_by_alias:
+            return {
+                **context,
+                "measurement_folder": str(folder),
+                "expected_aliases": list(files_by_alias.keys()),
+                "files_by_alias": files_by_alias,
+                "missing_aliases": [],
+                "unreadable_aliases": unreadable_aliases,
+                "is_complete": (
+                    not unreadable_aliases
+                    and not missing_raw_by_alias
+                    and bool(files_by_alias)
+                ),
+                "recovery_source": "manifest",
+                "recovery_reason": "manifest_aliases_inferred",
+                "missing_raw_by_alias": missing_raw_by_alias,
+            }
+
         return {
             **context,
             "measurement_folder": str(folder),
-            "expected_aliases": expected_aliases,
+            "expected_aliases": effective_aliases,
             "files_by_alias": files_by_alias,
             "missing_aliases": missing_aliases,
             "unreadable_aliases": unreadable_aliases,
-            "is_complete": not missing_aliases and not unreadable_aliases and bool(files_by_alias),
-            "recovery_source": "heuristic",
+            "is_complete": (
+                not missing_aliases
+                and not unreadable_aliases
+                and not missing_raw_by_alias
+                and bool(files_by_alias)
+            ),
+            "recovery_source": "manifest",
+            "recovery_reason": (
+                "manifest_complete"
+                if (
+                    not missing_aliases
+                    and not unreadable_aliases
+                    and not missing_raw_by_alias
+                    and bool(files_by_alias)
+                )
+                else "manifest_incomplete"
+            ),
+            "missing_raw_by_alias": missing_raw_by_alias,
         }
 
     def finalize_incomplete_measurement_from_files(

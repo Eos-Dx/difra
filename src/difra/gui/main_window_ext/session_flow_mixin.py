@@ -208,6 +208,7 @@ class SessionFlowMixin:
             files_by_alias = scan.get("files_by_alias", {})
             missing_aliases = scan.get("missing_aliases", [])
             unreadable_aliases = scan.get("unreadable_aliases", [])
+            missing_raw_by_alias = scan.get("missing_raw_by_alias", {}) or {}
             timestamp_start = scan.get("timestamp_start", "")
 
             if scan.get("is_complete"):
@@ -268,6 +269,13 @@ class SessionFlowMixin:
             expected_text = ", ".join(expected_aliases) if expected_aliases else "not configured"
             missing_text = ", ".join(missing_aliases) if missing_aliases else "none"
             unreadable_text = ", ".join(unreadable_aliases) if unreadable_aliases else "none"
+            missing_raw_text = "none"
+            if isinstance(missing_raw_by_alias, dict) and missing_raw_by_alias:
+                chunks = []
+                for alias, raw_keys in sorted(missing_raw_by_alias.items()):
+                    keys = ", ".join(str(item) for item in (raw_keys or [])) or "none"
+                    chunks.append(f"{alias}: {keys}")
+                missing_raw_text = "; ".join(chunks) if chunks else "none"
             QMessageBox.warning(
                 self,
                 "Incomplete Point Requires Re-measurement",
@@ -277,6 +285,7 @@ class SessionFlowMixin:
                     f"Expected detectors: {expected_text}\n"
                     f"Missing files: {missing_text}\n"
                     f"Unreadable files: {unreadable_text}\n\n"
+                    f"Missing raw blobs: {missing_raw_text}\n\n"
                     "This point will be marked for re-measurement."
                 ),
             )

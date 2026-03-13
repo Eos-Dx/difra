@@ -829,6 +829,7 @@ def test_begin_measurement_writes_capture_manifest_with_expected_paths(
         point_index=1,
         timestamp_start="2026-03-13 12:00:00",
         capture_basename=str(capture_base),
+        raw_patterns_by_alias={"DET1": ["*.txt", "*.dsc"]},
     )
 
     with h5py.File(manager.session_path, "r") as session_file:
@@ -841,7 +842,11 @@ def test_begin_measurement_writes_capture_manifest_with_expected_paths(
         assert manifest.get("measurement_path") == measurement_path
         assert "DET1" in (manifest.get("expected_aliases") or [])
         expected = str(Path(f"{capture_base}_DET1").with_suffix(".npy"))
-        assert manifest.get("files", {}).get("DET1", {}).get("path") == expected
+        file_entry = manifest.get("files", {}).get("DET1", {})
+        assert file_entry.get("path") == expected
+        assert set(file_entry.get("required_raw_keys") or []) == {"raw_txt", "raw_dsc"}
+        assert "raw_txt" in (file_entry.get("raw") or {})
+        assert "raw_dsc" in (file_entry.get("raw") or {})
 
 
 def test_recovery_scan_prefers_manifest_paths_over_filename_heuristics(
@@ -888,6 +893,47 @@ def test_recovery_scan_prefers_manifest_paths_over_filename_heuristics(
     assert scan["recovery_source"] == "manifest"
     assert scan["is_complete"] is True
     assert scan["files_by_alias"]["DET1"] == str(manifest_file)
+
+
+def test_recovery_scan_does_not_fallback_to_filename_heuristics(
+    temp_dir, technical_container
+):
+    """Recovery must not use filename heuristics when manifest has no file paths."""
+    measurement_folder = temp_dir / "measurement_folder_manifest_only"
+    measurement_folder.mkdir(parents=True, exist_ok=True)
+    manager = SessionManager(
+        config={
+            "technical_folder": str(temp_dir),
+            "measurements_folder": str(measurement_folder),
+            "detectors": [{"id": "DET1", "alias": "DET1"}],
+            "active_detectors": ["DET1"],
+        }
+    )
+    manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_MANIFEST_REQUIRED",
+        distance_cm=17.0,
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    measurement_path = manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-13 13:00:00",
+    )
+
+    heuristic_like_file = measurement_folder / "ANY_10.00_20.00_20260313_130000_DET1.npy"
+    np.save(heuristic_like_file, np.full((8, 8), 13, dtype=np.float32))
+
+    scan = manager.scan_recovery_files_for_measurement(
+        measurement_path=measurement_path,
+        measurement_folder=measurement_folder,
+    )
+
+    assert scan["recovery_source"] == "manifest"
+    assert scan["is_complete"] is False
+    assert scan["files_by_alias"] == {}
+    assert scan["recovery_reason"] in {"manifest_missing", "manifest_incomplete"}
 
 
 if __name__ == "__main__":
