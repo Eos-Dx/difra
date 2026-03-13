@@ -214,6 +214,7 @@ class SessionManagerMeasurementOpsMixin:
         point_index: int,
         timestamp_start: Optional[str] = None,
         capture_basename: Optional[str] = None,
+        raw_patterns_by_alias: Optional[Dict[str, List[str]]] = None,
     ) -> str:
         """Create an in-progress measurement record before detector capture starts."""
         self._check_active()
@@ -237,6 +238,7 @@ class SessionManagerMeasurementOpsMixin:
                 timestamp_start=timestamp_start,
                 capture_basename=capture_basename,
                 expected_aliases=getattr(self, "_active_detector_aliases", lambda: [])(),
+                raw_patterns_by_alias=raw_patterns_by_alias,
             )
         self.log_event(
             message="Point measurement started",

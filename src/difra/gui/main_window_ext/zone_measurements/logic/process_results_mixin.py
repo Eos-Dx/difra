@@ -202,23 +202,6 @@ class ZoneMeasurementsProcessResultsMixin:
 
         pm.logger.info("Measurement capture successful", files=list(result_files.keys()))
         self._append_capture_log(f"Point {point_index_1based}: capture complete")
-        if (
-            session_manager is not None
-            and hasattr(session_manager, "is_session_active")
-            and session_manager.is_session_active()
-            and hasattr(session_manager, "update_capture_manifest_files")
-        ):
-            try:
-                session_manager.update_capture_manifest_files(
-                    point_index=point_index_1based,
-                    files_by_alias={k: v for k, v in (result_files or {}).items() if v},
-                    source="capture_finished",
-                )
-            except Exception:
-                pm.logger.debug(
-                    "Failed to update capture manifest from capture results",
-                    exc_info=True,
-                )
 
         detector_lookup = {d["alias"]: d for d in self.config["detectors"]}
         measurements = self.state_measurements.get("measurements_meta", {})
@@ -310,6 +293,7 @@ class ZoneMeasurementsProcessResultsMixin:
 
                 all_data = {}
                 raw_files_data = {}
+                raw_paths_by_alias = {}
 
                 detector_lookup = {d["alias"]: d for d in self.config["detectors"]}
                 poni_alias_map = {}
@@ -340,6 +324,7 @@ class ZoneMeasurementsProcessResultsMixin:
                         )
 
                     raw_files = {}
+                    raw_paths = {}
                     for pattern in patterns:
                         ext = pattern[1:] if pattern.startswith("*") else pattern
                         raw_file = folder / f"{base_name}{ext}"
@@ -349,12 +334,14 @@ class ZoneMeasurementsProcessResultsMixin:
                                     file_format = ext[1:] if ext.startswith(".") else ext
                                     blob_key = f"raw_{file_format}"
                                     raw_files[blob_key] = f.read()
+                                    raw_paths[blob_key] = str(raw_file)
                                 pm.logger.debug(f"Read raw file for blob: {raw_file.name} -> {blob_key}")
                             except OSError as e:
                                 pm.logger.warning(f"Failed to read raw file {raw_file}: {e}")
 
                     if raw_files:
                         raw_files_data[detector_id] = raw_files
+                        raw_paths_by_alias[alias] = raw_paths
                         pm.logger.info(
                             f"  Found {len(raw_files)} raw files for {alias}: {list(raw_files.keys())}"
                         )
@@ -362,6 +349,7 @@ class ZoneMeasurementsProcessResultsMixin:
                         pm.logger.warning(
                             f"  No raw files found for {alias} using patterns {patterns}"
                         )
+                        raw_paths_by_alias.setdefault(alias, {})
 
                 pm.logger.info(f"Loaded data from {len(all_data)} detectors")
 
@@ -393,6 +381,23 @@ class ZoneMeasurementsProcessResultsMixin:
                 pm.logger.info(f"Writing to H5: /measurements/pt_{point_index_1based:03d}/meas_NNNNNNNNN")
                 pm.logger.info(f"  Detectors: {list(all_data.keys())}")
                 pm.logger.info(f"  Raw files: {len(raw_files_by_detector_id)} detector(s) with blobs")
+                if hasattr(session_manager, "update_capture_manifest_files"):
+                    try:
+                        session_manager.update_capture_manifest_files(
+                            point_index=point_index_1based,
+                            files_by_alias={
+                                alias: path
+                                for alias, path in (result_files or {}).items()
+                                if path
+                            },
+                            raw_files_by_alias=raw_paths_by_alias,
+                            source="capture_finished_with_raw",
+                        )
+                    except Exception:
+                        pm.logger.debug(
+                            "Failed to update capture manifest with raw file paths",
+                            exc_info=True,
+                        )
 
                 if hasattr(session_manager, "complete_point_measurement"):
                     measurement_path = session_manager.complete_point_measurement(

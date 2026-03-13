@@ -943,15 +943,20 @@ def test_restore_session_recovers_incomplete_point_from_files(qapp, tmp_path, mo
             }
         ]
     )
+    capture_basename = measurement_folder / "RECOVER_OK_SAMPLE_1.23_4.56_20260213_123456"
     measurement_path = manager.begin_point_measurement(
         point_index=1,
         timestamp_start="2026-02-13 12:34:56",
+        capture_basename=str(capture_basename),
+        raw_patterns_by_alias={"PRIMARY": ["*.txt", "*.dsc"]},
     )
 
-    np.save(
-        measurement_folder / "RECOVER_OK_SAMPLE_1.23_4.56_20260213_123456_PRIMARY.npy",
-        np.full((8, 8), 5, dtype=np.float32),
-    )
+    npy_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".npy")
+    txt_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".txt")
+    dsc_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".dsc")
+    np.save(npy_path, np.full((8, 8), 5, dtype=np.float32))
+    txt_path.write_text("raw txt payload")
+    dsc_path.write_text("raw dsc payload")
     manager.close_session()
 
     harness = _SessionRestoreHistoryHarness(config=config)
@@ -1035,15 +1040,20 @@ def test_restore_session_marks_incomplete_point_for_remeasure_on_user_choice(qap
             }
         ]
     )
+    capture_basename = measurement_folder / "RECOVER_REMEASURE_SAMPLE_2.34_5.67_20260213_124456"
     measurement_path = manager.begin_point_measurement(
         point_index=1,
         timestamp_start="2026-02-13 12:44:56",
+        capture_basename=str(capture_basename),
+        raw_patterns_by_alias={"PRIMARY": ["*.txt", "*.dsc"]},
     )
 
-    np.save(
-        measurement_folder / "RECOVER_REMEASURE_SAMPLE_2.34_5.67_20260213_124456_PRIMARY.npy",
-        np.full((8, 8), 9, dtype=np.float32),
-    )
+    npy_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".npy")
+    txt_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".txt")
+    dsc_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".dsc")
+    np.save(npy_path, np.full((8, 8), 9, dtype=np.float32))
+    txt_path.write_text("raw txt payload")
+    dsc_path.write_text("raw dsc payload")
     manager.close_session()
 
     harness = _SessionRestoreHarness(config=config)

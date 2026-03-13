@@ -305,10 +305,22 @@ class ZoneMeasurementsProcessCaptureMixin:
             and hasattr(session_manager, "begin_point_measurement")
         ):
             try:
+                raw_patterns_by_alias = {}
+                detector_controller_map = getattr(self, "detector_controller", {}) or {}
+                for alias, controller in detector_controller_map.items():
+                    patterns = []
+                    getter = getattr(controller, "get_raw_file_patterns", None)
+                    if callable(getter):
+                        try:
+                            patterns = list(getter() or [])
+                        except Exception:
+                            patterns = []
+                    raw_patterns_by_alias[str(alias)] = patterns
                 session_manager.begin_point_measurement(
                     point_index=session_point_index,
                     timestamp_start=time.strftime("%Y-%m-%d %H:%M:%S"),
                     capture_basename=txt_filename_base,
+                    raw_patterns_by_alias=raw_patterns_by_alias,
                 )
                 self._append_session_log(f"Point {session_point_index}: opened in session container")
                 if hasattr(session_manager, "log_event"):
