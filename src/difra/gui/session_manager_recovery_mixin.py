@@ -180,8 +180,78 @@ class SessionManagerRecoveryMixin:
         folder = Path(measurement_folder)
         context = self._measurement_context(measurement_path)
 
+        manifest = {}
+        manifest_reader = getattr(self, "_read_capture_manifest", None)
+        if callable(manifest_reader):
+            try:
+                manifest = manifest_reader(measurement_path) or {}
+            except Exception:
+                manifest = {}
+
+        manifest_files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
+        manifest_expected = list(manifest.get("expected_aliases") or []) if isinstance(manifest, dict) else []
+        manifest_has_paths = False
+        if isinstance(manifest_files, dict):
+            for value in manifest_files.values():
+                path_value = ""
+                if isinstance(value, dict):
+                    path_value = str(value.get("path") or "").strip()
+                elif isinstance(value, str):
+                    path_value = value.strip()
+                if path_value:
+                    manifest_has_paths = True
+                    break
+
         if expected_aliases is None:
             expected_aliases = self._expected_detector_aliases()
+
+        if manifest_has_paths:
+            effective_aliases = [str(alias) for alias in (expected_aliases or []) if str(alias).strip()]
+            if not effective_aliases:
+                effective_aliases = [str(alias) for alias in manifest_expected if str(alias).strip()]
+            if not effective_aliases:
+                effective_aliases = [
+                    str(alias) for alias in manifest_files.keys() if str(alias).strip()
+                ]
+
+            files_by_alias: Dict[str, str] = {}
+            missing_aliases: List[str] = []
+            for alias in effective_aliases:
+                entry = manifest_files.get(alias, {})
+                if isinstance(entry, dict):
+                    path_str = str(entry.get("path") or "").strip()
+                else:
+                    path_str = str(entry or "").strip()
+                if not path_str:
+                    missing_aliases.append(alias)
+                    continue
+                path_obj = Path(path_str)
+                if not path_obj.exists():
+                    missing_aliases.append(alias)
+                    continue
+                files_by_alias[alias] = str(path_obj)
+
+            unreadable_aliases: List[str] = []
+            for alias, path_str in files_by_alias.items():
+                try:
+                    np.load(path_str, mmap_mode="r")
+                except Exception:
+                    unreadable_aliases.append(alias)
+
+            return {
+                **context,
+                "measurement_folder": str(folder),
+                "expected_aliases": effective_aliases,
+                "files_by_alias": files_by_alias,
+                "missing_aliases": missing_aliases,
+                "unreadable_aliases": unreadable_aliases,
+                "is_complete": (
+                    not missing_aliases
+                    and not unreadable_aliases
+                    and bool(files_by_alias)
+                ),
+                "recovery_source": "manifest",
+            }
 
         if not folder.exists():
             return {
@@ -192,6 +262,7 @@ class SessionManagerRecoveryMixin:
                 "missing_aliases": expected_aliases,
                 "unreadable_aliases": [],
                 "is_complete": False,
+                "recovery_source": "heuristic",
             }
 
         all_npy_files = sorted(folder.glob("*.npy"), key=lambda item: item.stat().st_mtime, reverse=True)
@@ -269,6 +340,7 @@ class SessionManagerRecoveryMixin:
             "missing_aliases": missing_aliases,
             "unreadable_aliases": unreadable_aliases,
             "is_complete": not missing_aliases and not unreadable_aliases and bool(files_by_alias),
+            "recovery_source": "heuristic",
         }
 
     def finalize_incomplete_measurement_from_files(
