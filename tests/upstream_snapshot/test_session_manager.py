@@ -1,5 +1,6 @@
 """Tests for SessionManager GUI integration module."""
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -802,6 +803,91 @@ def test_session_manager_session_state_transitions_basic(temp_dir, technical_con
     )
     with h5py.File(session_path, "r") as session_file:
         assert session_file.attrs.get("session_state") == "measuring"
+
+
+def test_begin_measurement_writes_capture_manifest_with_expected_paths(
+    temp_dir, technical_container
+):
+    """begin_point_measurement should persist deterministic capture manifest."""
+    manager = SessionManager(
+        config={
+            "technical_folder": str(temp_dir),
+            "detectors": [{"id": "DET1", "alias": "DET1"}],
+            "active_detectors": ["DET1"],
+        }
+    )
+    manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_MANIFEST",
+        distance_cm=17.0,
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    capture_base = temp_dir / "run" / "sample_10_20_20260313_120000"
+    measurement_path = manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-13 12:00:00",
+        capture_basename=str(capture_base),
+    )
+
+    with h5py.File(manager.session_path, "r") as session_file:
+        meas = session_file[measurement_path]
+        raw_manifest = meas.attrs.get("capture_manifest_json", "")
+        assert raw_manifest
+        if isinstance(raw_manifest, bytes):
+            raw_manifest = raw_manifest.decode("utf-8")
+        manifest = json.loads(raw_manifest)
+        assert manifest.get("measurement_path") == measurement_path
+        assert "DET1" in (manifest.get("expected_aliases") or [])
+        expected = str(Path(f"{capture_base}_DET1").with_suffix(".npy"))
+        assert manifest.get("files", {}).get("DET1", {}).get("path") == expected
+
+
+def test_recovery_scan_prefers_manifest_paths_over_filename_heuristics(
+    temp_dir, technical_container
+):
+    """Recovery scan should use persisted manifest paths as primary source."""
+    measurement_folder = temp_dir / "measurement_folder"
+    measurement_folder.mkdir(parents=True, exist_ok=True)
+    manager = SessionManager(
+        config={
+            "technical_folder": str(temp_dir),
+            "measurements_folder": str(measurement_folder),
+            "detectors": [{"id": "DET1", "alias": "DET1"}],
+            "active_detectors": ["DET1"],
+        }
+    )
+    manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_MANIFEST_SCAN",
+        distance_cm=17.0,
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    measurement_path = manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-13 12:00:00",
+        capture_basename=str(measurement_folder / "unused_basename"),
+    )
+
+    manifest_file = temp_dir / "custom_recovery" / "payload_det1.npy"
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(manifest_file, np.full((8, 8), 42, dtype=np.float32))
+    manager.update_capture_manifest_files(
+        point_index=1,
+        files_by_alias={"DET1": str(manifest_file)},
+        source="test",
+    )
+
+    scan = manager.scan_recovery_files_for_measurement(
+        measurement_path=measurement_path,
+        measurement_folder=measurement_folder,
+    )
+    assert scan["recovery_source"] == "manifest"
+    assert scan["is_complete"] is True
+    assert scan["files_by_alias"]["DET1"] == str(manifest_file)
 
 
 if __name__ == "__main__":

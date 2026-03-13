@@ -202,6 +202,23 @@ class ZoneMeasurementsProcessResultsMixin:
 
         pm.logger.info("Measurement capture successful", files=list(result_files.keys()))
         self._append_capture_log(f"Point {point_index_1based}: capture complete")
+        if (
+            session_manager is not None
+            and hasattr(session_manager, "is_session_active")
+            and session_manager.is_session_active()
+            and hasattr(session_manager, "update_capture_manifest_files")
+        ):
+            try:
+                session_manager.update_capture_manifest_files(
+                    point_index=point_index_1based,
+                    files_by_alias={k: v for k, v in (result_files or {}).items() if v},
+                    source="capture_finished",
+                )
+            except Exception:
+                pm.logger.debug(
+                    "Failed to update capture manifest from capture results",
+                    exc_info=True,
+                )
 
         detector_lookup = {d["alias"]: d for d in self.config["detectors"]}
         measurements = self.state_measurements.get("measurements_meta", {})

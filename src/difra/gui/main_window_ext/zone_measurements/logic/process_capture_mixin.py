@@ -308,6 +308,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                 session_manager.begin_point_measurement(
                     point_index=session_point_index,
                     timestamp_start=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    capture_basename=txt_filename_base,
                 )
                 self._append_session_log(f"Point {session_point_index}: opened in session container")
                 if hasattr(session_manager, "log_event"):

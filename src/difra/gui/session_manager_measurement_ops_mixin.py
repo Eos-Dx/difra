@@ -213,6 +213,7 @@ class SessionManagerMeasurementOpsMixin:
         self,
         point_index: int,
         timestamp_start: Optional[str] = None,
+        capture_basename: Optional[str] = None,
     ) -> str:
         """Create an in-progress measurement record before detector capture starts."""
         self._check_active()
@@ -228,6 +229,15 @@ class SessionManagerMeasurementOpsMixin:
             measurement_status=self.schema.STATUS_IN_PROGRESS,
         )
         self._pending_measurements[point_index] = meas_path
+        init_manifest = getattr(self, "_init_capture_manifest", None)
+        if callable(init_manifest):
+            init_manifest(
+                measurement_path=meas_path,
+                point_index=point_index,
+                timestamp_start=timestamp_start,
+                capture_basename=capture_basename,
+                expected_aliases=getattr(self, "_active_detector_aliases", lambda: [])(),
+            )
         self.log_event(
             message="Point measurement started",
             event_type="measurement_started",
