@@ -1078,6 +1078,101 @@ def test_restore_session_marks_incomplete_point_for_remeasure_on_user_choice(qap
         assert point_group.attrs[schema.ATTR_POINT_STATUS] == schema.POINT_STATUS_PENDING
 
 
+def test_restore_session_marks_incomplete_when_raw_files_missing(qapp, tmp_path, monkeypatch):
+    question_titles = []
+    warning_messages = []
+
+    def _question(*args, **kwargs):
+        if len(args) > 1:
+            question_titles.append(str(args[1]))
+        return QMessageBox.Yes
+
+    def _warning(*args, **kwargs):
+        if len(args) > 2:
+            warning_messages.append(str(args[2]))
+        return QMessageBox.Ok
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_question))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_warning))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    technical_folder = tmp_path / "technical_recover_missing_raw"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    measurement_folder = tmp_path / "session_measurements_missing_raw"
+    measurement_folder.mkdir(parents=True, exist_ok=True)
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "measurements_folder": str(measurement_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+        "active_detectors": ["det_primary"],
+    }
+    manager = SessionManager(config=config)
+    _session_id, session_path = manager.create_session(
+        folder=tmp_path / "sessions_recover_missing_raw",
+        distance_cm=17.0,
+        sample_id="RECOVER_MISSING_RAW_SAMPLE",
+        study_name="RECOVER_MISSING_RAW_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+    manager.add_points(
+        [
+            {
+                "pixel_coordinates": [30.0, 31.0],
+                "physical_coordinates_mm": [3.21, 6.54],
+                "point_status": "pending",
+            }
+        ]
+    )
+    capture_basename = measurement_folder / "RECOVER_MISSING_RAW_SAMPLE_3.21_6.54_20260213_125456"
+    measurement_path = manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-02-13 12:54:56",
+        capture_basename=str(capture_basename),
+        raw_patterns_by_alias={"PRIMARY": ["*.txt", "*.dsc"]},
+    )
+
+    npy_path = Path(f"{capture_basename}_PRIMARY").with_suffix(".npy")
+    np.save(npy_path, np.full((8, 8), 11, dtype=np.float32))
+    manager.close_session()
+
+    harness = _SessionRestoreHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    monkeypatch.setattr(
+        session_mixin.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(session_path), "NeXus HDF5 Files (*.nxs.h5)")),
+    )
+
+    harness.on_restore_session()
+    qapp.processEvents()
+
+    with h5py.File(session_path, "r") as h5f:
+        measurement_group = h5f[measurement_path]
+        assert measurement_group.attrs[schema.ATTR_MEASUREMENT_STATUS] == schema.STATUS_ABORTED
+        assert measurement_group.attrs[schema.ATTR_FAILURE_REASON] == "recovery_missing_or_unreadable_files"
+        assert len([name for name in measurement_group.keys() if name.startswith("det_")]) == 0
+        point_group = h5f[f"{schema.GROUP_POINTS}/pt_001"]
+        assert point_group.attrs[schema.ATTR_POINT_STATUS] == schema.POINT_STATUS_PENDING
+
+    assert "Recover Incomplete Point" not in question_titles
+    assert any("Missing raw blobs" in msg for msg in warning_messages)
+    assert any("raw_txt" in msg and "raw_dsc" in msg for msg in warning_messages)
+
+
 def test_container_backed_aux_rows_open_on_single_click(qapp, tmp_path, monkeypatch):
     config = {
         "measurements_folder": str(tmp_path / "measurements"),

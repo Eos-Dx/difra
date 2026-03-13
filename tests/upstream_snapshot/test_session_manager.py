@@ -936,5 +936,52 @@ def test_recovery_scan_does_not_fallback_to_filename_heuristics(
     assert scan["recovery_reason"] in {"manifest_missing", "manifest_incomplete"}
 
 
+def test_recovery_scan_marks_incomplete_when_required_raw_files_are_missing(
+    temp_dir, technical_container
+):
+    """Recovery scan should fail completeness when raw blob files are required but absent."""
+    measurement_folder = temp_dir / "measurement_folder_missing_raw"
+    measurement_folder.mkdir(parents=True, exist_ok=True)
+    manager = SessionManager(
+        config={
+            "technical_folder": str(temp_dir),
+            "measurements_folder": str(measurement_folder),
+            "detectors": [{"id": "DET1", "alias": "DET1"}],
+            "active_detectors": ["DET1"],
+        }
+    )
+    manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_MISSING_RAW",
+        distance_cm=17.0,
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [100, 200], "physical_coordinates_mm": [10.0, 20.0]}]
+    )
+    capture_base = measurement_folder / "MISSING_RAW_SAMPLE_10.00_20.00_20260313_131500"
+    measurement_path = manager.begin_point_measurement(
+        point_index=1,
+        timestamp_start="2026-03-13 13:15:00",
+        capture_basename=str(capture_base),
+        raw_patterns_by_alias={"DET1": ["*.txt", "*.dsc"]},
+    )
+
+    npy_path = Path(f"{capture_base}_DET1").with_suffix(".npy")
+    np.save(npy_path, np.full((8, 8), 17, dtype=np.float32))
+
+    scan = manager.scan_recovery_files_for_measurement(
+        measurement_path=measurement_path,
+        measurement_folder=measurement_folder,
+    )
+
+    assert scan["recovery_source"] == "manifest"
+    assert scan["recovery_reason"] == "manifest_incomplete"
+    assert scan["is_complete"] is False
+    assert scan["missing_aliases"] == []
+    assert scan["unreadable_aliases"] == []
+    assert scan["files_by_alias"]["DET1"] == str(npy_path)
+    assert set(scan["missing_raw_by_alias"]["DET1"]) == {"raw_txt", "raw_dsc"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
