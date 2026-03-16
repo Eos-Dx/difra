@@ -532,3 +532,110 @@ def test_real_hardware_grpc_over_legacy_sidecar_smoke(tmp_path: Path):
 
     outputs = asyncio.run(_scenario())
     assert outputs
+
+
+def test_real_hardware_grpc_motion_stop_drill(tmp_path: Path):
+    if os.environ.get("DIFRA_REAL_HW_ENABLE_STOP_DRILL", "0").strip() != "1":
+        pytest.skip("Set DIFRA_REAL_HW_ENABLE_STOP_DRILL=1 to enable real motion-stop drill")
+
+    async def _scenario() -> None:
+        host = "127.0.0.1"
+        sidecar_port = _free_tcp_port()
+        config = _real_config(tmp_path)
+        stage_limits = _active_stage_limits(config)
+        axis = str(os.environ.get("DIFRA_REAL_HW_STOP_AXIS", "x")).strip().lower()
+        if axis not in {"x", "y"}:
+            raise RuntimeError("DIFRA_REAL_HW_STOP_AXIS must be 'x' or 'y'")
+        delta_mm = float(os.environ.get("DIFRA_REAL_HW_STOP_DELTA_MM", "4.0"))
+        stop_delay_s = float(os.environ.get("DIFRA_REAL_HW_STOP_DELAY_S", "0.15"))
+        partial_tol_mm = float(os.environ.get("DIFRA_REAL_HW_STOP_PARTIAL_TOL_MM", "0.05"))
+        assert_partial = os.environ.get("DIFRA_REAL_HW_STOP_ASSERT_PARTIAL", "0").strip() == "1"
+
+        env = {
+            "DETECTOR_BACKEND": "sidecar",
+            "PIXET_SIDECAR_HOST": host,
+            "PIXET_SIDECAR_PORT": str(sidecar_port),
+        }
+
+        with _started_sidecar(host, sidecar_port):
+            with _temporary_env(env):
+                server = DifraGrpcServer(config=config, host=host, port=0)
+                await server.start()
+                try:
+                    channel = grpc.aio.insecure_channel(f"{host}:{server.bound_port}")
+                    await channel.channel_ready()
+                    init_stub = hub_pb2_grpc.DeviceInitializationStub(channel)
+                    motion_stub = hub_pb2_grpc.MotionStub(channel)
+                    state_stub = hub_pb2_grpc.StateMonitorStub(channel)
+
+                    init_motion = await init_stub.InitializeMotion(
+                        hub_pb2.InitializeMotionRequest(ctx=_ctx("motion_stop_drill_init_motion"))
+                    )
+                    assert init_motion.initialized is True
+
+                    before = await state_stub.GetMotionState(hub_pb2.Empty())
+                    start_x = float(before.position_x)
+                    start_y = float(before.position_y)
+
+                    if axis == "x":
+                        target = _safe_axis_target(start_x, stage_limits["x"], delta_mm)
+                    else:
+                        target = _safe_axis_target(start_y, stage_limits["y"], delta_mm)
+
+                    move_task = asyncio.create_task(
+                        motion_stub.MoveTo(
+                            hub_pb2.MoveToRequest(
+                                ctx=_ctx(f"motion_stop_drill_move axis:{axis}"),
+                                position_mm=float(target),
+                            ),
+                            timeout=45.0,
+                        )
+                    )
+                    await asyncio.sleep(max(stop_delay_s, 0.0))
+                    await motion_stub.Stop(
+                        hub_pb2.StopRequest(ctx=_ctx("motion_stop_drill_stop")),
+                        timeout=10.0,
+                    )
+
+                    move_status = "completed"
+                    try:
+                        await asyncio.wait_for(move_task, timeout=45.0)
+                    except grpc.aio.AioRpcError:
+                        move_status = "rpc_error"
+                    except asyncio.TimeoutError:
+                        move_status = "timeout"
+
+                    after = await state_stub.GetMotionState(hub_pb2.Empty())
+                    final_axis = float(after.position_x) if axis == "x" else float(after.position_y)
+                    stopped_before_target = abs(final_axis - float(target)) > float(partial_tol_mm)
+                    if assert_partial:
+                        assert stopped_before_target is True, (
+                            "Expected partial stop before target, "
+                            f"but final axis position is near target ({final_axis:.4f} vs {target:.4f})"
+                        )
+                    assert move_status in {"completed", "rpc_error"}, (
+                        f"Unexpected move status after stop drill: {move_status}"
+                    )
+
+                    # Restore initial position (best-effort)
+                    with contextlib.suppress(Exception):
+                        await motion_stub.MoveTo(
+                            hub_pb2.MoveToRequest(
+                                ctx=_ctx("motion_stop_drill_restore axis:x"),
+                                position_mm=float(start_x),
+                            ),
+                            timeout=45.0,
+                        )
+                    with contextlib.suppress(Exception):
+                        await motion_stub.MoveTo(
+                            hub_pb2.MoveToRequest(
+                                ctx=_ctx("motion_stop_drill_restore axis:y"),
+                                position_mm=float(start_y),
+                            ),
+                            timeout=45.0,
+                        )
+                    await channel.close()
+                finally:
+                    await server.stop(0)
+
+    asyncio.run(_scenario())

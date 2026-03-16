@@ -312,3 +312,54 @@ def test_motion_commands_require_axis_hint_in_context_reason():
             await server.stop(0)
 
     asyncio.run(_scenario())
+
+
+def test_motion_stop_invokes_state_stop_motion():
+    async def _scenario():
+        server = DifraGrpcServer(config=_dummy_config(), host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            channel = grpc.aio.insecure_channel(f"127.0.0.1:{server.bound_port}")
+            await channel.channel_ready()
+            motion_stub = hub_pb2_grpc.MotionStub(channel)
+
+            calls = {"count": 0}
+
+            async def _fake_stop_motion():
+                calls["count"] += 1
+
+            server.state.stop_motion = _fake_stop_motion  # type: ignore[assignment]
+
+            await motion_stub.Stop(hub_pb2.StopRequest(ctx=_ctx("motion_stop")))
+            assert calls["count"] == 1
+
+            await channel.close()
+        finally:
+            await server.stop(0)
+
+    asyncio.run(_scenario())
+
+
+def test_motion_stop_propagates_precondition_errors():
+    async def _scenario():
+        server = DifraGrpcServer(config=_dummy_config(), host="127.0.0.1", port=0)
+        await server.start()
+        try:
+            channel = grpc.aio.insecure_channel(f"127.0.0.1:{server.bound_port}")
+            await channel.channel_ready()
+            motion_stub = hub_pb2_grpc.MotionStub(channel)
+
+            async def _fake_stop_motion():
+                raise RuntimeError("stop_failed")
+
+            server.state.stop_motion = _fake_stop_motion  # type: ignore[assignment]
+
+            with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+                await motion_stub.Stop(hub_pb2.StopRequest(ctx=_ctx("motion_stop")))
+            assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+            await channel.close()
+        finally:
+            await server.stop(0)
+
+    asyncio.run(_scenario())

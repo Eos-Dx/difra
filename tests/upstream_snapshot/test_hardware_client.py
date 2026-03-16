@@ -62,6 +62,7 @@ def test_direct_hardware_client_motion_and_detector_flow():
     x, y = client.move_to(-1.5, axis="y", timeout_s=2.0)
     assert x == pytest.approx(2.5, abs=1e-6)
     assert y == pytest.approx(-1.5, abs=1e-6)
+    assert client.stop_motion() is True
 
     cur_x, cur_y = client.get_xy_position()
     assert cur_x == pytest.approx(2.5, abs=1e-6)

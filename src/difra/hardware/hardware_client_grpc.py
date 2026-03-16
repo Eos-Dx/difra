@@ -210,6 +210,14 @@ class GrpcHardwareClient(HardwareClient):
         )
         return self.get_xy_position()
 
+    def stop_motion(self) -> bool:
+        self._wait_channel()
+        self._motion.Stop(
+            hub_pb2.StopRequest(ctx=_command_context(self._user, "motion_stop")),
+            timeout=self._timeout_s,
+        )
+        return True
+
     def get_xy_position(self) -> Tuple[float, float]:
         self._wait_channel()
         motion_state = self._state_monitor.GetMotionState(

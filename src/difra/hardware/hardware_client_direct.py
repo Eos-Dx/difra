@@ -75,6 +75,13 @@ class DirectHardwareClient(HardwareClient):
             raise RuntimeError("Motion stage is not initialized")
         return self.stage_controller.home_stage(timeout_s=timeout_s)
 
+    def stop_motion(self) -> bool:
+        if self.stage_controller is None:
+            raise RuntimeError("Motion stage is not initialized")
+        if not self._controller.stop_motion():
+            raise RuntimeError("Motion stop is not supported or failed")
+        return True
+
     def get_xy_position(self) -> Tuple[float, float]:
         return self._controller.get_xy_position()
 
@@ -101,6 +108,12 @@ class DirectHardwareClient(HardwareClient):
                 else ["Motion stage is not initialized"],
             ),
             ("Motion", "Home"): CommandReadiness(
+                ready=self._motion_initialized,
+                reasons=[]
+                if self._motion_initialized
+                else ["Motion stage is not initialized"],
+            ),
+            ("Motion", "Stop"): CommandReadiness(
                 ready=self._motion_initialized,
                 reasons=[]
                 if self._motion_initialized

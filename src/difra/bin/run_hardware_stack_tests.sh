@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
+REPO_PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 GLOBAL_CONFIG="$REPO_ROOT/src/difra/resources/config/global.json"
 
@@ -37,7 +38,7 @@ if [ -z "$GUI_ENV" ]; then
 fi
 
 echo "[INFO] Ensuring runtime dependencies in env: $GUI_ENV"
-conda run --live-stream --no-capture-output -n "$GUI_ENV" \
+PYTHONPATH="$REPO_PYTHONPATH" conda run --live-stream --no-capture-output -n "$GUI_ENV" \
   python "$REPO_ROOT/src/difra/scripts/ensure_runtime_dependencies.py" \
   --require container --require protocol --require xrdanalysis
 
@@ -74,14 +75,14 @@ PY
       python -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" \
       2>/dev/null | tail -n 1
   )"
-  if [ "$LEGACY_PY_VERSION" != "3.7" ]; then
-    echo "[ERROR] Legacy env '$DIFRA_LEGACY_ENV' must be Python 3.7, found '$LEGACY_PY_VERSION'."
+  if [ "$LEGACY_PY_VERSION" != "3.7" ] && [ "$LEGACY_PY_VERSION" != "3.8" ]; then
+    echo "[ERROR] Legacy env '$DIFRA_LEGACY_ENV' must be Python 3.7 or 3.8, found '$LEGACY_PY_VERSION'."
     exit 1
   fi
 else
   LEGACY_PY_VERSION="$("$DIFRA_LEGACY_PYTHON" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>/dev/null || true)"
-  if [ "$LEGACY_PY_VERSION" != "3.7" ]; then
-    echo "[ERROR] DIFRA_LEGACY_PYTHON must be Python 3.7, found '$LEGACY_PY_VERSION'."
+  if [ "$LEGACY_PY_VERSION" != "3.7" ] && [ "$LEGACY_PY_VERSION" != "3.8" ]; then
+    echo "[ERROR] DIFRA_LEGACY_PYTHON must be Python 3.7 or 3.8, found '$LEGACY_PY_VERSION'."
     exit 1
   fi
   echo "[INFO] Using explicit legacy python: $DIFRA_LEGACY_PYTHON"

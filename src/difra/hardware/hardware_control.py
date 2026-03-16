@@ -296,6 +296,34 @@ class HardwareController:
             return self.stage_controller.move_stage(x, y, move_timeout=timeout)
         return x, y
 
+    def stop_motion(self) -> bool:
+        if not self.stage_controller:
+            logger.warning("Motion stop requested, but no stage controller is initialized")
+            return False
+
+        stop_fn = getattr(self.stage_controller, "stop_motion", None)
+        if callable(stop_fn):
+            try:
+                return bool(stop_fn())
+            except Exception:
+                logger.exception("Motion stop failed via stage stop_motion()")
+                return False
+
+        emergency_fn = getattr(self.stage_controller, "emergency_stop", None)
+        if callable(emergency_fn):
+            try:
+                emergency_fn()
+                return True
+            except Exception:
+                logger.exception("Motion stop failed via stage emergency_stop()")
+                return False
+
+        logger.warning(
+            "Motion stop requested, but stage '%s' does not expose stop API",
+            getattr(self.stage_controller, "alias", "unknown"),
+        )
+        return False
+
     def home_stage(self, timeout=10):
         if self.stage_controller:
             return self.stage_controller.home_stage(timeout_s=timeout)

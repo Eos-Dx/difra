@@ -124,6 +124,10 @@ class BaseStageController(ABC):
     def move_stage(self, x_mm, y_mm, move_timeout=20):
         pass
 
+    def stop_motion(self):
+        """Best-effort stage stop. Returns True when stop command is accepted."""
+        return False
+
     @abstractmethod
     def get_xy_position(self):
         pass
@@ -176,6 +180,11 @@ class DummyStageController(BaseStageController):
     def get_xy_position(self):
         with self._io_lock:
             return self._x, self._y
+
+    def stop_motion(self):
+        with self._io_lock:
+            logging.warning("Dummy stage '%s' motion stop requested", self.alias)
+            return True
 
     def deinit(self):
         print(f"Dummy stage '{self.alias}' deinitialized.")
@@ -465,13 +474,25 @@ class MarlinStageController(BaseStageController):
 
     def emergency_stop(self):
         """Send emergency stop command (M112)."""
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.write(b"M112\n")
-                logging.warning(f"Emergency stop sent to '{self.alias}'")
-                print(f"Emergency stop activated on '{self.alias}'")
-            except Exception as e:
-                logging.error(f"Error sending emergency stop to '{self.alias}': {e}")
+        ser = self.ser
+        if not ser or not ser.is_open:
+            logging.warning(
+                "Emergency stop requested, but serial is unavailable for '%s'",
+                self.alias,
+            )
+            return False
+        try:
+            # Do not wait for _io_lock here: stop must be best-effort immediate.
+            ser.write(b"M112\n")
+            logging.warning(f"Emergency stop sent to '{self.alias}'")
+            print(f"Emergency stop activated on '{self.alias}'")
+            return True
+        except Exception as e:
+            logging.error(f"Error sending emergency stop to '{self.alias}': {e}")
+            return False
+
+    def stop_motion(self):
+        return self.emergency_stop()
 
     def deinit(self):
         """Close serial connection and cleanup."""
@@ -696,6 +717,66 @@ class XYStageLibController(BaseStageController):
                 f"Target: ({x_mm:.3f}, {y_mm:.3f}). Please check hardware and try again."
             )
             raise TimeoutError(f"Stage move timed out after {move_timeout} seconds")
+
+    def stop_motion(self):
+        lib = getattr(self, "lib", None)
+        if lib is None:
+            logging.warning(
+                "Motion stop requested, but Kinesis library is not initialized for '%s'",
+                self.alias,
+            )
+            return False
+
+        # Stop should not wait for move lock for long periods; try fast acquire first.
+        acquired = self._io_lock.acquire(timeout=0.05)
+        try:
+            candidate_symbols = (
+                "BDC_StopImmediate",
+                "BDC_StopProfiled",
+                "BDC_Stop",
+            )
+            for symbol in candidate_symbols:
+                fn = getattr(lib, symbol, None)
+                if fn is None:
+                    continue
+                try:
+                    x_rc = fn(c_char_p(self.serial), c_short(self.x_chan))
+                    y_rc = fn(c_char_p(self.serial), c_short(self.y_chan))
+                except Exception as exc:
+                    logging.warning(
+                        "Kinesis stop call '%s' failed for '%s': %s",
+                        symbol,
+                        self.alias,
+                        exc,
+                    )
+                    continue
+
+                x_ok = (x_rc in (None, 0))
+                y_ok = (y_rc in (None, 0))
+                if x_ok and y_ok:
+                    logging.warning(
+                        "Kinesis motion stop sent via %s for '%s'",
+                        symbol,
+                        self.alias,
+                    )
+                    return True
+
+                logging.warning(
+                    "Kinesis stop call '%s' returned non-zero for '%s' (x=%s, y=%s)",
+                    symbol,
+                    self.alias,
+                    x_rc,
+                    y_rc,
+                )
+
+            logging.error(
+                "Motion stop requested, but no supported Kinesis stop API succeeded for '%s'",
+                self.alias,
+            )
+            return False
+        finally:
+            if acquired:
+                self._io_lock.release()
 
     def get_xy_position(self):
         acquired = self._io_lock.acquire(timeout=0.05)
