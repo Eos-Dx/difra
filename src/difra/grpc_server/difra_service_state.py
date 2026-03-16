@@ -2,6 +2,7 @@
 
 from . import server as _module
 import concurrent.futures
+import logging
 import tempfile
 
 asyncio = _module.asyncio
@@ -21,6 +22,8 @@ tomllib = _module.tomllib
 _now_timestamp = _module._now_timestamp
 _to_pascal_case = _module._to_pascal_case
 CoreCommandDescriptor = _module.CoreCommandDescriptor
+
+logger = logging.getLogger(__name__)
 
 
 class DifraServiceState:
@@ -45,6 +48,15 @@ class DifraServiceState:
         self._run_stream_subscribers: List[asyncio.Queue] = []
         self._state_stream_subscribers: List[asyncio.Queue] = []
         self._incident_stream_subscribers: List[asyncio.Queue] = []
+        self._dropped_telemetry_counts: Dict[str, int] = {
+            "run_events": 0,
+            "incidents": 0,
+            "state_updates": 0,
+        }
+        self._runtime_log_writer = None
+        self._runtime_log_container_manager = None
+        self._runtime_log_bridge_ready = False
+        self._pending_log_tasks = set()
 
         self._active_run_id: Optional[str] = None
         self._active_run_task: Optional[asyncio.Task] = None
@@ -75,6 +87,137 @@ class DifraServiceState:
         self.detector_controllers = {}
         self.stage_initialized = False
         self.detector_initialized = False
+        self._runtime_log_bridge_ready = False
+        self._runtime_log_writer = None
+        self._runtime_log_container_manager = None
+
+    def _ensure_runtime_log_bridge(self) -> None:
+        if self._runtime_log_bridge_ready:
+            return
+        self._runtime_log_bridge_ready = True
+        try:
+            from difra.gui.container_api import get_container_manager, get_writer
+
+            self._runtime_log_writer = get_writer(self.config)
+            self._runtime_log_container_manager = get_container_manager(self.config)
+        except Exception as exc:
+            self._runtime_log_writer = None
+            self._runtime_log_container_manager = None
+            logger.warning(
+                "Runtime container log bridge unavailable in gRPC sidecar: %s",
+                exc,
+            )
+
+    def _list_candidate_containers(self, kind: str) -> List[Path]:
+        if str(kind) == "session":
+            folder_key = "measurements_folder"
+            patterns = ("session_*.nxs.h5", "session_*.h5")
+        else:
+            folder_key = "technical_folder"
+            patterns = ("technical_*.nxs.h5", "technical_*.h5")
+
+        folder_text = str(self.config.get(folder_key) or "").strip()
+        if not folder_text:
+            return []
+
+        folder = Path(folder_text)
+        if not folder.exists() or not folder.is_dir():
+            return []
+
+        candidates: List[Path] = []
+        seen = set()
+        for pattern in patterns:
+            for path in folder.glob(pattern):
+                if not path.is_file():
+                    continue
+                if any(part.lower() == "archive" for part in path.parts):
+                    continue
+                try:
+                    key = str(path.resolve())
+                except Exception:
+                    key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(path)
+        return candidates
+
+    @staticmethod
+    def _latest_by_mtime(paths: List[Path]) -> Optional[Path]:
+        if not paths:
+            return None
+
+        def _mtime(path: Path) -> float:
+            try:
+                return float(path.stat().st_mtime)
+            except Exception:
+                return 0.0
+
+        return max(paths, key=_mtime)
+
+    def _select_active_container_for_runtime_log(self, kind: str) -> Optional[Path]:
+        candidates = self._list_candidate_containers(kind)
+        if not candidates:
+            return None
+
+        manager = self._runtime_log_container_manager
+        is_locked_fn = getattr(manager, "is_container_locked", None)
+        if not callable(is_locked_fn):
+            return self._latest_by_mtime(candidates)
+
+        unlocked: List[Path] = []
+        locked: List[Path] = []
+        for path in candidates:
+            try:
+                if bool(is_locked_fn(path)):
+                    locked.append(path)
+                else:
+                    unlocked.append(path)
+            except Exception:
+                unlocked.append(path)
+
+        preferred = unlocked if unlocked else locked
+        return self._latest_by_mtime(preferred or candidates)
+
+    def _append_telemetry_drop_to_container_logs(
+        self,
+        stream_name: str,
+        dropped_count: int,
+        subscribers: int,
+        message: str,
+    ) -> None:
+        self._ensure_runtime_log_bridge()
+        writer = self._runtime_log_writer
+        append_runtime_log = getattr(writer, "append_runtime_log", None)
+        if not callable(append_runtime_log):
+            return
+
+        details = {
+            "stream": str(stream_name),
+            "dropped_count": int(dropped_count),
+            "subscribers": int(subscribers),
+        }
+        for kind in ("session", "technical"):
+            container_path = self._select_active_container_for_runtime_log(kind)
+            if container_path is None:
+                continue
+            try:
+                append_runtime_log(
+                    file_path=container_path,
+                    message=message,
+                    level="WARNING",
+                    event_type="telemetry_queue_overflow",
+                    source="difra_grpc_sidecar",
+                    details=details,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to append telemetry overflow log to %s container %s: %s",
+                    kind,
+                    container_path,
+                    exc,
+                    exc_info=True,
+                )
 
     def _protocol_command_dir(self) -> Path:
         try:
@@ -380,6 +523,29 @@ class DifraServiceState:
             )
         )
         return float(new_x), float(new_y)
+
+    async def stop_motion(self) -> None:
+        if not self.stage_controller:
+            raise RuntimeError("Motion stage is not initialized")
+
+        stop_fn = getattr(self.stage_controller, "stop_motion", None)
+        if not callable(stop_fn):
+            emergency_fn = getattr(self.stage_controller, "emergency_stop", None)
+            if callable(emergency_fn):
+                stop_fn = emergency_fn
+            else:
+                raise RuntimeError("Motion stop is not supported by active stage controller")
+
+        accepted = bool(await asyncio.to_thread(stop_fn))
+        if not accepted:
+            raise RuntimeError("Motion stop command was not acknowledged by stage controller")
+
+        await self.emit_system_event(
+            hub_pb2.SystemEvent(
+                timestamp=_now_timestamp(),
+                motion_event=hub_pb2.MotionEvent(type=hub_pb2.MotionEvent.STOPPED),
+            )
+        )
 
     async def _emit_measurement_incident_for_lock(self) -> None:
         severity = hub_pb2.MODERATE
@@ -687,12 +853,44 @@ class DifraServiceState:
             )
         )
 
+    def _log_telemetry_drop(self, stream_name: str, subscribers: int) -> None:
+        key = str(stream_name or "unknown").strip() or "unknown"
+        current = int(self._dropped_telemetry_counts.get(key, 0)) + 1
+        self._dropped_telemetry_counts[key] = current
+        message = (
+            "Telemetry queue overflow on %s stream; dropped event #%d "
+            "(subscribers=%d, queue_maxsize=128)"
+            % (key, current, int(subscribers))
+        )
+        logger.warning(message)
+        # Keep stdout warning for environments where file logger is not configured.
+        print(f"[WARN] {message}")
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(
+                asyncio.to_thread(
+                    self._append_telemetry_drop_to_container_logs,
+                    key,
+                    current,
+                    subscribers,
+                    message,
+                )
+            )
+            self._pending_log_tasks.add(task)
+            task.add_done_callback(self._pending_log_tasks.discard)
+        except RuntimeError:
+            # No running loop (e.g., sync tests): perform best-effort inline append.
+            self._append_telemetry_drop_to_container_logs(
+                key, current, subscribers, message
+            )
+
     async def emit_system_event(self, event: hub_pb2.SystemEvent) -> None:
-        for queue in list(self._run_stream_subscribers):
+        subscribers = list(self._run_stream_subscribers)
+        for queue in subscribers:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                pass
+                self._log_telemetry_drop("run_events", len(subscribers))
 
     async def emit_incident(
         self,
@@ -718,21 +916,23 @@ class DifraServiceState:
         if point_index is not None:
             incident.point_index = point_index
 
-        for queue in list(self._incident_stream_subscribers):
+        subscribers = list(self._incident_stream_subscribers)
+        for queue in subscribers:
             try:
                 queue.put_nowait(incident)
             except asyncio.QueueFull:
-                pass
+                self._log_telemetry_drop("incidents", len(subscribers))
 
     async def emit_state_change(self, component: str, change_type: str) -> None:
         notif = hub_pb2.StateChangeNotification(
             timestamp=_now_timestamp(), component=component, change_type=change_type
         )
-        for queue in list(self._state_stream_subscribers):
+        subscribers = list(self._state_stream_subscribers)
+        for queue in subscribers:
             try:
                 queue.put_nowait(notif)
             except asyncio.QueueFull:
-                pass
+                self._log_telemetry_drop("state_updates", len(subscribers))
 
     async def subscribe_run_events(self):
         queue: asyncio.Queue = asyncio.Queue(maxsize=128)
@@ -798,6 +998,10 @@ class DifraServiceState:
                 []
                 if (self.stage_initialized and not running and not paused)
                 else ["Motion stage is not initialized or acquisition is active"],
+            ),
+            ("Motion", "Stop"): (
+                self.stage_initialized,
+                [] if self.stage_initialized else ["Motion stage is not initialized"],
             ),
             ("Acquisition", "StartExposure"): with_lock(
                 self.detector_initialized and not running and not paused and not self.session_locked,

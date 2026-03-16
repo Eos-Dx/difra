@@ -225,9 +225,9 @@ class MotionService(hub_pb2_grpc.MotionServicer):
 
     async def Stop(self, request, context):
         try:
-            await self.state.abort_exposure()
-        except Exception:
-            pass
+            await self.state.stop_motion()
+        except Exception as exc:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
         return hub_pb2.Empty()
 
     async def SetVelocity(self, request, context):

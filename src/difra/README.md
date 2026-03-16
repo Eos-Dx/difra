@@ -51,6 +51,24 @@ Useful environment variables:
 - `HARDWARE_CLIENT_MODE` (launchers force `grpc`)
 - `DIFRA_GRPC_CONFIG` (optional JSON config path for gRPC server)
 
+### Real Hardware Validation (ULSTER)
+
+Use these commands before measurement runs on real hardware:
+
+```bash
+# 1) Preflight checks
+bash scripts/ulster_real_test_preflight.sh
+
+# 2) Real hardware smoke tests
+bash src/difra/bin/run_hardware_stack_tests.sh
+
+# 3) Dedicated motion stop drill
+conda run -n eosdx13 python src/difra/scripts/motion_stop_drill.py --assert-partial-stop
+```
+
+Detailed runbook:
+- `src/difra/REAL_HARDWARE_TEST_PLAN_2026-03-23.md`
+
 ### Installing Python Dependencies (pip)
 
 DiFRA now includes separate pip requirements files per runtime:

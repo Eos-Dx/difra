@@ -124,6 +124,13 @@ class DualPathHardwareClient(HardwareClient):
             direct_call=lambda: self._direct.home(timeout_s=timeout_s),
         )
 
+    def stop_motion(self) -> bool:
+        return self._call(
+            "stop_motion",
+            grpc_call=self._grpc.stop_motion,
+            direct_call=self._direct.stop_motion,
+        )
+
     def get_xy_position(self) -> Tuple[float, float]:
         return self._call(
             "get_xy_position",

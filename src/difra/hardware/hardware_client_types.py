@@ -40,6 +40,11 @@ class HardwareClient(ABC):
         pass
 
     @abstractmethod
+    def stop_motion(self) -> bool:
+        """Request immediate stop of stage motion."""
+        pass
+
+    @abstractmethod
     def get_xy_position(self) -> Tuple[float, float]:
         pass
 
