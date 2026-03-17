@@ -45,26 +45,33 @@ class TechnicalPanelMixin:
             )
 
         it_layout = tm.QHBoxLayout()
+        it_layout.setSpacing(8)
         it_layout.addWidget(tm.QLabel("Integration Time (s):"))
         self.integrationTimeSpin = tm.QDoubleSpinBox()
         self.integrationTimeSpin.setDecimals(6)
         self.integrationTimeSpin.setRange(1e-6, 1e4)
         self.integrationTimeSpin.setSingleStep(1e-6)
         self.integrationTimeSpin.setValue(1.0)
+        self.integrationTimeSpin.setMinimumWidth(120)
+        self.integrationTimeSpin.setMaximumWidth(160)
         it_layout.addWidget(self.integrationTimeSpin)
 
         it_layout.addWidget(tm.QLabel("Frames:"))
         self.captureFramesSpin = tm.QSpinBox()
         self.captureFramesSpin.setRange(1, 1_000_000)
         self.captureFramesSpin.setValue(1)
+        self.captureFramesSpin.setMinimumWidth(90)
+        self.captureFramesSpin.setMaximumWidth(120)
         self.captureFramesSpin.setToolTip(
             "Capture N frames at the given integration time; frames will be averaged into a single final image"
         )
         it_layout.addWidget(self.captureFramesSpin)
+        it_layout.addStretch(1)
 
         outer.addLayout(it_layout)
 
         cm_layout = tm.QHBoxLayout()
+        cm_layout.setSpacing(8)
         self.moveContinuousCheck = tm.QCheckBox("Move Continuous (AgBH)")
         self.moveContinuousCheck.setToolTip(
             "Enable continuous circular movement during AgBH measurements to smooth out sample inconsistencies"
@@ -77,28 +84,39 @@ class TechnicalPanelMixin:
         self.movementRadiusSpin.setSingleStep(0.1)
         self.movementRadiusSpin.setValue(2.0)
         self.movementRadiusSpin.setDecimals(1)
+        self.movementRadiusSpin.setMinimumWidth(90)
+        self.movementRadiusSpin.setMaximumWidth(120)
         self.movementRadiusSpin.setToolTip(
             "Maximum radius for continuous movement pattern (decreases during measurement)"
         )
         cm_layout.addWidget(self.movementRadiusSpin)
+        cm_layout.addStretch(1)
 
         outer.addLayout(cm_layout)
 
         fld = tm.QHBoxLayout()
-        fld.addWidget(tm.QLabel("Save Folder:"))
+        fld.setContentsMargins(0, 0, 0, 0)
+        fld.setSpacing(8)
+        self.saveFolderLabel = tm.QLabel("Save Folder:")
+        fld.addWidget(self.saveFolderLabel)
         self.folderLE = tm.QLineEdit()
         default_folder = _get_default_folder(self.config if hasattr(self, "config") else None)
         self.folderLE.setText(default_folder)
+        self.folderLE.setFixedWidth(300)
         self.folderLE.editingFinished.connect(self._on_technical_folder_changed)
 
-        fld.addWidget(self.folderLE, 1)
+        fld.addWidget(self.folderLE)
         b = tm.QPushButton("Browse…")
+        b.setFixedWidth(150)
         b.clicked.connect(self._browse_folder)
         self.folderBrowseBtn = b
         fld.addWidget(b)
+        fld.addStretch(1)
         outer.addLayout(fld)
 
         row = tm.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         self.auxBtn = tm.QPushButton("Measure")
         self.auxBtn.clicked.connect(self.measure_aux)
         row.addWidget(self.auxBtn)
@@ -114,7 +132,9 @@ class TechnicalPanelMixin:
         self.auxNameLE.setToolTip(
             "Enter name for auxiliary measurement - used for metadata file generation"
         )
-        row.addWidget(self.auxNameLE, 1)
+        self.auxNameLE.setFixedWidth(300)
+        row.addWidget(self.auxNameLE)
+        row.addStretch(1)
         outer.addLayout(row)
 
         self.auxTable = tm.QTableWidget()
@@ -130,11 +150,13 @@ class TechnicalPanelMixin:
 
             header = self.auxTable.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.Fixed)
-            header.setSectionResizeMode(1, QHeaderView.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.Interactive)
             header.setSectionResizeMode(2, QHeaderView.Fixed)
             header.setSectionResizeMode(3, QHeaderView.Fixed)
+            header.setStretchLastSection(False)
 
             self.auxTable.setColumnWidth(0, 60)
+            self.auxTable.setColumnWidth(1, 220)
             self.auxTable.setColumnWidth(2, 60)
             self.auxTable.setColumnWidth(3, 60)
 
@@ -157,72 +179,89 @@ class TechnicalPanelMixin:
         )
         outer.addWidget(self.auxTable)
 
-        actions_layout = tm.QHBoxLayout()
+        actions_layout = tm.QVBoxLayout()
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(4)
-        actions_layout.addWidget(tm.QLabel("Workflow:"))
+
+        actions_top_row = tm.QHBoxLayout()
+        actions_top_row.setContentsMargins(0, 0, 0, 0)
+        actions_top_row.setSpacing(4)
+
+        actions_bottom_row = tm.QHBoxLayout()
+        actions_bottom_row.setContentsMargins(0, 0, 0, 0)
+        actions_bottom_row.setSpacing(4)
 
         self.new_h5_btn = tm.QPushButton("Create Container...")
         self.new_h5_btn.setToolTip(
             "Primary path: create a fresh technical container for the current workflow"
         )
         self.new_h5_btn.clicked.connect(self.on_new_technical_container)
-        actions_layout.addWidget(self.new_h5_btn)
+        actions_top_row.addWidget(self.new_h5_btn)
 
         self.load_h5_btn = tm.QPushButton("Load Container…")
         self.load_h5_btn.setToolTip(
             "Primary path: load an existing technical HDF5 container and continue from it"
         )
         self.load_h5_btn.clicked.connect(self.load_technical_h5)
-        actions_layout.addWidget(self.load_h5_btn)
+        actions_top_row.addWidget(self.load_h5_btn)
 
         self.load_files_btn = tm.QPushButton("Load Files (Recovery)…")
         self.load_files_btn.setToolTip(
             "Recovery path: rebuild active technical container state from raw technical files"
         )
         self.load_files_btn.clicked.connect(self.load_technical_files)
-        actions_layout.addWidget(self.load_files_btn)
+        actions_top_row.addWidget(self.load_files_btn)
 
         self.dist_btn = tm.QPushButton("Distances...")
         self.dist_btn.setToolTip("Configure detector distances for technical measurements")
         self.dist_btn.clicked.connect(self.configure_detector_distances)
-        actions_layout.addWidget(self.dist_btn)
+        actions_top_row.addWidget(self.dist_btn)
 
         self.update_poni_btn = tm.QPushButton("Update PONI...")
         self.update_poni_btn.setToolTip("Update PONI files for active technical container")
         self.update_poni_btn.clicked.connect(self.update_active_technical_container_poni)
-        actions_layout.addWidget(self.update_poni_btn)
+        actions_bottom_row.addWidget(self.update_poni_btn)
 
         self.lock_h5_btn = tm.QPushButton("Lock Container")
         self.lock_h5_btn.setToolTip("Lock active technical container for production use")
         self.lock_h5_btn.clicked.connect(self.lock_active_technical_container)
-        actions_layout.addWidget(self.lock_h5_btn)
+        actions_bottom_row.addWidget(self.lock_h5_btn)
 
         self.archive_h5_btn = tm.QPushButton("Archive Container")
         self.archive_h5_btn.setToolTip(
             "Archive active container (irreversible): lock if needed and move container + related files to archive"
         )
         self.archive_h5_btn.clicked.connect(self.archive_active_technical_container)
-        actions_layout.addWidget(self.archive_h5_btn)
+        actions_bottom_row.addWidget(self.archive_h5_btn)
 
         self.pyfai_btn = tm.QPushButton("PyFAI")
         self.pyfai_btn.setToolTip("Run pyfai-calib2 in this folder")
         self.pyfai_btn.clicked.connect(self.run_pyfai)
-        actions_layout.addWidget(self.pyfai_btn)
+        actions_bottom_row.addWidget(self.pyfai_btn)
+
+        actions_top_row.addStretch(1)
+        actions_bottom_row.addStretch(1)
+        actions_layout.addLayout(actions_top_row)
+        actions_layout.addLayout(actions_bottom_row)
 
         outer.addLayout(actions_layout)
 
         rt_layout = tm.QHBoxLayout()
+        rt_layout.setSpacing(8)
         rt_layout.addWidget(tm.QLabel("Frames/⟳:"))
         self.framesSpin = tm.QSpinBox()
         self.framesSpin.setRange(1, 1_000_000)
         self.framesSpin.setValue(1)
+        self.framesSpin.setMinimumWidth(90)
+        self.framesSpin.setMaximumWidth(120)
         rt_layout.addWidget(self.framesSpin)
 
         self.rtBtn = tm.QPushButton("Real-time")
         self.rtBtn.setCheckable(True)
+        self.rtBtn.setMaximumWidth(200)
         self.rtBtn.clicked.connect(self._toggle_realtime)
         rt_layout.addWidget(self.rtBtn)
+        rt_layout.addStretch(1)
 
         outer.addLayout(rt_layout)
 
@@ -242,10 +281,55 @@ class TechnicalPanelMixin:
 
         self.addDockWidget(tm.Qt.LeftDockWidgetArea, self.measDock)
 
+        tm.QTimer.singleShot(0, self._sync_compact_measurement_control_widths)
         self.enable_measurement_controls(False)
         self.hardware_state_changed.connect(self.enable_measurement_controls)
         self.hardware_state_changed.connect(lambda _: self.refresh_aux_table_alias_models())
         self.hardware_state_changed.connect(lambda _: self._initialize_continuous_movement_controller())
+
+    def _sync_compact_measurement_control_widths(self):
+        """Align compact input rows with the right edge of the Distances button."""
+        try:
+            action_spacing = 4
+            row_spacing = 8
+            target_right = (
+                self.new_h5_btn.sizeHint().width()
+                + self.load_h5_btn.sizeHint().width()
+                + self.load_files_btn.sizeHint().width()
+                + self.dist_btn.sizeHint().width()
+                + action_spacing * 3
+            )
+
+            browse_width = self.dist_btn.sizeHint().width()
+            self.folderBrowseBtn.setFixedWidth(browse_width)
+
+            folder_width = max(
+                180,
+                target_right
+                - self.saveFolderLabel.sizeHint().width()
+                - browse_width
+                - row_spacing * 2,
+            )
+            self.folderLE.setFixedWidth(folder_width)
+
+            name_width = max(
+                180,
+                target_right
+                - self.auxBtn.sizeHint().width()
+                - self._aux_status.minimumSizeHint().width()
+                - row_spacing * 2,
+            )
+            self.auxNameLE.setFixedWidth(name_width)
+
+            # Start collapsed to the content width up to "Distances...".
+            dock_width = target_right + 20
+            self.resizeDocks([self.measDock], [dock_width], _tm().Qt.Horizontal)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Suppressed exception in panel_mixin.py",
+                exc_info=True,
+            )
 
     def enable_measurement_controls(self, enable: bool):
         status = "enabled" if enable else "disabled"
