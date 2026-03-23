@@ -1,9 +1,12 @@
+import json
 import logging
 import os
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+from typing import List
 
 from difra.gui.container_api import get_container_version
 
@@ -17,6 +20,78 @@ def _tm():
 
 
 class TechnicalCaptureMixin:
+    def _read_pyfai_conda_from_global_config(self) -> str:
+        """Best-effort read of dedicated PyFAI conda env from split global config."""
+        try:
+            config_dir = Path(__file__).resolve().parents[3] / "resources" / "config"
+            global_path = config_dir / "global.json"
+            if not global_path.exists():
+                return ""
+            payload = json.loads(global_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return ""
+            return str(payload.get("pyfai_conda") or "").strip()
+        except Exception:
+            logger.debug("Failed to read pyfai_conda from global config", exc_info=True)
+            return ""
+
+    def _list_conda_env_names(self) -> List[str]:
+        """Return discovered conda environment names (best-effort, empty on failure)."""
+        try:
+            proc = subprocess.run(
+                ["conda", "env", "list", "--json"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(proc.stdout or "{}")
+            env_paths = payload.get("envs") if isinstance(payload, dict) else []
+            if not isinstance(env_paths, list):
+                return []
+            names: List[str] = []
+            for env_path in env_paths:
+                name = Path(str(env_path)).name.strip()
+                if name:
+                    names.append(name)
+            return names
+        except Exception:
+            return []
+
+    def _resolve_pyfai_conda_env(self) -> str:
+        """Resolve conda env for PyFAI button with explicit per-tool precedence."""
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+
+        explicit = str(cfg.get("pyfai_conda") or "").strip()
+        if explicit:
+            return explicit
+
+        global_explicit = self._read_pyfai_conda_from_global_config()
+        if global_explicit:
+            return global_explicit
+
+        fallback = str(cfg.get("conda") or "").strip()
+        if not fallback:
+            return ""
+
+        lowered = fallback.lower()
+        if any(token in lowered for token in ("eosdx", "iosdx", "usdx")):
+            env_names = {name.lower(): name for name in self._list_conda_env_names()}
+            for preferred in ("ulster38", "ulster37"):
+                if preferred in env_names:
+                    chosen = env_names[preferred]
+                    logger.info(
+                        "PyFAI env fallback selected",
+                        extra={
+                            "requested_env": fallback,
+                            "selected_env": chosen,
+                            "reason": "missing_pyfai_conda",
+                        },
+                    )
+                    return chosen
+            return "ulster38"
+
+        return fallback
+
     def _is_container_backed_aux_row(self, row: int) -> bool:
         tm = _tm()
         if row < 0:
@@ -299,7 +374,7 @@ class TechnicalCaptureMixin:
 
     def run_pyfai(self):
         self._log_technical_event("Starting PyFAI calibration...")
-        env = self.config.get("pyfai_conda") or self.config.get("conda")
+        env = self._resolve_pyfai_conda_env()
         if not env:
             self._log_technical_event("Error: No conda environment configured")
             logger.warning(
