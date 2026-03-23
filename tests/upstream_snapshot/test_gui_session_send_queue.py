@@ -254,3 +254,45 @@ def test_session_tab_close_finalize_active_session(qapp, tmp_path, monkeypatch):
 
     bundle_zip = archived_dir.with_suffix(".zip")
     assert bundle_zip.exists() is True
+    old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
+    assert len(old_dirs) == 1
+
+
+def test_archived_container_manual_generate_old_format(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+
+    _create_session_file(measurements_folder, "SAMPLE_ARCH", "STUDY_ARCH")
+
+    session_manager = _FakeSessionManager()
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": False,
+        },
+        session_manager=session_manager,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._on_send_all_sessions()
+    qapp.processEvents()
+    assert harness.archived_sessions_table.rowCount() == 1
+    assert list(old_format_folder.glob("*")) == []
+
+    archived_path = harness._path_from_table_row(harness.archived_sessions_table, 0, 9)
+    assert archived_path is not None and archived_path.exists() is True
+    harness._generate_old_format_for_container(archived_path)
+    qapp.processEvents()
+
+    old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
+    assert len(old_dirs) == 1

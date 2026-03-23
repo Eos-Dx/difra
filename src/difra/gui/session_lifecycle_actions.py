@@ -454,7 +454,7 @@ class SessionLifecycleActions:
         result = SendArchiveResult()
         if export_old_format is None:
             export_old_format = bool(
-                (config or {}).get("enable_old_format_export", False)
+                (config or {}).get("enable_old_format_export", True)
             )
         resolved_uploader_id = cls._resolve_uploader_id(
             explicit_uploader_id=uploader_id,
