@@ -161,6 +161,7 @@ def test_export_session_to_old_format_copies_jpg_from_state_image_path(tmp_path)
     assert exported_image.parent == summary.state_path.parent
     assert exported_image.suffix.lower() == ".jpg"
     assert exported_image.read_bytes() == jpg_bytes
+    assert state.get("image_base64") == base64.b64encode(jpg_bytes).decode("ascii")
 
 
 def test_export_session_to_old_format_restores_jpg_from_base64_when_path_missing(tmp_path):
@@ -190,6 +191,36 @@ def test_export_session_to_old_format_restores_jpg_from_base64_when_path_missing
     assert exported_image.parent == summary.state_path.parent
     assert exported_image.suffix.lower() == ".jpg"
     assert exported_image.read_bytes() == jpg_bytes
+    assert state.get("image_base64") == base64.b64encode(jpg_bytes).decode("ascii")
+
+
+def test_export_session_to_old_format_restores_jpg_from_container_image_dataset(tmp_path):
+    session_path = _create_session_with_technical_and_measurement(tmp_path, tag="jpg_h5")
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    image_array = np.full((16, 16), 123, dtype=np.uint8)
+    session_writer.add_image(
+        file_path=session_path,
+        image_index=1,
+        image_data=image_array,
+        image_type="sample",
+    )
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["meta_json"] = json.dumps({"from_state_file": True})
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    state = json.loads(summary.state_path.read_text(encoding="utf-8"))
+    exported_image = Path(state["image"])
+    assert exported_image.exists() is True
+    assert exported_image.parent == summary.state_path.parent
+    payload = exported_image.read_bytes()
+    assert payload[:2] == b"\xff\xd8"
+    assert payload[-2:] == b"\xff\xd9"
+    assert state.get("image_base64") == base64.b64encode(payload).decode("ascii")
 
 
 def test_export_session_to_old_format_reuses_existing_distance_folder_when_payload_matches(tmp_path):
