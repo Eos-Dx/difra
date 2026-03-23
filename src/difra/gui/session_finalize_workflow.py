@@ -13,6 +13,7 @@ import h5py
 from container import create_container_bundle
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService
+from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
 
 @dataclass
@@ -25,6 +26,8 @@ class FinalizeSessionResult:
     bundle_path: Optional[Path]
     state_json_embedded: bool
     lock_applied_now: bool
+    old_format_dir: Optional[Path]
+    old_format_error: str
 
 
 class SessionFinalizeWorkflow:
@@ -285,6 +288,7 @@ class SessionFinalizeWorkflow:
         container_manager: Any,
         lock_user: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
+        export_old_format: Optional[bool] = None,
         logger: Optional[Any] = None,
         include_patterns: Optional[Sequence[str]] = None,
     ) -> FinalizeSessionResult:
@@ -306,6 +310,32 @@ class SessionFinalizeWorkflow:
             container_manager=container_manager,
             lock_user=lock_user,
         )
+
+        if export_old_format is None:
+            export_old_format = bool((config or {}).get("enable_old_format_export", True))
+        old_format_dir: Optional[Path] = None
+        old_format_error = ""
+        if export_old_format:
+            archive_root = SessionLifecycleService.resolve_archive_folder(
+                config=config,
+                measurements_folder=measurements_folder,
+                session_path=session_path,
+            )
+            try:
+                summary = SessionOldFormatExporter.export_from_session_container(
+                    session_path,
+                    config=config,
+                    archive_folder=archive_root,
+                )
+                old_format_dir = Path(summary.export_dir)
+            except Exception as exc:
+                old_format_error = str(exc)
+                if logger:
+                    logger.warning(
+                        "Old-format export failed during session finalize: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
         archive_dest, archived_count = cls.archive_measurement_files(
             measurements_folder=measurements_folder,
@@ -338,4 +368,6 @@ class SessionFinalizeWorkflow:
             bundle_path=bundle_path,
             state_json_embedded=state_json_embedded,
             lock_applied_now=lock_applied_now,
+            old_format_dir=old_format_dir,
+            old_format_error=old_format_error,
         )

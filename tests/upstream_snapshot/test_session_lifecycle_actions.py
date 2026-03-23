@@ -222,7 +222,29 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
 
 
-def test_send_and_archive_old_format_export_disabled_by_default(tmp_path):
+def test_send_and_archive_old_format_export_enabled_by_default(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "old_format"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={"old_format_export_folder": str(old_format_folder)},
+    )
+
+    assert result.moved == 1
+    assert len(result.old_format_paths) == 1
+    assert result.old_format_paths[0].exists() is True
+    assert result.old_format_failed == []
+    assert result.old_format_paths[0].parent == old_format_folder
+
+
+def test_send_and_archive_old_format_export_can_be_disabled(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
@@ -233,7 +255,10 @@ def test_send_and_archive_old_format_export_disabled_by_default(tmp_path):
         archive_folder=archive_folder,
         lock_user="sad",
         session_ids={str(path_a): sid_a},
-        config={"old_format_export_folder": str(tmp_path / "old_format")},
+        config={
+            "old_format_export_folder": str(tmp_path / "old_format"),
+            "enable_old_format_export": False,
+        },
     )
 
     assert result.moved == 1

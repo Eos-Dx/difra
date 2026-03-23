@@ -27,6 +27,7 @@ from difra.gui.container_api import get_container_manager, get_schema
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService
+from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 from difra.gui.session_tab_presenter import SessionTabPresenter
 from difra.utils.logger import get_module_logger
 
@@ -483,6 +484,42 @@ class SessionTabMixin:
                 "Session loading API is not available in this window build.",
             )
 
+    def _generate_old_format_for_container(self, container_path: Path):
+        if container_path is None:
+            return
+        if not container_path.exists():
+            QMessageBox.warning(
+                self,
+                "Container Missing",
+                f"Session container not found:\n{container_path}",
+            )
+            return
+
+        try:
+            summary = SessionOldFormatExporter.export_from_session_container(
+                container_path,
+                config=self.config if hasattr(self, "config") else None,
+                archive_folder=self._get_session_archive_folder(),
+            )
+            QMessageBox.information(
+                self,
+                "Old Format Generated",
+                "\n".join(
+                    [
+                        f"Container: {container_path.name}",
+                        f"Old-format folder: {summary.export_dir}",
+                        f"Raw files exported: {summary.raw_file_count}",
+                        f"Technical files exported: {summary.technical_file_count}",
+                    ]
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Old Format Export Failed",
+                f"Failed to generate old-format folder for:\n{container_path}\n\n{exc}",
+            )
+
     def _show_pending_sessions_context_menu(self, pos):
         table = self.pending_sessions_table
         row = table.rowAt(pos.y())
@@ -509,9 +546,12 @@ class SessionTabMixin:
 
         menu = QMenu(table)
         load_action = menu.addAction("Load Container")
+        old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
             self._open_session_container_path(container_path)
+        elif selected == old_format_action:
+            self._generate_old_format_for_container(container_path)
 
     def _on_load_session_container_from_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -746,6 +786,12 @@ class SessionTabMixin:
             ]
             if workflow_result.bundle_path:
                 details.append(f"ZIP bundle: {workflow_result.bundle_path}")
+            if workflow_result.old_format_dir:
+                details.append(f"Old-format folder: {workflow_result.old_format_dir}")
+            if workflow_result.old_format_error:
+                details.append(
+                    f"Old-format export warning: {workflow_result.old_format_error}"
+                )
 
             QMessageBox.information(self, "Session Finalized", "\n".join(details))
             logger.info("Session finalized and closed", sample_id=info["sample_id"])

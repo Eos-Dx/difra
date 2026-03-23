@@ -108,3 +108,7 @@ def test_finalize_session_runs_lock_archive_and_bundle(tmp_path):
     assert container_manager.is_container_locked(result.session_path) is True
     assert result.bundle_path is not None
     assert result.bundle_path.exists() is True
+    assert result.old_format_error == ""
+    assert result.old_format_dir is not None
+    assert result.old_format_dir.exists() is True
+    assert result.old_format_dir.parent == tmp_path / "Old_format"
