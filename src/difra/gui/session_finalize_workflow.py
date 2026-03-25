@@ -64,7 +64,10 @@ class SessionFinalizeWorkflow:
     ) -> Dict[str, str]:
         """Ensure session keeps user-readable IDs and summary for archive usage."""
         with h5py.File(session_path, "a") as h5f:
-            sample = cls._as_text(h5f.attrs.get("sample_id"), "unknown")
+            sample = cls._as_text(
+                h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                "unknown",
+            )
             study = cls._as_text(h5f.attrs.get("study_name"), "UNSPECIFIED")
             project = cls._as_text(h5f.attrs.get("project_id"), study)
             operator = cls._as_text(h5f.attrs.get("operator_id"), "unknown")

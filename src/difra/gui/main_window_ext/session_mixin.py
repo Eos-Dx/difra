@@ -321,7 +321,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 self,
                 "Session Already Open",
                 "A session container is already open.\n\n"
-                f"Sample ID: {self.session_manager.sample_id}\n"
+                f"Specimen ID: {self.session_manager.sample_id}\n"
                 f"Container: {Path(self.session_manager.session_path).name}\n\n"
                 "Close/finalize and send the current session from the Session controls before creating a new one.",
             )
@@ -362,7 +362,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     self,
                     "Session Created",
                     f"Session created successfully!\n\n"
-                    f"Sample ID: {params['sample_id']}\n"
+                    f"Specimen ID: {params['sample_id']}\n"
                     f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
                     f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
                     f"Container: {session_path.name}",
@@ -471,7 +471,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             return
         
         # Build info message
-        msg = f"Sample ID: {info['sample_id']}\n"
+        msg = f"Specimen ID: {info['sample_id']}\n"
         msg += f"Study: {info.get('study_name', 'UNSPECIFIED')}\n"
         msg += f"Project: {info.get('project_id', info.get('study_name', 'UNSPECIFIED'))}\n"
         msg += f"Session ID: {info['session_id']}\n"

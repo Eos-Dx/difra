@@ -80,7 +80,10 @@ class SessionLifecycleService:
                     data["session_id"] = cls._decode_attr(h5f.attrs.get("session_id"))
                 if not data["operator_id"]:
                     data["operator_id"] = cls._decode_attr(h5f.attrs.get("operator_id"))
-                data["sample_id"] = cls._decode_attr(h5f.attrs.get("sample_id"))
+                specimen = h5f.attrs.get("specimenId")
+                if specimen is None:
+                    specimen = h5f.attrs.get("sample_id")
+                data["sample_id"] = cls._decode_attr(specimen)
                 data["project_id"] = cls._decode_attr(h5f.attrs.get("project_id"))
                 data["study_name"] = cls._decode_attr(h5f.attrs.get("study_name"))
 
@@ -93,9 +96,10 @@ class SessionLifecycleService:
                 if not data["sample_id"]:
                     sample_group = h5f.get("/entry/sample")
                     if sample_group is not None:
-                        data["sample_id"] = cls._decode_attr(
-                            sample_group.attrs.get("sample_id")
-                        )
+                        specimen = sample_group.attrs.get("specimenId")
+                        if specimen is None:
+                            specimen = sample_group.attrs.get("sample_id")
+                        data["sample_id"] = cls._decode_attr(specimen)
                 if not data["project_id"]:
                     if data["study_name"]:
                         data["project_id"] = data["study_name"]

@@ -104,7 +104,7 @@ def handle_new_sample_image(owner, image_path: str):
             owner,
             "Session Created",
             f"Session created successfully!\n\n"
-            f"Sample ID: {params['sample_id']}\n"
+            f"Specimen ID: {params['sample_id']}\n"
             f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
             f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
             f"Container: {session_path.name}\n\n"
@@ -165,7 +165,7 @@ def load_session_container_from_path(owner, file_path: Path) -> bool:
 
         with h5py.File(file_path, "r") as file_handle:
             sample_id = owner._decode_attr(
-                file_handle.attrs.get(schema.ATTR_SAMPLE_ID, "Unknown")
+                file_handle.attrs.get("specimenId", file_handle.attrs.get(schema.ATTR_SAMPLE_ID, "Unknown"))
             )
             study_name = owner._decode_attr(
                 file_handle.attrs.get(schema.ATTR_STUDY_NAME, "UNSPECIFIED")
@@ -187,7 +187,7 @@ def load_session_container_from_path(owner, file_path: Path) -> bool:
         lock_status = "🔒 LOCKED (read-only)" if is_locked else "🔓 Unlocked (editable)"
         message = (
             f"Container Information:\n\n"
-            f"Sample ID: {sample_id}\n"
+            f"Specimen ID: {sample_id}\n"
             f"Study: {study_name}\n"
             f"Session ID: {session_id}\n"
             f"Operator: {operator_id}\n"

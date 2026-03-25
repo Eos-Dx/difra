@@ -79,6 +79,16 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             return None
 
     @staticmethod
+    def _read_specimen_id(attrs, *, fallback: str = "") -> str:
+        specimen = attrs.get("specimenId")
+        if specimen is not None:
+            return SessionManager._as_text(specimen, fallback)
+        sample = attrs.get("sample_id")
+        if sample is not None:
+            return SessionManager._as_text(sample, fallback)
+        return fallback
+
+    @staticmethod
     def _counter_from_measurement_name(name: str):
         try:
             return int(str(name).split("_")[-1])
@@ -189,6 +199,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.session_path: Optional[Path] = None
         self.session_id: Optional[str] = None
         self.sample_id: Optional[str] = None
+        self.specimen_id: Optional[str] = None
         self.study_name: Optional[str] = None
         self.technical_container_path: Optional[Path] = None
         self.session_state: str = self.SESSION_STATE_DRAFT
@@ -801,6 +812,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         
         Required session attributes (from schema):
             sample_id: str - Unique sample identifier
+            specimenId: str - Matador specimen identifier stored alongside sample_id
             study_name: str - Study name/identifier (optional, defaults to UNSPECIFIED)
             operator_id: str - Operator ID/name (optional, uses config default)
             site_id: str - Site identifier (optional, uses config default)
@@ -899,10 +911,17 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         
         # Build session attributes from provided kwargs and config defaults
         # Required attributes from schema
+        specimen_id = session_attrs.get("specimenId", session_attrs.get("specimen_id"))
+        if specimen_id is None:
+            specimen_id = session_attrs.get(
+                self.schema.ATTR_SAMPLE_ID,
+                session_attrs.get("sample_id"),
+            )
+
         container_attrs = {
             self.schema.ATTR_SAMPLE_ID: session_attrs.get(
                 self.schema.ATTR_SAMPLE_ID,
-                session_attrs.get('sample_id'),  # Support both snake_case and schema names
+                session_attrs.get('sample_id', specimen_id),  # Support both snake_case and schema names
             ),
             self.schema.ATTR_STUDY_NAME: session_attrs.get(
                 self.schema.ATTR_STUDY_NAME,
@@ -974,12 +993,40 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.sample_id = sample_id
         self.study_name = study_name
         self.technical_container_path = Path(tech_path)
-        
+
         # Copy technical data to session
         self.writer.copy_technical_to_session(
             technical_file=tech_path,
             session_file=self.session_path,
         )
+        specimen_text = self._as_text(specimen_id, sample_id)
+        self.specimen_id = specimen_text
+        extra_attrs = {
+            "specimenId": specimen_text,
+            "distance_cm": float(distance_cm),
+        }
+        study_id = session_attrs.get("matadorStudyId", session_attrs.get("matador_study_id"))
+        machine_id = session_attrs.get(
+            "matadorMachineId",
+            session_attrs.get("matador_machine_id"),
+        )
+        if study_id not in (None, ""):
+            extra_attrs["matadorStudyId"] = int(study_id)
+        if machine_id not in (None, ""):
+            extra_attrs["matadorMachineId"] = int(machine_id)
+        try:
+            with h5py.File(self.session_path, "a") as h5f:
+                for key, value in extra_attrs.items():
+                    h5f.attrs[key] = value
+                sample_group = h5f.get(self.schema.GROUP_SAMPLE)
+                if sample_group is not None:
+                    sample_group.attrs["specimenId"] = specimen_text
+        except Exception:
+            logger.warning(
+                "Failed to persist extra specimen/Matador attrs into session container",
+                session_path=str(self.session_path),
+                exc_info=True,
+            )
         self.log_event(
             message="Technical snapshot copied into session",
             event_type="technical_snapshot_copied",
@@ -1015,6 +1062,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.session_path = None
         self.session_id = None
         self.sample_id = None
+        self.specimen_id = None
         self.study_name = None
         self.technical_container_path = None
         self.i0_counter = None
@@ -1036,13 +1084,17 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             user_group = f.get(self.schema.GROUP_USER)
             calibration_snapshot = f.get(self.schema.GROUP_CALIBRATION_SNAPSHOT)
 
-            self.sample_id = self._as_text(
-                f.attrs.get(
-                    self.schema.ATTR_SAMPLE_ID,
-                    sample_group.attrs.get(self.schema.ATTR_SAMPLE_ID) if sample_group else None,
-                ),
-                "unknown",
+            self.sample_id = self._read_specimen_id(
+                {
+                    "specimenId": f.attrs.get("specimenId"),
+                    "sample_id": f.attrs.get(
+                        self.schema.ATTR_SAMPLE_ID,
+                        sample_group.attrs.get(self.schema.ATTR_SAMPLE_ID) if sample_group else None,
+                    ),
+                },
+                fallback="unknown",
             )
+            self.specimen_id = self.sample_id
             self.study_name = self._as_text(
                 f.attrs.get(
                     self.schema.ATTR_STUDY_NAME,
@@ -1119,8 +1171,8 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         
         if self.is_locked():
             logger.warning(
-                "Cannot update sample_id: container is locked",
-                sample_id=new_sample_id,
+                "Cannot update specimenId: container is locked",
+                specimen_id=new_sample_id,
             )
             return False
         
@@ -1130,14 +1182,17 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             with h5py.File(self.session_path, 'a') as f:
                 old_sample_id = f.attrs.get(self.schema.ATTR_SAMPLE_ID, 'unknown')
                 f.attrs[self.schema.ATTR_SAMPLE_ID] = new_sample_id
+                f.attrs["specimenId"] = new_sample_id
                 if self.schema.GROUP_SAMPLE in f:
                     f[self.schema.GROUP_SAMPLE].attrs[self.schema.ATTR_SAMPLE_ID] = new_sample_id
+                    f[self.schema.GROUP_SAMPLE].attrs["specimenId"] = new_sample_id
 
             refresh_summary = getattr(self.writer, "refresh_human_summary", None)
             if callable(refresh_summary):
                 refresh_summary(self.session_path)
                 
             self.sample_id = new_sample_id
+            self.specimen_id = new_sample_id
             
             logger.info(
                 "Updated sample_id in session container",
@@ -1188,6 +1243,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             "session_id": self.session_id,
             "session_path": str(self.session_path),
             "sample_id": self.sample_id,
+            "specimenId": self.specimen_id or self.sample_id,
             "study_name": self.study_name,
             "operator_id": self.operator_id,
             "machine_name": self.machine_name,

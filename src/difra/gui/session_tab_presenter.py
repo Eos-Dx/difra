@@ -72,6 +72,7 @@ class SessionTabPresenter:
             "file_name": path.name,
             "path": str(path),
             "sample_id": "UNKNOWN",
+            "specimenId": "UNKNOWN",
             "study_name": "UNSPECIFIED",
             "project_id": "UNSPECIFIED",
             "operator_id": "UNKNOWN",
@@ -91,9 +92,11 @@ class SessionTabPresenter:
 
         try:
             with h5py.File(path, "r") as h5f:
-                info["sample_id"] = str(
-                    cls.decode_attr(h5f.attrs.get(schema.ATTR_SAMPLE_ID, "UNKNOWN"))
-                )
+                specimen_id = h5f.attrs.get("specimenId")
+                if specimen_id is None:
+                    specimen_id = h5f.attrs.get(schema.ATTR_SAMPLE_ID, "UNKNOWN")
+                info["sample_id"] = str(cls.decode_attr(specimen_id))
+                info["specimenId"] = info["sample_id"]
                 info["study_name"] = str(
                     cls.decode_attr(
                         h5f.attrs.get(schema.ATTR_STUDY_NAME, "UNSPECIFIED")
@@ -300,7 +303,7 @@ class SessionTabPresenter:
         session_state = str(info.get("session_state") or "").strip()
         state_suffix = f" ({session_state})" if session_state else ""
         return (
-            f"<b>Sample ID:</b> {info['sample_id']}<br>"
+            f"<b>Specimen ID:</b> {info['sample_id']}<br>"
             f"<b>Study:</b> {info.get('study_name', 'UNSPECIFIED')}<br>"
             f"<b>Session ID:</b> {info['session_id']}<br>"
             f"<b>Operator:</b> {info['operator_id']}<br>"
