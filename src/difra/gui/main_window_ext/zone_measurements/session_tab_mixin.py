@@ -3,16 +3,19 @@
 from datetime import datetime, timedelta
 import os
 from pathlib import Path
+import shutil
 from typing import List
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -24,6 +27,11 @@ from PyQt5.QtWidgets import (
 )
 
 from difra.gui.container_api import get_container_manager, get_schema
+from difra.gui.matador_runtime_context import (
+    DEFAULT_MATADOR_URL,
+    get_runtime_matador_context,
+    set_runtime_matador_context,
+)
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService
@@ -44,37 +52,67 @@ class SessionTabMixin:
         return get_container_manager(self.config if hasattr(self, "config") else None)
 
     def _request_upload_login_context(self, fallback_operator: str):
-        """Collect Matador login credentials for upload workflow (stub)."""
-        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
-        if not bool(cfg.get("upload_prompt_login", True)):
-            return {"uploader_id": fallback_operator, "password": ""}
+        """Collect uploader identity and Matador token right before send."""
+        runtime_context = get_runtime_matador_context(self)
+        default_operator = str(fallback_operator or "unknown")
+        default_url = str(runtime_context.get("matador_url") or DEFAULT_MATADOR_URL).strip()
+        default_token = str(runtime_context.get("token") or "").strip()
+
         if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
-            return {"uploader_id": fallback_operator, "password": ""}
+            return {
+                "uploader_id": default_operator,
+                "token": default_token,
+                "matador_url": default_url,
+            }
 
-        login_text, login_ok = QInputDialog.getText(
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Matador Upload")
+        dialog.setModal(True)
+        layout = QFormLayout(dialog)
+
+        uploader_edit = QLineEdit(default_operator)
+        layout.addRow("Operator:", uploader_edit)
+
+        token_edit = QLineEdit(default_token)
+        token_edit.setEchoMode(QLineEdit.Password)
+        token_edit.setPlaceholderText("Paste JWT token from /difra-api-token")
+        layout.addRow("Matador Token:", token_edit)
+
+        url_edit = QLineEdit(default_url or DEFAULT_MATADOR_URL)
+        layout.addRow("Matador URL:", url_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+
+        uploader_text = str(uploader_edit.text() or "").strip()
+        token_text = str(token_edit.text() or "").strip()
+        url_text = str(url_edit.text() or "").strip()
+        if not uploader_text:
+            QMessageBox.warning(self, "Upload Cancelled", "Operator name is required.")
+            return None
+        if not token_text:
+            QMessageBox.warning(self, "Upload Cancelled", "Matador token is required.")
+            return None
+        if not url_text:
+            QMessageBox.warning(self, "Upload Cancelled", "Matador URL is required.")
+            return None
+
+        set_runtime_matador_context(
             self,
-            "Matador Login",
-            "Matador user:",
-            QLineEdit.Normal,
-            str(fallback_operator or ""),
+            token=token_text,
+            matador_url=url_text,
         )
-        if not login_ok:
-            return None
-        login_text = str(login_text or "").strip()
-        if not login_text:
-            QMessageBox.warning(self, "Upload Cancelled", "Matador user is required.")
-            return None
 
-        password, password_ok = QInputDialog.getText(
-            self,
-            "Matador Login",
-            "Password:",
-            QLineEdit.Password,
-        )
-        if not password_ok:
-            return None
-
-        return {"uploader_id": login_text, "password": str(password or "")}
+        return {
+            "uploader_id": uploader_text,
+            "token": token_text,
+            "matador_url": url_text,
+        }
 
     def create_session_tab(self):
         """Create session management tab with active/pending queue."""
@@ -157,7 +195,7 @@ class SessionTabMixin:
             [
                 "Select",
                 "File",
-                "Sample",
+                "Specimen",
                 "Study",
                 "Operator",
                 "Uploaded By",
@@ -245,7 +283,7 @@ class SessionTabMixin:
         self.archived_sessions_table.setHorizontalHeaderLabels(
             [
                 "File",
-                "Sample",
+                "Specimen",
                 "Project",
                 "Study",
                 "Operator",
@@ -496,10 +534,18 @@ class SessionTabMixin:
             return
 
         try:
+            export_root = SessionOldFormatExporter.resolve_old_format_root(
+                config=self.config if hasattr(self, "config") else None,
+                archive_folder=self._get_session_archive_folder(),
+            )
+            if export_root.exists():
+                shutil.rmtree(export_root)
+            export_root.mkdir(parents=True, exist_ok=True)
             summary = SessionOldFormatExporter.export_from_session_container(
                 container_path,
                 config=self.config if hasattr(self, "config") else None,
                 archive_folder=self._get_session_archive_folder(),
+                target_root=export_root,
             )
             QMessageBox.information(
                 self,
@@ -592,7 +638,7 @@ class SessionTabMixin:
                 container_manager=container_manager,
             )
             logger.info(
-                "Queued session for Matador upload stub",
+                "Queued session for Matador upload",
                 session_path=str(container_path),
                 sample_id=info.get("sample_id"),
             )
@@ -619,12 +665,11 @@ class SessionTabMixin:
             QMessageBox.information(self, "Upload Cancelled", "Upload was cancelled by operator.")
             return
         uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
-        upload_password = str(upload_context.get("password") or "")
+        runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
+        runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = False
-        if hasattr(self, "config") and isinstance(self.config, dict):
-            simulate_upload_failure = bool(
-                self.config.get("upload_stub_force_failure", False)
-            )
+        simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
 
         workflow_result = SessionLifecycleActions.send_and_archive_session_containers(
             container_paths=container_paths,
@@ -633,12 +678,10 @@ class SessionTabMixin:
             active_session_path=active_session_path,
             lock_user=lock_user,
             uploader_id=uploader_id,
-            upload_username=uploader_id,
-            upload_password=upload_password,
             upload_session_id=None,
             simulate_upload_failure=simulate_upload_failure,
             session_ids=batch_session_ids,
-            config=self.config if hasattr(self, "config") else None,
+            config=runtime_config,
         )
 
         if workflow_result.archived_active_session and hasattr(self, "session_manager"):
@@ -691,7 +734,7 @@ class SessionTabMixin:
             "Close && Send Selected",
             (
                 f"Close, upload, and archive {len(selected)} selected session container(s)?\n\n"
-                "Upload uses Matador stub workflow in this build."
+                "DIFRA will build one old-format ZIP and send one H5 per session."
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -714,7 +757,7 @@ class SessionTabMixin:
             "Close && Send All",
             (
                 f"Close, upload, and archive ALL {len(all_containers)} queued session container(s)?\n\n"
-                "Upload uses Matador stub workflow in this build."
+                "DIFRA will build one old-format ZIP and send one H5 per session."
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -809,7 +852,7 @@ class SessionTabMixin:
             logger.error(f"Failed to finalize session: {exc}", exc_info=True)
 
     def _on_upload_session(self):
-        """Upload stub action for currently active session."""
+        """Matador upload action for currently active session."""
         if not hasattr(self, "session_manager") or not self.session_manager.is_session_active():
             QMessageBox.warning(self, "No Active Session", "No session is currently active.")
             return
@@ -825,8 +868,8 @@ class SessionTabMixin:
 
         QMessageBox.information(
             self,
-            "Upload to Cloud (Stub)",
-            f"Matador upload stub executed for active session '{info['sample_id']}'.\n\n"
+            "Upload to Matador",
+            f"Matador upload is executed from the Session send queue for '{info['sample_id']}'.\n\n"
             f"Use 'Close && Send Selected/All' in the queue for archival transfer.",
         )
-        logger.info("Cloud upload stub requested", sample_id=info["sample_id"])
+        logger.info("Matador upload requested from session queue", sample_id=info["sample_id"])

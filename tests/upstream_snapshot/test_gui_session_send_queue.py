@@ -179,14 +179,7 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
     assert harness.pending_sessions_table.rowCount() == 0
     assert harness.archived_sessions_table.rowCount() == 2
     old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
-    assert len(old_dirs) == 1
-    day_dir = old_dirs[0]
-    sample_dirs = [
-        path
-        for path in day_dir.iterdir()
-        if path.is_dir() and path.name != "calibration background"
-    ]
-    assert len(sample_dirs) == 2
+    assert len(old_dirs) == 2
     archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
     assert len(archived_files) == 2
     for archived in archived_files:

@@ -6,8 +6,6 @@ from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_technical_container
-from difra.gui.matador_upload_api import build_matador_upload_api
-
 logger = logging.getLogger(__name__)
 
 
@@ -76,10 +74,7 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
         )
 
         send_error = None
-        try:
-            owner._attempt_forced_session_send(session_path)
-        except Exception as exc:
-            send_error = exc
+        send_error = None
 
         archive_dest, archived_count = SessionFinalizeWorkflow.archive_measurement_files(
             measurements_folder=measurements_folder,
@@ -111,39 +106,29 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
         if not uploader_id and hasattr(owner, "config") and isinstance(owner.config, dict):
             uploader_id = owner.config.get("operator_id")
 
-        upload_session_id = SessionLifecycleActions.create_upload_session_id(
-            uploader_id=uploader_id,
-            lock_user=lock_user,
-        )
-        upload_api = build_matador_upload_api(
-            owner.config if hasattr(owner, "config") and isinstance(owner.config, dict) else None
-        )
-        upload_result = SessionLifecycleActions.execute_upload_stub(
-            Path(archived_session_path),
-            uploader_id=uploader_id,
-            lock_user=lock_user,
-            upload_session_id=upload_session_id,
-            upload_api=upload_api,
-            simulate_failure=send_error is not None,
-            failure_message=f"Cloud send failed: {send_error}" if send_error is not None else None,
-        )
-
         mark_transferred = getattr(container_manager, "mark_container_transferred", None)
         if callable(mark_transferred):
-            mark_transferred(Path(archived_session_path), sent=upload_result.success)
+            mark_transferred(Path(archived_session_path), sent=False)
         SessionLifecycleActions.write_upload_metadata(
             Path(archived_session_path),
             uploader_id=uploader_id,
             lock_user=lock_user,
         )
+        unsent_result = SessionLifecycleActions.execute_upload_stub(
+            Path(archived_session_path),
+            uploader_id=uploader_id,
+            lock_user=lock_user,
+            simulate_failure=True,
+            failure_message="Deferred Matador upload after forced technical close",
+        )
         SessionLifecycleActions.write_upload_result_metadata(
             Path(archived_session_path),
-            upload_result=upload_result,
+            upload_result=unsent_result,
         )
         SessionLifecycleActions.append_upload_attempt_log(
             Path(archived_session_path),
             operator_id=str(uploader_id or lock_user or "unknown"),
-            upload_result=upload_result,
+            upload_result=unsent_result,
         )
 
         owner.session_manager.close_session()
@@ -156,29 +141,16 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
                 f"{archived_session_path.name}"
             )
 
-        if not upload_result.success:
-            QMessageBox.warning(
-                owner,
-                "Session Send Failed",
-                "The active session was closed automatically before creating a new "
-                "technical container.\n\n"
-                f"Upload error: {upload_result.message}\n\n"
-                "The session was archived as LOCKED / UNSENT.\n"
-                f"Upload session: {upload_result.upload_session_id}\n"
-                f"Archived container: {archived_session_path.name}\n"
-                f"Archive folder: {archive_dest}\n"
-                f"Archived measurement files: {archived_count}",
-            )
-        else:
-            QMessageBox.information(
-                owner,
-                "Session Archived",
-                "The active session was closed and sent successfully before "
-                "creating a new technical container.\n\n"
-                f"Upload session: {upload_result.upload_session_id}\n"
-                f"Archived container: {archived_session_path.name}\n"
-                f"Archive folder: {archive_dest}",
-            )
+        QMessageBox.information(
+            owner,
+            "Session Archived",
+            "The active session was closed automatically before creating a new "
+            "technical container.\n\n"
+            "The session was archived as LOCKED / UNSENT.\n"
+            f"Archived container: {archived_session_path.name}\n"
+            f"Archive folder: {archive_dest}\n"
+            f"Archived measurement files: {archived_count}",
+        )
         return True
     except Exception as exc:
         QMessageBox.critical(

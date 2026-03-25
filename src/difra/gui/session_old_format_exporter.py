@@ -1062,7 +1062,10 @@ class SessionOldFormatExporter:
         cfg = config or {}
 
         with h5py.File(source, "r") as h5f:
-            sample_id = cls._as_text(h5f.attrs.get("sample_id"), "UNKNOWN")
+            sample_id = cls._as_text(
+                h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                "UNKNOWN",
+            )
             study_name = cls._as_text(h5f.attrs.get("study_name"), "UNSPECIFIED")
             session_id = cls._as_text(h5f.attrs.get("session_id"), source.stem)
             operator_id = cls._as_text(
@@ -1180,6 +1183,7 @@ class SessionOldFormatExporter:
                 state_payload["detector_poni"] = detector_poni_map
 
             state_payload.setdefault("sample_id", sample_id)
+            state_payload.setdefault("specimenId", sample_id)
             state_payload.setdefault("study_name", study_name)
             state_payload.setdefault("session_id", session_id)
             state_payload.setdefault("operator_id", operator_id)
