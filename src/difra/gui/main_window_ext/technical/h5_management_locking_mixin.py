@@ -24,6 +24,7 @@ from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 
 class H5ManagementLockingMixin:
+    PONI_OVERRIDE_PASSWORD = "Ulster2026!"
     CONTAINER_STATE_ATTR = "container_state"
     CONTAINER_STATE_REASON_ATTR = "container_state_reason"
     CONTAINER_STATE_UPDATED_ATTR = "container_state_updated_at"
@@ -88,6 +89,13 @@ class H5ManagementLockingMixin:
         h5_management_lock_actions.QMessageBox = QMessageBox
         h5_management_lock_actions.QInputDialog = QInputDialog
         h5_management_lock_actions.get_container_manager = get_container_manager
+
+    @classmethod
+    def _is_poni_override_note(cls, notes: str) -> bool:
+        return (
+            str(notes or "").strip().lower()
+            == "accepted_password_override_out_of_zone"
+        )
 
     def _write_container_attrs(self, container_path: Path, attrs: dict) -> bool:
         import h5py
@@ -266,7 +274,10 @@ class H5ManagementLockingMixin:
             return self.STATE_REJECTED_BLOCKED
         if (
             review_state.get("status") == "accepted"
-            and bool(review_state.get("in_zone", False))
+            and (
+                bool(review_state.get("in_zone", False))
+                or self._is_poni_override_note(review_state.get("notes", ""))
+            )
         ):
             return self.STATE_READY_TO_LOCK
         return self.STATE_PENDING_PONI_REVIEW
@@ -713,6 +724,37 @@ class H5ManagementLockingMixin:
             return True
         return False
 
+    def _prompt_poni_override_password(self, *, container_id: str) -> bool:
+        try:
+            from PyQt5.QtWidgets import QLineEdit
+
+            echo_mode = QLineEdit.Password
+        except Exception:
+            echo_mode = 0
+
+        password, ok = QInputDialog.getText(
+            self,
+            "Override PONI Validation",
+            "Enter password to accept and lock despite an out-of-zone PONI center:",
+            echo_mode,
+        )
+        if not ok:
+            self._log_technical_event(
+                f"PONI override cancelled for {container_id}"
+            )
+            return False
+        if str(password) != self.PONI_OVERRIDE_PASSWORD:
+            QMessageBox.warning(
+                self,
+                "Wrong Password",
+                "Password is incorrect. Lock will remain blocked.",
+            )
+            self._log_technical_event(
+                f"PONI override rejected due to wrong password for {container_id}"
+            )
+            return False
+        return True
+
     def _current_operator_id_for_review(self) -> str:
         operator_id = ""
         operator_manager = getattr(self, "operator_manager", None)
@@ -912,6 +954,38 @@ class H5ManagementLockingMixin:
                 f"Adjust the PONI values or update poni_center_validation in {self._poni_validation_config_label()}, "
                 "then load valid PONI files.",
             )
+            override_reply = QMessageBox.question(
+                self,
+                "Override Lock",
+                "Accept and lock this technical container anyway?\n\n"
+                "This will be recorded as a password override outside the allowed zone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if override_reply == QMessageBox.Yes:
+                if self._prompt_poni_override_password(container_id=container_id):
+                    persisted = self._write_poni_review_state(
+                        Path(container_path),
+                        status="accepted",
+                        in_zone=False,
+                        notes="accepted_password_override_out_of_zone",
+                    )
+                    if not persisted:
+                        QMessageBox.warning(
+                            self,
+                            "PONI Review Error",
+                            "Failed to persist password override state. Lock cannot continue.",
+                        )
+                        return False
+                    self._set_container_state(
+                        Path(container_path),
+                        state=self.STATE_READY_TO_LOCK,
+                        reason="poni_review_override_out_of_zone",
+                    )
+                    self._log_technical_event(
+                        f"PONI review override accepted by password for {container_id}"
+                    )
+                    return True
             if prompt_reload_on_reject:
                 retry = QMessageBox.question(
                     self,
