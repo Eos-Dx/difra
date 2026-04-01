@@ -20,6 +20,46 @@ def _tm():
 
 
 class TechnicalCaptureMixin:
+    def _resolve_capture_stage_controller(self):
+        if hasattr(self, "hardware_controller") and self.hardware_controller:
+            stage_controller = getattr(self.hardware_controller, "stage_controller", None)
+            if stage_controller is not None:
+                return stage_controller
+        stage_controller = getattr(self, "stage_controller", None)
+        if stage_controller is not None:
+            return stage_controller
+        if hasattr(self, "hardware_client") and self.hardware_client:
+            return getattr(self.hardware_client, "stage_controller", None)
+        return None
+
+    def _ensure_capture_continuous_movement_controller(self, stage_controller):
+        if stage_controller is None:
+            return None
+        current = getattr(self, "continuous_movement_controller", None)
+        if current is not None:
+            if getattr(current, "stage_controller", None) is not None:
+                return current
+        try:
+            from difra.gui.technical.continuous_movement import ContinuousMovementController
+
+            parent = self if hasattr(self, "metaObject") else None
+            current = ContinuousMovementController(
+                stage_controller=stage_controller,
+                parent=parent,
+            )
+            current.movement_error.connect(
+                lambda msg: self._log_technical_event(f"Movement error: {msg}")
+            )
+            self.continuous_movement_controller = current
+            logger.info("Continuous movement controller initialized on demand")
+            return current
+        except Exception:
+            logger.error(
+                "Failed to initialize continuous movement controller on demand",
+                exc_info=True,
+            )
+            return getattr(self, "continuous_movement_controller", None)
+
     def _read_pyfai_conda_from_global_config(self) -> str:
         """Best-effort read of dedicated PyFAI conda env from split global config."""
         try:
@@ -150,18 +190,20 @@ class TechnicalCaptureMixin:
             f"{base_with_count}_{ts}_{t_token}_{frames}frames",
         )
 
-        stage_controller = None
-        if hasattr(self, "hardware_controller") and self.hardware_controller:
-            stage_controller = self.hardware_controller.stage_controller
-        elif hasattr(self, "stage_controller"):
-            stage_controller = self.stage_controller
-        elif hasattr(self, "hardware_client") and self.hardware_client:
-            stage_controller = self.hardware_client.stage_controller
+        stage_controller = self._resolve_capture_stage_controller()
 
         enable_continuous_movement = (
             getattr(self, "moveContinuousCheck", None) is not None
             and self.moveContinuousCheck.isChecked()
+            and str(typ).strip().upper() == "AGBH"
         )
+        continuous_movement_controller = getattr(
+            self, "continuous_movement_controller", None
+        )
+        if enable_continuous_movement:
+            continuous_movement_controller = (
+                self._ensure_capture_continuous_movement_controller(stage_controller)
+            )
         movement_radius = (
             self.movementRadiusSpin.value()
             if getattr(self, "movementRadiusSpin", None) is not None
@@ -187,7 +229,7 @@ class TechnicalCaptureMixin:
             txt_filename_base=txt_filename_base,
             frames=frames,
             naming_mode="normal",
-            continuous_movement_controller=self.continuous_movement_controller,
+            continuous_movement_controller=continuous_movement_controller,
             stage_controller=stage_controller,
             enable_continuous_movement=enable_continuous_movement,
             movement_radius=movement_radius,

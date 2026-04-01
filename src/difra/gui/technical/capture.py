@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import logging
 from pathlib import Path
@@ -10,10 +11,20 @@ import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QDialogButtonBox
+from PyQt5.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+)
 
 from difra.gui.container_api import get_container_version
 from difra.gui.main_window_ext.technical.poni_center_preview import (
+    rule_with_zone,
     resolve_overlay_zone,
     resolve_preview_limits,
 )
@@ -23,6 +34,88 @@ from difra.gui.technical.analysis_compat import (
     initialize_azimuthal_integrator_poni_text,
 )
 logger = logging.getLogger(__name__)
+_PONI_RANGE_EDIT_PASSWORD = "Ulster2026!"
+
+
+def _resolve_poni_validation_config_target(parent) -> Optional[Path]:
+    for attr_name in ("_active_config_path", "_global_path", "_legacy_main_path"):
+        candidate = getattr(parent, attr_name, None)
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return path
+    return None
+
+
+def _load_json_payload(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_poni_validation_rule_edits(
+    *,
+    parent,
+    validation_cfg: dict,
+    edited_rules_by_alias: dict,
+) -> Path:
+    target_path = _resolve_poni_validation_config_target(parent)
+    if target_path is None:
+        raise RuntimeError("Active setup config file is not available.")
+
+    payload = _load_json_payload(target_path)
+    block = payload.get("poni_center_validation")
+    if not isinstance(block, dict):
+        block = dict(validation_cfg or {})
+    detectors = block.get("detectors")
+    if not isinstance(detectors, dict):
+        detectors = {}
+    for alias_key, rule in (edited_rules_by_alias or {}).items():
+        detectors[str(alias_key).upper()] = dict(rule or {})
+    block["detectors"] = detectors
+    if "enabled" not in block:
+        block["enabled"] = True
+    payload["poni_center_validation"] = block
+    target_path.write_text(json.dumps(payload, indent=4), encoding="utf-8")
+
+    if parent is not None and hasattr(parent, "load_config"):
+        try:
+            parent.config = parent.load_config()
+        except Exception:
+            logger.warning("Failed to reload config after PONI range edit", exc_info=True)
+    elif parent is not None and hasattr(parent, "config"):
+        parent.config = dict(getattr(parent, "config", {}) or {})
+        parent.config["poni_center_validation"] = block
+
+    return target_path
+
+
+def _build_measurement_dialog(
+    measurement_filename: str,
+    *,
+    parent=None,
+    note: str = "",
+) -> tuple[QDialog, Figure]:
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(
+        f"Azimuthal Integration: {os.path.basename(measurement_filename)}"
+    )
+    layout = QVBoxLayout(dialog)
+    if str(note or "").strip():
+        note_label = QLabel(str(note).strip())
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(note_label)
+
+    fig = Figure(figsize=(6, 6))
+    canvas = FigureCanvas(fig)
+    layout.addWidget(canvas)
+    dialog.resize(700, 700)
+    dialog.show()
+    return dialog, fig
 
 
 def _load_measurement_array(measurement_filename: str) -> np.ndarray:
@@ -341,71 +434,65 @@ def show_measurement_window(
     # Load data
     data = _load_measurement_array(measurement_filename)
 
-    # Choose integrator
+    radial = intensity = std = sigma = cake = None
+    integration_error = ""
     if poni_text:
-        ai = initialize_azimuthal_integrator_poni_text(poni_text)
-    else:
-        # Fallback: manual integration parameters
-        max_idx = np.unravel_index(np.argmax(data), data.shape)
-        center_row, center_column = max_idx
-        pixel_size = 55e-6
-        wavelength = 1.54
-        sample_distance_mm = 100.0
-        ai = initialize_azimuthal_integrator_df(
-            pixel_size,
-            center_column,
-            center_row,
-            wavelength,
-            sample_distance_mm,
+        try:
+            ai = initialize_azimuthal_integrator_poni_text(poni_text)
+            result = ai.integrate1d(
+                data, 200, unit="q_nm^-1", error_model="azimuthal", mask=mask
+            )
+            radial = np.asarray(result.radial, dtype=float).reshape(-1)
+            intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
+            std = np.asarray(result.std, dtype=float).reshape(-1)
+            sigma = np.asarray(result.sigma, dtype=float).reshape(-1)
+
+            min_len = min(radial.size, intensity.size, std.size, sigma.size)
+            if min_len <= 0:
+                raise ValueError("Integration produced empty radial/intensity arrays")
+            radial = radial[:min_len]
+            intensity = intensity[:min_len]
+            std = std[:min_len]
+            sigma = sigma[:min_len]
+
+            finite = np.isfinite(radial) & np.isfinite(intensity)
+            if not np.any(finite):
+                raise ValueError("Integration produced only NaN/Inf values")
+            radial = radial[finite]
+            intensity = intensity[finite]
+            std = std[finite]
+            sigma = sigma[finite]
+
+            cake, _, _ = ai.integrate2d(data, 200, npt_azim=180, mask=mask)
+        except Exception as exc:
+            integration_error = str(exc)
+            logger.warning(
+                "Falling back to raw-only technical view; integration failed for %s: %s",
+                measurement_filename,
+                exc,
+            )
+
+    note = ""
+    if not str(poni_text or "").strip():
+        note = "No PONI is embedded for this measurement. Showing raw image only."
+    elif integration_error:
+        note = (
+            "Could not integrate this measurement with the current PONI. "
+            f"Showing raw image only.\nReason: {integration_error}"
         )
 
-    # Perform integration
-    npt = 200
-    try:
-        result = ai.integrate1d(
-            data, npt, unit="q_nm^-1", error_model="azimuthal", mask=mask
-        )
-        radial = np.asarray(result.radial, dtype=float).reshape(-1)
-        intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
-        std = np.asarray(result.std, dtype=float).reshape(-1)
-        sigma = np.asarray(result.sigma, dtype=float).reshape(-1)
-
-        min_len = min(radial.size, intensity.size, std.size, sigma.size)
-        if min_len <= 0:
-            raise ValueError("Integration produced empty radial/intensity arrays")
-        radial = radial[:min_len]
-        intensity = intensity[:min_len]
-        std = std[:min_len]
-        sigma = sigma[:min_len]
-
-        finite = np.isfinite(radial) & np.isfinite(intensity)
-        if not np.any(finite):
-            raise ValueError("Integration produced only NaN/Inf values")
-        radial = radial[finite]
-        intensity = intensity[finite]
-        std = std[finite]
-        sigma = sigma[finite]
-
-        cake, _, _ = ai.integrate2d(data, 200, npt_azim=180, mask=mask)
-    except Exception as e:
-        raise RuntimeError(f"Error integrating data for '{measurement_filename}': {e}")
-
-    # Create dialog and layout
-    try:
-        dialog = QDialog(parent)
-        dialog.setWindowTitle(
-            f"Azimuthal Integration: {os.path.basename(measurement_filename)}"
-        )
-        layout = QHBoxLayout(dialog)
-    except Exception as e:
-        raise e
-
-    # Create figure and canvas
-    fig = Figure(figsize=(6, 6))
-    canvas = FigureCanvas(fig)
+    dialog, fig = _build_measurement_dialog(
+        measurement_filename,
+        parent=parent,
+        note=note,
+    )
 
     # Top-left: raw 2D heatmap
-    ax1 = fig.add_subplot(2, 2, 1)
+    integrated_view = radial is not None and intensity is not None and cake is not None
+    if integrated_view:
+        ax1 = fig.add_subplot(2, 2, 1)
+    else:
+        ax1 = fig.add_subplot(1, 1, 1)
     sns.heatmap(data, robust=True, square=True, ax=ax1, cbar=False)
     ax1.set_title("2D Image")
 
@@ -433,6 +520,9 @@ def show_measurement_window(
                 label="Integration area",
             )
             ax1.add_patch(circ)
+
+    if not integrated_view:
+        return dialog
 
     # Top-right: 1D integration
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
@@ -516,11 +606,6 @@ def show_measurement_window(
     sns.heatmap(pct_dev, robust=True, square=True, ax=ax4)
     ax4.set_title(f"Deviation (%), goodness: {goodness}")
 
-    # Show the canvas
-    layout.addWidget(canvas)
-    dialog.resize(700, 700)
-    dialog.show()
-
     return dialog
 
 
@@ -537,6 +622,7 @@ def show_poni_centers_preview_window(
     """Show detector previews with PONI centers and allowed center zones."""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
+    from matplotlib.widgets import RectangleSelector
 
     from difra.gui.main_window_ext.technical.poni_center_validation import (
         parse_poni_center_px,
@@ -565,8 +651,14 @@ def show_poni_centers_preview_window(
     if cols == 1:
         axes = [axes]
 
+    zone_patches = {}
+    rules_by_alias = {}
+    zones_by_alias = {}
+    axes_by_alias = {}
+
     for ax, alias in zip(axes, aliases):
         alias_key = str(alias).upper()
+        axes_by_alias[alias_key] = ax
         size = detector_sizes_by_alias.get(alias) or detector_sizes_by_alias.get(alias_key) or (256, 256)
         try:
             width_px = int(size[0])
@@ -606,8 +698,10 @@ def show_poni_centers_preview_window(
             rule.update(detector_rules[alias_key])
         elif isinstance(defaults, dict):
             rule = dict(defaults)
+        rules_by_alias[alias_key] = dict(rule)
 
         zone = resolve_overlay_zone(rule, w, h)
+        zones_by_alias[alias_key] = zone
         if zone is not None:
             rect = Rectangle(
                 (zone[0], zone[1]),
@@ -618,6 +712,7 @@ def show_poni_centers_preview_window(
                 linewidth=1.5,
             )
             ax.add_patch(rect)
+            zone_patches[alias_key] = rect
 
         poni_text = str(poni_by_alias.get(alias) or poni_by_alias.get(alias_key) or "")
         center = parse_poni_center_px(poni_text, fallback_detector_size=(w, h))
@@ -659,21 +754,179 @@ def show_poni_centers_preview_window(
     if decision_mode:
         dialog.setModal(True)
 
-    if decision_mode:
-        layout = QVBoxLayout(dialog)
-    else:
-        layout = QHBoxLayout(dialog)
+    layout = QVBoxLayout(dialog)
     layout.addWidget(canvas)
+
+    help_label = QLabel(dialog)
+    help_label.setWordWrap(True)
+    help_label.setStyleSheet("color: #555; font-size: 11px;")
+    help_label.setText(
+        "Purple rectangles show allowed PONI beam-center ranges. "
+        "Use 'Unlock Editing…' to drag/resize them with the mouse; OK/Accept will save updates to the active setup config."
+    )
+    layout.addWidget(help_label)
+
+    selectors = {}
+    editing_enabled = {"value": False}
+
+    def _apply_selector_style(selector):
+        artist = getattr(selector, "_selection_artist", None)
+        if artist is not None:
+            artist.set_facecolor((0.58, 0.28, 0.78, 0.25))
+            artist.set_edgecolor((0.58, 0.28, 0.78, 0.9))
+            artist.set_linewidth(1.6)
+        handles = getattr(selector, "_corner_handles", None)
+        if handles is not None:
+            try:
+                handles.artist.set_markerfacecolor((0.58, 0.28, 0.78, 0.95))
+                handles.artist.set_markeredgecolor("white")
+            except Exception:
+                pass
+
+    def _selector_for_alias(alias_key: str):
+        selector = selectors.get(alias_key)
+        if selector is not None:
+            return selector
+        ax = axes_by_alias.get(alias_key)
+        zone = zones_by_alias.get(alias_key)
+        if ax is None or zone is None:
+            return None
+
+        x0, y0, zone_w, zone_h = zone
+        selector_kwargs = dict(
+            useblit=False,
+            button=[1],
+            interactive=True,
+            minspanx=1.0,
+            minspany=1.0,
+            spancoords="data",
+        )
+        try:
+            selector = RectangleSelector(
+                ax,
+                lambda *_args, **_kwargs: None,
+                drag_from_anywhere=True,
+                props=dict(
+                    facecolor=(0.58, 0.28, 0.78, 0.25),
+                    edgecolor=(0.58, 0.28, 0.78, 0.9),
+                    linewidth=1.6,
+                ),
+                **selector_kwargs,
+            )
+        except TypeError:
+            try:
+                selector = RectangleSelector(
+                    ax,
+                    lambda *_args, **_kwargs: None,
+                    rectprops=dict(
+                        facecolor=(0.58, 0.28, 0.78, 0.25),
+                        edgecolor=(0.58, 0.28, 0.78, 0.9),
+                        linewidth=1.6,
+                    ),
+                    **selector_kwargs,
+                )
+            except TypeError:
+                selector = RectangleSelector(
+                    ax,
+                    lambda *_args, **_kwargs: None,
+                    **selector_kwargs,
+                )
+                try:
+                    selector.drag_from_anywhere = True
+                except Exception:
+                    pass
+
+        selector.extents = (x0, x0 + zone_w, y0, y0 + zone_h)
+        _apply_selector_style(selector)
+        selectors[alias_key] = selector
+        return selector
+
+    def _unlock_editing():
+        if editing_enabled["value"]:
+            return
+        password, ok = QInputDialog.getText(
+            dialog,
+            "Unlock PONI Range Editing",
+            "Enter password to edit allowed PONI ranges:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if str(password) != _PONI_RANGE_EDIT_PASSWORD:
+            QMessageBox.warning(dialog, "Wrong Password", "Password is incorrect.")
+            return
+        for alias_key, patch in list(zone_patches.items()):
+            if patch is not None:
+                patch.set_visible(False)
+            _selector_for_alias(alias_key)
+        editing_enabled["value"] = True
+        help_label.setText(
+            "Editing unlocked. Drag inside a rectangle to move it, or drag its edges/corners to resize it. "
+            "Click OK/Accept to save the updated ranges to the active setup config."
+        )
+        canvas.draw_idle()
+
+    def _save_current_edits() -> bool:
+        if not editing_enabled["value"]:
+            return True
+        edited_rules_by_alias = {}
+        for alias_key, selector in selectors.items():
+            try:
+                x1, x2, y1, y2 = selector.extents
+            except Exception:
+                continue
+            zone = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+            edited_rules_by_alias[alias_key] = rule_with_zone(
+                rules_by_alias.get(alias_key, {}),
+                zone,
+            )
+        if not edited_rules_by_alias:
+            return True
+        try:
+            target_path = _save_poni_validation_rule_edits(
+                parent=parent,
+                validation_cfg=validation_cfg,
+                edited_rules_by_alias=edited_rules_by_alias,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                dialog,
+                "Save Failed",
+                f"Could not update PONI range config:\n{exc}",
+            )
+            return False
+        QMessageBox.information(
+            dialog,
+            "PONI Ranges Saved",
+            f"Updated PONI range rules in:\n{target_path}",
+        )
+        return True
 
     if decision_mode:
         decision_buttons = QDialogButtonBox(dialog)
+        unlock_btn = decision_buttons.addButton("Unlock Editing…", QDialogButtonBox.ActionRole)
         accept_btn = decision_buttons.addButton("Accept", QDialogButtonBox.AcceptRole)
         reject_btn = decision_buttons.addButton("Reject", QDialogButtonBox.RejectRole)
-        accept_btn.clicked.connect(dialog.accept)
+        unlock_btn.clicked.connect(_unlock_editing)
+        def _accept_and_maybe_save():
+            if _save_current_edits():
+                dialog.accept()
+        accept_btn.clicked.connect(_accept_and_maybe_save)
         reject_btn.clicked.connect(dialog.reject)
         layout.addWidget(decision_buttons)
+    else:
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        unlock_btn = buttons.addButton("Unlock Editing…", QDialogButtonBox.ActionRole)
+        unlock_btn.clicked.connect(_unlock_editing)
+        def _ok_and_maybe_save():
+            if _save_current_edits():
+                dialog.accept()
+        buttons.accepted.connect(_ok_and_maybe_save)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
 
     dialog.resize(max(640, 460 * cols), 420)
+    dialog._poni_zone_selectors = selectors
     if decision_mode:
         result = dialog.exec_()
         return {"dialog": dialog, "accepted": bool(result == QDialog.Accepted)}

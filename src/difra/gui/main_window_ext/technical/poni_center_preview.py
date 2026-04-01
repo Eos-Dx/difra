@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 
 def _as_float(value):
     try:
@@ -104,3 +106,44 @@ def resolve_preview_limits(
     if y_max > height:
         y_max += pad
     return (x_min, x_max, y_min, y_max)
+
+
+def normalize_zone(zone) -> tuple[float, float, float, float] | None:
+    """Normalize a rectangle-like zone into (x, y, w, h)."""
+    if zone is None:
+        return None
+    try:
+        x0, y0, width, height = zone
+        x0 = float(x0)
+        y0 = float(y0)
+        width = float(width)
+        height = float(height)
+    except Exception:
+        return None
+    if width < 0:
+        x0 += width
+        width = abs(width)
+    if height < 0:
+        y0 += height
+        height = abs(height)
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return (x0, y0, width, height)
+
+
+def rule_with_zone(rule: dict, zone) -> dict:
+    """Return a copy of a validation rule updated from an edited rectangle."""
+    normalized = normalize_zone(zone)
+    if normalized is None:
+        return dict(rule or {})
+
+    x0, y0, width, height = normalized
+    updated = deepcopy(dict(rule or {}))
+    updated["row_target_px"] = float(y0 + (height / 2.0))
+    updated["row_tolerance_px"] = float(height / 2.0)
+    updated["col_min_px"] = float(x0)
+    updated["col_max_px"] = float(x0 + width)
+
+    for key in ("col_target_px", "col_tolerance_px", "col_gt_px", "col_lt_px"):
+        updated.pop(key, None)
+    return updated

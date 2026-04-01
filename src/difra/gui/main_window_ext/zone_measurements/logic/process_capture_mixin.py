@@ -118,16 +118,27 @@ class ZoneMeasurementsProcessCaptureMixin:
     def _move_stage(self, x_mm: float, y_mm: float, timeout_s: float):
         pm = _pm()
         if getattr(self, "hardware_client", None) is not None:
+            client_stage = getattr(self.hardware_client, "stage_controller", None)
             pm.logger.info(
                 "Stage move requested via hardware client",
                 target_x_mm=float(x_mm),
                 target_y_mm=float(y_mm),
                 timeout_s=float(timeout_s),
             )
+            if client_stage is not None:
+                result = client_stage.move_stage(
+                    float(x_mm), float(y_mm), move_timeout=timeout_s
+                )
+                pm.logger.info(
+                    "Stage move completed via hardware client stage controller",
+                    final_x_mm=float(result[0]),
+                    final_y_mm=float(result[1]),
+                )
+                return result
             self.hardware_client.move_to(x_mm, axis="x", timeout_s=timeout_s)
             result = self.hardware_client.move_to(y_mm, axis="y", timeout_s=timeout_s)
             pm.logger.info(
-                "Stage move completed via hardware client",
+                "Stage move completed via hardware client axis fallback",
                 final_x_mm=float(result[0]),
                 final_y_mm=float(result[1]),
             )
