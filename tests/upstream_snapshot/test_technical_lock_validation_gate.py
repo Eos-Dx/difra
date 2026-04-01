@@ -587,6 +587,52 @@ def test_poni_review_accept_persists_accepted_in_valid_zone(monkeypatch):
             assert h5f.attrs.get("container_state") == "ready_to_lock"
 
 
+def test_poni_review_accept_syncs_in_memory_poni_before_validation(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        container_path = Path(tmp) / "technical_test.nxs.h5"
+        _create_container(container_path, schema_version="0.2")
+        harness = _Harness(container_path)
+        harness.config["poni_center_validation"] = {"enabled": True, "detectors": {"SAXS": {}}}
+        harness.ponis = {"SAXS": "Distance: 0.17\nPixelSize1: 5.5e-05\nPixelSize2: 5.5e-05\nPoni1: 0.00704\nPoni2: 0.00088\n"}
+        _MessageBoxStub.reset()
+
+        sync_state = {"embedded": False}
+
+        monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+        monkeypatch.setattr(
+            harness,
+            "_show_poni_center_preview_for_container",
+            lambda *_a, **_k: True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            harness,
+            "_container_has_poni_datasets",
+            lambda *_a, **_k: bool(sync_state["embedded"]),
+        )
+        monkeypatch.setattr(
+            harness,
+            "_sync_active_technical_container_from_table",
+            lambda **_kwargs: sync_state.__setitem__("embedded", True) or True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            harness,
+            "_validate_poni_centers_for_container",
+            lambda *_a, **_k: ([], []) if sync_state["embedded"] else (["missing PONI"], []),
+        )
+
+        result = harness._run_poni_center_review_workflow(
+            container_path,
+            container_id="tech_test_001",
+            prompt_reload_on_reject=False,
+        )
+
+        assert result is True
+        assert sync_state["embedded"] is True
+        assert any("synchronized into container before review validation" in event for event in harness.events)
+
+
 def test_poni_review_accept_out_of_zone_hard_fails_and_blocks_lock(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         container_path = Path(tmp) / "technical_test.nxs.h5"

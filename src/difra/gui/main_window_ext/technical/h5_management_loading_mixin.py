@@ -1193,12 +1193,22 @@ class H5ManagementLoadingMixin:
         if not aliases:
             return None if decision_mode else False
 
-        ponis = getattr(self, "ponis", {}) or {}
         poni_by_alias = {}
-        for alias, text in ponis.items():
+        try:
+            embedded = self._collect_container_poni_text_by_alias(Path(h5_path))
+        except Exception:
+            embedded = {}
+        for alias, text in (embedded or {}).items():
             key = self._normalize_center_preview_alias(alias)
             if key and text:
                 poni_by_alias[key] = str(text)
+
+        if not poni_by_alias:
+            ponis = getattr(self, "ponis", {}) or {}
+            for alias, text in ponis.items():
+                key = self._normalize_center_preview_alias(alias)
+                if key and text:
+                    poni_by_alias[key] = str(text)
 
         if not poni_by_alias:
             return None if decision_mode else False
