@@ -3,11 +3,11 @@ import uuid
 from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtGui import QPainterPath, QPen
 from PyQt5.QtWidgets import (
-    QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsRectItem,
 )
+from difra.gui.extra.resizable_zone import ResizableEllipseItem, ResizableRectangleItem
 
 
 class DrawingMixin:
@@ -51,20 +51,34 @@ class DrawingMixin:
                 return
             rect = QRectF(self.start_point, self.start_point)
             if self.drawing_mode in ["rect", "crop"]:
-                rect_item = QGraphicsRectItem(rect)
+                rect_item = (
+                    QGraphicsRectItem(rect)
+                    if self.drawing_mode == "crop"
+                    else ResizableRectangleItem(
+                        rect.x(),
+                        rect.y(),
+                        rect.width(),
+                        rect.height(),
+                    )
+                )
                 rect_item.setPen(self.pen)
                 if self.drawing_mode == "rect":
-                    rect_item.setFlags(
-                        QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable
-                    )
+                    callback = getattr(self, "shape_updated_callback", None)
+                    if callable(callback):
+                        rect_item.geometry_changed_callback = callback
                 self.current_shape = rect_item
                 self.scene.addItem(rect_item)
             elif self.drawing_mode == "ellipse":
-                ellipse_item = QGraphicsEllipseItem(rect)
-                ellipse_item.setPen(self.pen)
-                ellipse_item.setFlags(
-                    QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable
+                ellipse_item = ResizableEllipseItem(
+                    rect.x(),
+                    rect.y(),
+                    rect.width(),
+                    rect.height(),
                 )
+                ellipse_item.setPen(self.pen)
+                callback = getattr(self, "shape_updated_callback", None)
+                if callable(callback):
+                    ellipse_item.geometry_changed_callback = callback
                 self.current_shape = ellipse_item
                 self.scene.addItem(ellipse_item)
         else:
@@ -85,6 +99,9 @@ class DrawingMixin:
             rect = QRectF(self.start_point, current_point).normalized()
             if hasattr(self.current_shape, "setRect"):
                 self.current_shape.setRect(rect)
+                updater = getattr(self.current_shape, "_update_handle_positions", None)
+                if callable(updater):
+                    updater()
         else:
             super().mouseMoveEvent(event)
 
