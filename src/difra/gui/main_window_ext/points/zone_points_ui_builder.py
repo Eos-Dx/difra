@@ -119,23 +119,8 @@ class ZonePointsUIBuilder:
         parent.conversionLabel = QLabel("Conversion: 1.00 px/mm")
         layout.addWidget(parent.conversionLabel)
 
-        parent.rotateSamplePhotoBtn = QPushButton("Rotate 180°")
-        layout.addWidget(parent.rotateSamplePhotoBtn)
-
-        parent.rotationStatusLabel = QLabel("Image not rotated")
-        try:
-            parent.rotationStatusLabel.setStyleSheet(
-                "color: #666; font-size: 9px; margin: 1px;"
-            )
-        except Exception:
-            pass
-        layout.addWidget(parent.rotationStatusLabel)
-
         parent.generatePointsBtn = QPushButton("Generate Points")
         layout.addWidget(parent.generatePointsBtn)
-
-        parent.clearProfileBtn = QPushButton("Clear Profile")
-        layout.addWidget(parent.clearProfileBtn)
 
         # Add current position display near Update Coordinates button
         if not hasattr(parent, "zoneCurrentPositionLabel"):

@@ -82,8 +82,14 @@ class ShapeTableMixin:
 
     def _update_sample_photo_rotation_ui(self):
         self._ensure_shape_calibration_defaults()
-        status_label = getattr(self, "rotationStatusLabel", None)
-        rotate_button = getattr(self, "rotateSamplePhotoBtn", None)
+        status_label = (
+            getattr(self, "sample_photo_rotation_status", None)
+            or getattr(self, "rotationStatusLabel", None)
+        )
+        rotate_button = (
+            getattr(self, "rotate_sample_photo_btn", None)
+            or getattr(self, "rotateSamplePhotoBtn", None)
+        )
         is_rotated = bool(getattr(self, "sample_photo_rotation_confirmed", False))
         can_rotate = bool(getattr(self, "_sample_photo_has_explicit_holder_circle", False)) and float(
             getattr(self, "pixel_to_mm_ratio", 0.0) or 0.0
@@ -92,7 +98,7 @@ class ShapeTableMixin:
         if status_label is not None:
             if is_rotated:
                 status_label.setText(
-                    "Image rotated 180°. Ensure the sample is physically rotated."
+                    "Image Rotated 180°. Ensure the sample is physically rotated."
                 )
                 try:
                     status_label.setStyleSheet(

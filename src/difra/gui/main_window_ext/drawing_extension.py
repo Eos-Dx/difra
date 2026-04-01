@@ -35,6 +35,9 @@ class DrawingMixin:
         self.select_profile_act = QAction(
             "Draw Profile", self, checkable=True, triggered=self.select_profile_mode
         )
+        self.clear_profile_act = QAction(
+            "Clear Profile", self, triggered=self.clear_profile_paths
+        )
         self.crop_act = QAction(
             "Crop", self, checkable=True, triggered=self.select_crop_mode
         )
@@ -61,6 +64,7 @@ class DrawingMixin:
         self.toolbar.addAction(self.select_rect_act)
         self.toolbar.addAction(self.select_ellipse_act)
         self.toolbar.addAction(self.select_profile_act)
+        self.toolbar.addAction(self.clear_profile_act)
         self.toolbar.addAction(self.crop_act)
         self.toolbar.addAction(self.select_act)
 
@@ -121,3 +125,9 @@ class DrawingMixin:
         """
         if hasattr(self, "image_view"):
             self.image_view.delete_selected_shapes()
+
+    def clear_profile_paths(self) -> None:
+        """Clear freehand profile paths if the host provides the helper."""
+        clearer = getattr(self, "_clear_profile_paths", None)
+        if callable(clearer):
+            clearer()
