@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
 from difra.gui.technical.widgets import MeasurementHistoryWidget
 
 from .points.zone_geometry import compute_ideal_radius, farthest_point_sampling
+from .points.zone_geometry import sample_points_along_polyline
 from .points.zone_points_constants import ZonePointsConstants
 from .points.zone_points_renderer import ZonePointsRenderer, ZonePointsTableManager
 from .points.zone_points_ui_builder import ZonePointsGeometry, ZonePointsUIBuilder
@@ -176,6 +177,16 @@ class ZonePointsMixin:
     def _setup_event_handlers(self):
         """Set up all event handlers for the UI components."""
         self.generatePointsBtn.clicked.connect(self.generate_zone_points)
+        if hasattr(self, "drawProfileBtn"):
+            self.drawProfileBtn.clicked.connect(self._toggle_profile_draw_mode)
+        if hasattr(self, "clearProfileBtn"):
+            self.clearProfileBtn.clicked.connect(self._clear_profile_paths)
+        if hasattr(self, "rotateSamplePhotoBtn") and hasattr(
+            self, "_handle_sample_photo_rotate_clicked"
+        ):
+            self.rotateSamplePhotoBtn.clicked.connect(
+                self._handle_sample_photo_rotate_clicked
+            )
         self.pointsTable.selectionModel().selectionChanged.connect(
             self.on_points_table_selection
         )
@@ -194,6 +205,9 @@ class ZonePointsMixin:
                 self.real_y_pos_mm.valueChanged.connect(
                     lambda _value: self.refresh_stage_limit_overlays()
                 )
+        update_rotation_ui = getattr(self, "_update_sample_photo_rotation_ui", None)
+        if callable(update_rotation_ui):
+            update_rotation_ui()
 
     def update_conversion_label(self):
         self.conversionLabel.setText(f"Conversion: {self.pixel_to_mm_ratio:.2f} px/mm")
@@ -213,6 +227,28 @@ class ZonePointsMixin:
         include_shape, exclude_shapes = self._get_inclusion_exclusion_shapes()
         if include_shape is None:
             logger.info("No include shape defined. Cannot generate points.")
+            return
+
+        profile_points = self._get_active_profile_vertices()
+        if profile_points:
+            final_points = sample_points_along_polyline(profile_points, n_points)
+            final_points = [
+                (float(x_value), float(y_value))
+                for x_value, y_value in final_points
+                if self._point_within_allowed_region(float(x_value), float(y_value))
+            ]
+            if len(final_points) != int(n_points):
+                QMessageBox.warning(
+                    self,
+                    "Profile Outside Allowed Region",
+                    "Some profile points fall outside the allowed include zone.\n"
+                    "Adjust the path or holder circle and try again.",
+                )
+                return
+            ideal_radius = float(ZonePointsConstants.POINT_RADIUS)
+            self._clear_generated_points()
+            self._render_generated_points(final_points, ideal_radius)
+            self.update_points_table()
             return
 
         # Generate candidate points
@@ -236,6 +272,56 @@ class ZonePointsMixin:
 
         self.update_points_table()
 
+    def _toggle_profile_draw_mode(self, checked: bool):
+        if not hasattr(self, "image_view"):
+            return
+        setter = getattr(self.image_view, "set_drawing_mode", None)
+        if not callable(setter):
+            return
+        setter("profile" if checked else None)
+
+    def _clear_profile_paths(self):
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return
+        for profile_info in list(getattr(image_view, "profile_paths", []) or []):
+            item = profile_info.get("item")
+            if item is not None:
+                try:
+                    image_view.scene.removeItem(item)
+                except Exception:
+                    pass
+        image_view.profile_paths = []
+        draw_btn = getattr(self, "drawProfileBtn", None)
+        if draw_btn is not None:
+            try:
+                draw_btn.setChecked(False)
+            except Exception:
+                pass
+        setter = getattr(image_view, "set_drawing_mode", None)
+        if callable(setter):
+            setter(None)
+        try:
+            image_view.scene.update()
+        except Exception:
+            pass
+
+    def _get_active_profile_vertices(self) -> List[Tuple[float, float]]:
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return []
+        profiles = list(getattr(image_view, "profile_paths", []) or [])
+        if not profiles:
+            return []
+        profile_info = profiles[-1]
+        points = profile_info.get("points") or []
+        vertices: List[Tuple[float, float]] = []
+        for point in points:
+            if point is None or len(point) < 2:
+                continue
+            vertices.append((float(point[0]), float(point[1])))
+        return vertices
+
     def _reset_point_counter(self):
         """Reset the point ID counter."""
         if not hasattr(self, "next_point_id"):
@@ -249,14 +335,21 @@ class ZonePointsMixin:
         """Get inclusion and exclusion shapes from the image view."""
         include_shape = None
         exclude_shapes = []
+        holder_circle_shape = None
 
         for shape in self.image_view.shapes:
             role = shape.get("role", "include")
-            if role == "include":
+            if role in ("holder circle", "sample holder") and holder_circle_shape is None:
+                holder_circle_shape = shape["item"]
+            elif role == "include" and include_shape is None:
                 include_shape = shape["item"]
             elif role == "exclude":
                 exclude_shapes.append(shape["item"])
 
+        # Explicit include zone must win. Holder circle is only a fallback
+        # when the operator has not drawn a dedicated include region.
+        if include_shape is None and holder_circle_shape is not None:
+            include_shape = holder_circle_shape
         return include_shape, exclude_shapes
 
     def _generate_candidate_points(
@@ -483,12 +576,18 @@ class ZonePointsMixin:
             if parsed_x_mm is None or parsed_y_mm is None:
                 self.update_points_table()
                 return
-            new_x_px = self.include_center[0] + (
-                self.real_x_pos_mm.value() - float(parsed_x_mm)
-            ) * self.pixel_to_mm_ratio
-            new_y_px = self.include_center[1] + (
-                self.real_y_pos_mm.value() - float(parsed_y_mm)
-            ) * self.pixel_to_mm_ratio
+            if hasattr(self, "mm_to_pixels"):
+                new_x_px, new_y_px = self.mm_to_pixels(
+                    float(parsed_x_mm),
+                    float(parsed_y_mm),
+                )
+            else:
+                new_x_px = self.include_center[0] + (
+                    self.real_x_pos_mm.value() - float(parsed_x_mm)
+                ) * self.pixel_to_mm_ratio
+                new_y_px = self.include_center[1] + (
+                    self.real_y_pos_mm.value() - float(parsed_y_mm)
+                ) * self.pixel_to_mm_ratio
 
         if not self._point_within_allowed_region(new_x_px, new_y_px):
             QMessageBox.warning(
@@ -1261,14 +1360,17 @@ class ZonePointsMixin:
 
             # Set coordinate data
             if self.pixel_to_mm_ratio:
-                x_mm = (
-                    self.real_x_pos_mm.value()
-                    - (x - self.include_center[0]) / self.pixel_to_mm_ratio
-                )
-                y_mm = (
-                    self.real_y_pos_mm.value()
-                    - (y - self.include_center[1]) / self.pixel_to_mm_ratio
-                )
+                if hasattr(self, "_pixel_to_physical_mm"):
+                    x_mm, y_mm = self._pixel_to_physical_mm(x, y)
+                else:
+                    x_mm = (
+                        self.real_x_pos_mm.value()
+                        - (x - self.include_center[0]) / self.pixel_to_mm_ratio
+                    )
+                    y_mm = (
+                        self.real_y_pos_mm.value()
+                        - (y - self.include_center[1]) / self.pixel_to_mm_ratio
+                    )
                 x_mm_item = QTableWidgetItem(f"{x_mm:.2f}")
                 y_mm_item = QTableWidgetItem(f"{y_mm:.2f}")
             else:

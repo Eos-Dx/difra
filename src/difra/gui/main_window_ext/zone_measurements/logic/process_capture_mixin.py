@@ -228,8 +228,11 @@ class ZoneMeasurementsProcessCaptureMixin:
         if planned_xy is not None:
             self._x_mm, self._y_mm = planned_xy
         else:
-            self._x_mm = self.real_x_pos_mm.value() - (center.x() - self.include_center[0]) / self.pixel_to_mm_ratio
-            self._y_mm = self.real_y_pos_mm.value() - (center.y() - self.include_center[1]) / self.pixel_to_mm_ratio
+            if hasattr(self, "_pixel_to_physical_mm"):
+                self._x_mm, self._y_mm = self._pixel_to_physical_mm(center.x(), center.y())
+            else:
+                self._x_mm = self.real_x_pos_mm.value() - (center.x() - self.include_center[0]) / self.pixel_to_mm_ratio
+                self._y_mm = self.real_y_pos_mm.value() - (center.y() - self.include_center[1]) / self.pixel_to_mm_ratio
 
         point_index_1based = self.current_measurement_sorted_index + 1
         pm.logger.info(

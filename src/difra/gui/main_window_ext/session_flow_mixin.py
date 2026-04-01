@@ -606,40 +606,31 @@ class SessionFlowMixin:
             # Find sample_holder zone ID (first zone with sample_holder role)
             sample_holder_zone_id = "zone_001"  # Default to first zone
             
-            include_center = getattr(self, "include_center", (0.0, 0.0))
-            if not isinstance(include_center, (list, tuple)) or len(include_center) < 2:
-                include_center = (0.0, 0.0)
-            ref_x_mm = 0.0
-            ref_y_mm = 0.0
-            if hasattr(self, "real_x_pos_mm") and hasattr(self.real_x_pos_mm, "value"):
-                try:
-                    ref_x_mm = float(self.real_x_pos_mm.value())
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to read real_x_pos_mm for mapping payload: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    ref_x_mm = 0.0
-            if hasattr(self, "real_y_pos_mm") and hasattr(self.real_y_pos_mm, "value"):
-                try:
-                    ref_y_mm = float(self.real_y_pos_mm.value())
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to read real_y_pos_mm for mapping payload: %s",
-                        exc,
-                        exc_info=True,
-                    )
-                    ref_y_mm = 0.0
-
-            # Create pixel-to-mm conversion dict
-            pixel_to_mm_conversion = {
-                "ratio": float(self.pixel_to_mm_ratio),
-                "units": "mm/pixel",
-                "include_center_px": [float(include_center[0]), float(include_center[1])],
-                "stage_reference_mm": [float(ref_x_mm), float(ref_y_mm)],
-                "formula": "x_mm = ref_x_mm - (x_px - center_x_px) / ratio",
-            }
+            if hasattr(self, "_build_mapping_conversion_payload"):
+                pixel_to_mm_conversion = self._build_mapping_conversion_payload()
+            else:
+                include_center = getattr(self, "include_center", (0.0, 0.0))
+                if not isinstance(include_center, (list, tuple)) or len(include_center) < 2:
+                    include_center = (0.0, 0.0)
+                ref_x_mm = 0.0
+                ref_y_mm = 0.0
+                if hasattr(self, "real_x_pos_mm") and hasattr(self.real_x_pos_mm, "value"):
+                    try:
+                        ref_x_mm = float(self.real_x_pos_mm.value())
+                    except Exception:
+                        ref_x_mm = 0.0
+                if hasattr(self, "real_y_pos_mm") and hasattr(self.real_y_pos_mm, "value"):
+                    try:
+                        ref_y_mm = float(self.real_y_pos_mm.value())
+                    except Exception:
+                        ref_y_mm = 0.0
+                pixel_to_mm_conversion = {
+                    "ratio": float(self.pixel_to_mm_ratio),
+                    "units": "mm/pixel",
+                    "include_center_px": [float(include_center[0]), float(include_center[1])],
+                    "stage_reference_mm": [float(ref_x_mm), float(ref_y_mm)],
+                    "formula": "x_mm = ref_x_mm - (x_px - center_x_px) / ratio",
+                }
             
             # Add orientation if available
             orientation = "standard"

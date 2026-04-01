@@ -194,7 +194,21 @@ class MainWindowBasic(QMainWindow):
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.toggle_dev_act)
 
+    def _can_load_or_capture_sample_image(self) -> bool:
+        session_manager = getattr(self, "session_manager", None)
+        is_active = getattr(session_manager, "is_session_active", None)
+        if not callable(is_active) or not bool(is_active()):
+            QMessageBox.information(
+                self,
+                "Create Session First",
+                "Create the session container manually before loading or capturing a sample photo.",
+            )
+            return False
+        return True
+
     def open_image(self):
+        if not self._can_load_or_capture_sample_image():
+            return
         default_folder = self.config.get("default_image_folder", "")
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -212,12 +226,12 @@ class MainWindowBasic(QMainWindow):
                 logger.warning(
                     "Error clearing shapes/points after image load", error=str(e)
                 )
-            
-            # Auto-create session when new sample image is loaded
             if hasattr(self, '_handle_new_sample_image'):
                 self._handle_new_sample_image(path)
 
     def capture_from_camera(self):
+        if not self._can_load_or_capture_sample_image():
+            return
         default_folder = self.config.get("default_folder", "")
         dialog = CameraCaptureDialog(self, default_folder=default_folder)
         if dialog.exec_() == QDialog.Accepted:
@@ -233,8 +247,6 @@ class MainWindowBasic(QMainWindow):
                         "Error clearing shapes/points after camera capture",
                         error=str(e),
                     )
-                
-                # Auto-create session when new sample image is captured
                 if hasattr(self, '_handle_new_sample_image'):
                     self._handle_new_sample_image(image_path)
             else:

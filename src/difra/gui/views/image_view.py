@@ -60,6 +60,12 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
             if shape_info in self.shapes:
                 self.shapes.remove(shape_info)
 
+        main_window = self.window()
+        if main_window is not None and hasattr(main_window, "_refresh_sample_photo_calibration"):
+            try:
+                main_window._refresh_sample_photo_calibration()
+            except Exception:
+                pass
         if self.shape_updated_callback:
             self.shape_updated_callback()
 
@@ -128,14 +134,75 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
     def contextMenuEvent(self, event):
         selected_items = [item for item in self.scene.selectedItems() if item is not self.image_item]
         if not selected_items:
+            item_at_pos = self.itemAt(event.pos())
+            if item_at_pos is not None and item_at_pos is not self.image_item:
+                try:
+                    item_at_pos.setSelected(True)
+                except Exception:
+                    pass
+                selected_items = [item_at_pos]
+        if not selected_items:
             super().contextMenuEvent(event)
             return
 
         menu = QMenu(self)
+        selected_shape_infos = []
+        main_window = self.window()
+        if main_window is not None:
+            for shape_info in getattr(main_window.image_view, "shapes", []):
+                shape_item = shape_info.get("item")
+                extras = list(shape_info.get("diagonals") or [])
+                center_marker = shape_info.get("center_marker")
+                if center_marker is not None:
+                    extras.append(center_marker)
+                if any(item is shape_item or item in extras for item in selected_items):
+                    selected_shape_infos.append(shape_info)
+        calibration_square_action = None
+        holder_circle_action = None
+        edit_physical_size_action = None
+        clear_profile_action = None
+        if len(selected_shape_infos) == 1 and main_window is not None:
+            calibration_square_action = menu.addAction("Define As Calibration Square...")
+            holder_circle_action = menu.addAction("Define As Holder Circle...")
+            edit_physical_size_action = menu.addAction("Edit Physical Size...")
+            menu.addSeparator()
+        selected_profile_info = None
+        for profile_info in getattr(self, "profile_paths", []) or []:
+            profile_item = profile_info.get("item")
+            if any(item is profile_item for item in selected_items):
+                selected_profile_info = profile_info
+                break
+        if selected_profile_info is not None:
+            clear_profile_action = menu.addAction("Delete Profile Path")
+            menu.addSeparator()
         delete_points_action = menu.addAction("Delete Selected Point(s)")
         delete_action = menu.addAction("Delete Selected Shape(s)")
         chosen = menu.exec_(event.globalPos())
-        if chosen == delete_points_action:
+        if chosen == calibration_square_action and selected_shape_infos:
+            if hasattr(main_window, "define_shape_as_calibration_role"):
+                main_window.define_shape_as_calibration_role(
+                    selected_shape_infos[0],
+                    "calibration square",
+                )
+        elif chosen == holder_circle_action and selected_shape_infos:
+            if hasattr(main_window, "define_shape_as_calibration_role"):
+                main_window.define_shape_as_calibration_role(
+                    selected_shape_infos[0],
+                    "holder circle",
+                )
+        elif chosen == edit_physical_size_action and selected_shape_infos:
+            if hasattr(main_window, "edit_shape_physical_size_by_info"):
+                main_window.edit_shape_physical_size_by_info(selected_shape_infos[0])
+        elif chosen == clear_profile_action and selected_profile_info is not None:
+            try:
+                self.scene.removeItem(selected_profile_info.get("item"))
+            except Exception:
+                pass
+            try:
+                self.profile_paths.remove(selected_profile_info)
+            except Exception:
+                pass
+        elif chosen == delete_points_action:
             self.delete_selected_points()
         elif chosen == delete_action:
             self.delete_selected_shapes()

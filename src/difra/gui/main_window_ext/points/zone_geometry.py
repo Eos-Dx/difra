@@ -176,3 +176,65 @@ def compute_ideal_radius(allowed_area: float, N: int) -> float:
         return 0
     circle_area = allowed_area / N
     return math.sqrt(circle_area / math.pi)
+
+
+def sample_points_along_polyline(
+    vertices: Sequence[Tuple[float, float]],
+    num_points: int,
+) -> List[Tuple[float, float]]:
+    """Sample points evenly along polyline arc length."""
+    if num_points <= 0:
+        return []
+
+    cleaned: List[Tuple[float, float]] = []
+    for vertex in vertices or []:
+        if vertex is None or len(vertex) < 2:
+            continue
+        point = (float(vertex[0]), float(vertex[1]))
+        if cleaned and _distance_sq(cleaned[-1], point) < 1e-12:
+            continue
+        cleaned.append(point)
+
+    if not cleaned:
+        return []
+    if len(cleaned) == 1:
+        return [cleaned[0]] * int(num_points)
+
+    segment_lengths: List[float] = []
+    cumulative: List[float] = [0.0]
+    total_length = 0.0
+    for start, end in zip(cleaned[:-1], cleaned[1:]):
+        seg_len = math.sqrt(_distance_sq(start, end))
+        segment_lengths.append(seg_len)
+        total_length += seg_len
+        cumulative.append(total_length)
+
+    if total_length <= 1e-12:
+        return [cleaned[0]] * int(num_points)
+
+    if num_points == 1:
+        target_distances = [total_length / 2.0]
+    else:
+        step = total_length / float(num_points - 1)
+        target_distances = [step * idx for idx in range(num_points)]
+
+    sampled: List[Tuple[float, float]] = []
+    seg_index = 0
+    for target in target_distances:
+        while seg_index < len(segment_lengths) - 1 and cumulative[seg_index + 1] < target:
+            seg_index += 1
+        seg_len = segment_lengths[seg_index]
+        start = cleaned[seg_index]
+        end = cleaned[seg_index + 1]
+        seg_start = cumulative[seg_index]
+        if seg_len <= 1e-12:
+            sampled.append(start)
+            continue
+        t = max(0.0, min(1.0, (target - seg_start) / seg_len))
+        sampled.append(
+            (
+                start[0] + (end[0] - start[0]) * t,
+                start[1] + (end[1] - start[1]) * t,
+            )
+        )
+    return sampled

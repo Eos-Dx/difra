@@ -80,8 +80,8 @@
             "type": "Kinesis",
             "id": "101370874",
             "real_zero": {
-                "x_mm": 6.13,
-                "y_mm": -9.13
+                "x_mm": 6.15,
+                "y_mm": -9.15
             },
             "settings": {
                 "number_axes": 2,
@@ -96,7 +96,7 @@
                     ]
                 },
                 "home": [
-                    6.13,
+                    6.15,
                     -9.3
                 ],
                 "load": [

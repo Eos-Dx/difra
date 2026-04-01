@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from difra.gui.main_window_ext.zone_points_extension import ZonePointsMixin
+from difra.gui.main_window_ext.points.zone_points_constants import ZonePointsConstants
 from difra.gui.main_window_ext import zone_points_actions
 
 
@@ -157,3 +161,80 @@ def test_delete_all_points_clears_lists_widgets_and_resets_ids():
     assert owner.removed_widgets == ["uid-1", "uid-2"]
     assert owner.measurement_widgets == {}
     assert owner.next_point_id == 1
+
+
+class _AlwaysInsideShape:
+    def mapFromScene(self, point):
+        return point
+
+    def contains(self, _point) -> bool:
+        return True
+
+
+class _NamedShape(_AlwaysInsideShape):
+    def __init__(self, name: str) -> None:
+        self.name = str(name)
+
+
+class _ProfileOwner(ZonePointsMixin):
+    def __init__(self) -> None:
+        self._rendered = []
+        self._cleared = 0
+        self.updated = 0
+        self.next_point_id = 1
+        self.pointCountSpinBox = SimpleNamespace(value=lambda: 5)
+        self.shrinkSpinBox = SimpleNamespace(value=lambda: 0)
+        self.image_view = SimpleNamespace(
+            profile_paths=[
+                {
+                    "points": [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+                    "item": object(),
+                }
+            ]
+        )
+
+    def _get_inclusion_exclusion_shapes(self):
+        return _AlwaysInsideShape(), []
+
+    def _clear_generated_points(self):
+        self._cleared += 1
+
+    def _render_generated_points(self, points, ideal_radius):
+        self._rendered.append((list(points), float(ideal_radius)))
+
+    def update_points_table(self):
+        self.updated += 1
+
+
+def test_generate_zone_points_uses_profile_path_when_present():
+    owner = _ProfileOwner()
+
+    owner.generate_zone_points()
+
+    assert owner._cleared == 1
+    assert owner.updated == 1
+    rendered_points, ideal_radius = owner._rendered[0]
+    assert ideal_radius == float(ZonePointsConstants.POINT_RADIUS)
+    assert rendered_points == [
+        (0.0, 0.0),
+        (5.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 5.0),
+        (10.0, 10.0),
+    ]
+
+
+def test_explicit_include_zone_wins_over_holder_circle():
+    owner = SimpleNamespace(
+        image_view=SimpleNamespace(
+            shapes=[
+                {"role": "holder circle", "item": _NamedShape("holder")},
+                {"role": "include", "item": _NamedShape("include")},
+            ]
+        )
+    )
+
+    include_shape, exclude_shapes = ZonePointsMixin._get_inclusion_exclusion_shapes(owner)
+
+    assert include_shape.name == "include"
+    assert exclude_shapes == []

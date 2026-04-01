@@ -21,6 +21,7 @@ QPen = _module.QPen
 QPixmap = _module.QPixmap
 QGraphicsEllipseItem = _module.QGraphicsEllipseItem
 QGraphicsRectItem = _module.QGraphicsRectItem
+from difra.gui.extra.resizable_zone import ResizableSquareItem, ResizableZoneItem
 
 null_dict = _module.null_dict
 
@@ -263,11 +264,25 @@ class StateSaverRestoreMixin:
                 geo.get("width"),
                 geo.get("height"),
             )
-            item = (
-                QGraphicsEllipseItem(x, y, w, h)
-                if s_type.lower() in ["ellipse", "circle"]
-                else QGraphicsRectItem(x, y, w, h)
-            )
+            role_lower = str(role or "").lower()
+            if role_lower in ["sample holder", "holder circle"]:
+                item = ResizableZoneItem(
+                    float(x) + float(w) / 2.0,
+                    float(y) + float(h) / 2.0,
+                    max(float(w), float(h)) / 2.0,
+                )
+            elif role_lower == "calibration square":
+                item = ResizableSquareItem(
+                    float(x) + float(w) / 2.0,
+                    float(y) + float(h) / 2.0,
+                    min(float(w), float(h)),
+                )
+            else:
+                item = (
+                    QGraphicsEllipseItem(x, y, w, h)
+                    if s_type.lower() in ["ellipse", "circle"]
+                    else QGraphicsRectItem(x, y, w, h)
+                )
             item.setFlags(
                 QGraphicsEllipseItem.ItemIsSelectable
                 | QGraphicsEllipseItem.ItemIsMovable
@@ -292,10 +307,12 @@ class StateSaverRestoreMixin:
                     "uid": shape_uid,
                     "type": s_type,
                     "role": role,
+                    "physical_size_mm": shape.get("physical_size_mm"),
+                    "center_px": tuple(shape.get("center_px")) if shape.get("center_px") else None,
                     "item": item,
                     "active": (
                         True
-                        if role in ["include", "exclude", "sample holder"]
+                        if role in ["include", "exclude", "sample holder", "holder circle", "calibration square"]
                         else False
                     ),
                 }

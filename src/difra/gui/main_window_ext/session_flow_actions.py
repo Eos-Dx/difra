@@ -4,10 +4,9 @@ import logging
 from pathlib import Path
 
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_schema
-from difra.gui.main_window_ext.new_session_dialog import NewSessionDialog
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +59,9 @@ def prompt_and_attach_sample_image(owner) -> str | None:
         and not pixmap.isNull()
     ):
         owner.image_view.set_image(pixmap, image_path=file_path)
+    reset_rotation = getattr(owner, "_reset_sample_photo_rotation_state", None)
+    if callable(reset_rotation):
+        reset_rotation()
 
     clear_shapes = getattr(owner, "delete_all_shapes_from_table", None)
     if callable(clear_shapes):
@@ -76,131 +78,57 @@ def prompt_and_attach_sample_image(owner) -> str | None:
 
 
 def handle_new_sample_image(owner, image_path: str):
-    """Create a new session when a sample image is loaded or captured."""
-    if owner.session_manager.is_session_active():
-        reform_handler = getattr(owner, "_try_reform_active_session_for_new_image", None)
-        if callable(reform_handler):
-            try:
-                if reform_handler(image_path):
-                    if hasattr(owner, "_append_session_log"):
-                        owner._append_session_log(
-                            "Reused active session after image reform reset"
-                        )
-                    return
-            except Exception as exc:
-                logger.warning(
-                    "Image reform handler failed; falling back to replacement flow: %s",
-                    exc,
-                    exc_info=True,
-                )
-        if not owner._handle_session_replacement():
-            if hasattr(owner, "_append_session_log"):
-                owner._append_session_log("New sample load cancelled")
-            return
-
-    default_distance = None
-    if hasattr(owner, "_default_session_distance_cm"):
-        try:
-            default_distance = owner._default_session_distance_cm()
-        except Exception:
-            default_distance = None
-
-    dialog = NewSessionDialog(
-        owner.operator_manager,
-        owner,
-        default_distance=default_distance,
-    )
-
-    if dialog.exec_() != QDialog.Accepted:
-        logger.info("User cancelled session creation")
-        if hasattr(owner, "_append_session_log"):
-            owner._append_session_log("Session creation cancelled by user")
-        return
-
-    params = dialog.get_parameters()
-
-    session_folder = owner.get_session_folder()
-    if not session_folder:
-        session_folder = Path(image_path).parent
-        logger.info("Using image directory as session folder: %s", session_folder)
-
-    try:
-        session_id, session_path = owner.session_manager.create_session(
-            folder=session_folder,
-            distance_cm=params["distance_cm"],
-            technical_container_path=getattr(
-                owner, "_active_technical_container_path", None
-            ),
-            sample_id=params["sample_id"],
-            operator_id=params.get("operator_id"),
-            **{
-                k: v
-                for k, v in params.items()
-                if k not in ["sample_id", "operator_id", "distance_cm"]
-            },
-        )
-
-        try:
-            image_array = None
-            if hasattr(owner, "_load_image_array_from_path"):
-                image_array = owner._load_image_array_from_path(image_path)
-
-            if image_array is not None:
-                owner.session_manager.add_sample_image(
-                    image_data=image_array,
-                    image_index=1,
-                    image_type="sample",
-                )
-                logger.info("Added sample image to session container")
-                if hasattr(owner, "_append_session_log"):
-                    owner._append_session_log("Sample image saved to session container")
-            else:
-                logger.warning("Failed to load image as array: %s", image_path)
-
-        except Exception as exc:
-            logger.warning(
-                "Failed to add image to session container: %s",
-                exc,
-                exc_info=True,
-            )
-
+    """Attach a newly loaded/captured sample image to the active manual session."""
+    if not owner.session_manager.is_session_active():
         QMessageBox.information(
             owner,
-            "Session Created",
-            f"Session created successfully!\n\n"
-            f"Specimen ID: {params['sample_id']}\n"
-            f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
-            f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
-            f"Matador Study ID: {params.get('matadorStudyId', 'UNSPECIFIED')}\n"
-            f"Matador Machine ID: {params.get('matadorMachineId', 'UNSPECIFIED')}\n"
-            f"Container: {session_path.name}\n\n"
-            f"Sample image added to container.",
+            "Create Session First",
+            "Create the session container manually before loading or capturing a sample photo.",
         )
+        return
 
-        logger.info(
-            "Created new session: %s for sample %s with image: %s",
-            session_id,
-            params["sample_id"],
-            image_path,
-        )
-        if hasattr(owner, "_append_session_log"):
-            owner._append_session_log(
-                f"Created session {session_path.name} for sample {params['sample_id']}"
+    try:
+        image_array = None
+        if hasattr(owner, "_load_image_array_from_path"):
+            image_array = owner._load_image_array_from_path(image_path)
+
+        if image_array is not None:
+            owner.session_manager.add_sample_image(
+                image_data=image_array,
+                image_index=1,
+                image_type="sample",
             )
-
-        owner.update_session_status()
-
+            logger.info("Added sample image to session container")
+            if hasattr(owner, "_append_session_log"):
+                owner._append_session_log("Sample image saved to session container")
+        else:
+            raise RuntimeError(f"Failed to load image data from {image_path}")
     except Exception as exc:
-        QMessageBox.critical(
+        QMessageBox.warning(
             owner,
-            "Session Creation Failed",
-            f"Failed to create session:\n\n{str(exc)}",
+            "Sample Image Not Saved",
+            f"Failed to attach sample image to the active session container.\n\n{exc}",
         )
-        logger.error("Failed to create session: %s", exc, exc_info=True)
+        logger.warning(
+            "Failed to add image to session container: %s",
+            exc,
+            exc_info=True,
+        )
         if hasattr(owner, "_append_session_log"):
             owner._append_session_log(
-                f"Session creation failed during new sample flow: {type(exc).__name__}"
+                f"Sample image attach failed: {type(exc).__name__}"
             )
+        return
+
+    if hasattr(owner, "_append_session_log"):
+        owner._append_session_log(
+            f"Attached sample image to active session: {Path(image_path).name}"
+        )
+    reset_rotation = getattr(owner, "_reset_sample_photo_rotation_state", None)
+    if callable(reset_rotation):
+        reset_rotation()
+    if hasattr(owner, "update_session_status"):
+        owner.update_session_status()
 
 
 def load_session_container_from_path(owner, file_path: Path) -> bool:

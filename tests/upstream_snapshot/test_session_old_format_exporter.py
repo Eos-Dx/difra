@@ -110,6 +110,8 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert summary.export_dir.exists() is True
     assert summary.export_dir.parent == old_format_root
     assert summary.state_path.exists() is True
+    assert summary.state_path.name == "session.json"
+    assert summary.state_path.parent.parent.name == "measurements"
     assert summary.raw_file_count >= 3  # npy + txt + dsc
     assert summary.technical_file_count >= 2  # poni + technical event data
 
@@ -123,7 +125,7 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert any(name.endswith(".txt") for name in sample_files)
     assert any(name.endswith(".dsc") for name in sample_files)
 
-    calibration_root = summary.export_dir / "calibration background"
+    calibration_root = summary.export_dir / "calibration"
     assert calibration_root.exists() is True
     distance_dirs = sorted(path for path in calibration_root.iterdir() if path.is_dir())
     assert len(distance_dirs) == 1
@@ -232,7 +234,7 @@ def test_export_session_to_old_format_reuses_existing_distance_folder_when_paylo
         config={"old_format_export_folder": str(old_format_root)},
     )
 
-    calibration_root = summary_first.export_dir / "calibration background"
+    calibration_root = summary_first.export_dir / "calibration"
     first_files = {
         path.name
         for path in (calibration_root / "17cm").iterdir()
@@ -244,7 +246,7 @@ def test_export_session_to_old_format_reuses_existing_distance_folder_when_paylo
         config={"old_format_export_folder": str(old_format_root)},
     )
 
-    calibration_root_second = summary_second.export_dir / "calibration background"
+    calibration_root_second = summary_second.export_dir / "calibration"
     distance_dirs = sorted(path.name for path in calibration_root_second.iterdir() if path.is_dir())
     assert distance_dirs == ["17cm"]
     second_files = {
@@ -279,6 +281,6 @@ def test_export_session_to_old_format_creates_new_distance_folder_when_payload_c
         config={"old_format_export_folder": str(old_format_root)},
     )
 
-    calibration_root = summary_second.export_dir / "calibration background"
+    calibration_root = summary_second.export_dir / "calibration"
     distance_dirs = sorted(path.name for path in calibration_root.iterdir() if path.is_dir())
     assert distance_dirs == ["17cm", "18cm"]
