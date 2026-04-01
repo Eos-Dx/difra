@@ -1,5 +1,5 @@
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QAction, QMenu, QToolButton
+from PyQt5.QtWidgets import QAction, QLabel, QMenu, QPushButton, QToolButton
 
 
 class RotatorToolButton(QToolButton):
@@ -102,6 +102,15 @@ class RotationMixin:
         self.rotate_right_btn = RotatorToolButton(
             "Rotate Right", 1, self.rotate_right, self
         )
+        self.rotate_sample_photo_btn = QPushButton("Rotate 180°", self)
+        self.rotate_sample_photo_btn.setEnabled(False)
+        self.sample_photo_rotation_status = QLabel("", self)
+        try:
+            self.sample_photo_rotation_status.setStyleSheet(
+                "color: #666; font-size: 9px; margin-left: 4px;"
+            )
+        except Exception:
+            pass
 
     def add_rotation_actions_to_tool_bar(self):
         """
@@ -109,6 +118,11 @@ class RotationMixin:
         """
         self.toolbar.addWidget(self.rotate_left_btn)
         self.toolbar.addWidget(self.rotate_right_btn)
+        self.toolbar.addWidget(self.rotate_sample_photo_btn)
+        self.toolbar.addWidget(self.sample_photo_rotation_status)
+        click_handler = getattr(self, "_handle_sample_photo_rotate_clicked", None)
+        if callable(click_handler):
+            self.rotate_sample_photo_btn.clicked.connect(click_handler)
 
     def rotate_left(self, angle: float):
         """
