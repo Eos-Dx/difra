@@ -26,6 +26,7 @@ from difra.gui.main_window_ext.technical import h5_management_loading_actions
 
 class H5ManagementLoadingMixin:
     RUNTIME_ROWS_SIGNATURE_ATTR = "technical_aux_rows_signature"
+    PONI_SIGNATURE_ATTR = "technical_poni_signature"
 
     @staticmethod
     def _safe_archive_token(value: str, fallback: str = "unknown") -> str:
@@ -88,6 +89,23 @@ class H5ManagementLoadingMixin:
             poni_name = info.get("name") or f"{alias}.poni"
             poni_data[str(alias)] = (str(poni_text), str(poni_name))
         return poni_data
+
+    @staticmethod
+    def _poni_data_signature(poni_data) -> str:
+        normalized = {}
+        for alias, payload in sorted((poni_data or {}).items()):
+            try:
+                poni_text, poni_name = payload
+            except Exception:
+                poni_text, poni_name = "", ""
+            normalized[str(alias)] = {
+                "name": str(poni_name or ""),
+                "content_sha256": hashlib.sha256(
+                    str(poni_text or "").encode("utf-8")
+                ).hexdigest(),
+            }
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _set_active_technical_container(self, file_path: str):
         self._active_technical_container_path = str(file_path)
@@ -758,6 +776,8 @@ class H5ManagementLoadingMixin:
             )
 
         runtime_signature = self._runtime_rows_signature(runtime_rows)
+        poni_data = self._collect_poni_data_by_alias()
+        poni_signature = self._poni_data_signature(poni_data)
 
         try:
             import h5py
@@ -765,11 +785,18 @@ class H5ManagementLoadingMixin:
             with h5py.File(active_path, "a") as h5f:
                 runtime_group = h5f.get(schema.GROUP_RUNTIME)
                 existing_signature = ""
+                existing_poni_signature = ""
                 if runtime_group is not None:
                     existing_signature = str(
                         runtime_group.attrs.get(self.RUNTIME_ROWS_SIGNATURE_ATTR, "") or ""
                     ).strip()
-                if existing_signature == runtime_signature:
+                    existing_poni_signature = str(
+                        runtime_group.attrs.get(self.PONI_SIGNATURE_ATTR, "") or ""
+                    ).strip()
+                if (
+                    existing_signature == runtime_signature
+                    and existing_poni_signature == poni_signature
+                ):
                     sync_state = getattr(self, "_sync_container_state", None)
                     if callable(sync_state):
                         sync_state(Path(active_path), reason="table_sync_noop")
@@ -804,6 +831,7 @@ class H5ManagementLoadingMixin:
                 runtime_parent = h5f.get(schema.GROUP_RUNTIME)
                 if runtime_parent is not None:
                     runtime_parent.attrs[self.RUNTIME_ROWS_SIGNATURE_ATTR] = runtime_signature
+                    runtime_parent.attrs[self.PONI_SIGNATURE_ATTR] = poni_signature
 
             # Rebuild canonical technical group from PRIMARY rows only.
             primary_map = {}
@@ -866,7 +894,6 @@ class H5ManagementLoadingMixin:
                     exc_info=True,
                 )
 
-            poni_data = self._collect_poni_data_by_alias()
             if poni_data:
                 try:
                     technical_container.write_poni_datasets(
