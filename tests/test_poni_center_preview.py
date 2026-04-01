@@ -6,6 +6,9 @@ from difra.gui.main_window_ext.technical.poni_center_preview import (
     resolve_preview_limits,
     rule_with_zone,
 )
+from difra.gui.main_window_ext.technical.poni_center_validation import (
+    evaluate_poni_centers,
+)
 
 
 def test_overlay_zone_keeps_secondary_off_detector_region_visible():
@@ -65,3 +68,34 @@ def test_rule_with_zone_replaces_column_target_style_with_explicit_bounds():
     assert updated["col_max_px"] == 26.0
     assert "col_target_px" not in updated
     assert "col_tolerance_px" not in updated
+
+
+def test_evaluate_poni_centers_reports_detector_statuses_with_tolerant_edge_check():
+    poni_text = "\n".join(
+        [
+            "poni_version: 2.1",
+            'Detector_config: {"pixel1": 1.0e-04, "pixel2": 1.0e-04, "max_shape": [256, 256], "orientation": 3}',
+            "Poni1: 0.0128",
+            "Poni2: 0.0256",
+        ]
+    )
+    results = evaluate_poni_centers(
+        poni_text_by_alias={"SECONDARY": poni_text},
+        detector_sizes_by_alias={"SECONDARY": (256, 256)},
+        validation_config={
+            "enabled": True,
+            "detectors": {
+                "SECONDARY": {
+                    "row_target_px": 128,
+                    "row_tolerance_px": 13,
+                    "col_gt_px": 256,
+                }
+            },
+        },
+    )
+
+    assert len(results) == 1
+    assert results[0]["alias"] == "SECONDARY"
+    assert results[0]["in_zone"] is True
+    assert results[0]["errors"] == []
+    assert any("col > 256.00" in item for item in results[0]["rule_summary"])

@@ -625,6 +625,7 @@ def show_poni_centers_preview_window(
     from matplotlib.widgets import RectangleSelector
 
     from difra.gui.main_window_ext.technical.poni_center_validation import (
+        evaluate_poni_centers,
         parse_poni_center_px,
     )
 
@@ -655,6 +656,14 @@ def show_poni_centers_preview_window(
     rules_by_alias = {}
     zones_by_alias = {}
     axes_by_alias = {}
+    status_by_alias = {
+        str(item.get("alias") or "").upper(): item
+        for item in evaluate_poni_centers(
+            poni_text_by_alias=poni_by_alias,
+            detector_sizes_by_alias=detector_sizes_by_alias,
+            validation_config=validation_cfg,
+        )
+    }
 
     for ax, alias in zip(axes, aliases):
         alias_key = str(alias).upper()
@@ -725,6 +734,31 @@ def show_poni_centers_preview_window(
                 markerfacecolor="red",
                 markeredgecolor="white",
                 markeredgewidth=0.8,
+            )
+
+        status_info = status_by_alias.get(alias_key, {})
+        if isinstance(status_info, dict):
+            status_label = "IN ZONE" if bool(status_info.get("in_zone")) else "OUT OF ZONE"
+            color = "#1b7f3b" if bool(status_info.get("in_zone")) else "#b42318"
+            geometry = status_info.get("geometry") or {}
+            row_text = geometry.get("row_px")
+            col_text = geometry.get("col_px")
+            status_lines = [status_label]
+            if row_text is not None and col_text is not None:
+                status_lines.append(f"row={float(row_text):.2f}, col={float(col_text):.2f}")
+            summary = status_info.get("rule_summary") or []
+            if summary:
+                status_lines.append("; ".join(summary[:2]))
+            ax.text(
+                0.02,
+                0.98,
+                "\n".join(status_lines),
+                transform=ax.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8.5,
+                color=color,
+                bbox=dict(facecolor=(1, 1, 1, 0.72), edgecolor=color, linewidth=0.8),
             )
 
         detector_frame = Rectangle(

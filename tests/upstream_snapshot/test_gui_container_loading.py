@@ -1533,29 +1533,51 @@ def test_sync_runtime_rows_are_metadata_only_and_lock_rewrites_paths(qapp, tmp_p
         assert source_file.startswith(str(archive_folder))
         assert Path(source_file).exists() is True
 
-    reloaded = _TechnicalLoadHarness(
+
+def test_sync_rewrites_embedded_poni_when_only_poni_changes(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_poni_refresh"
+    tech_path = _make_technical_container(technical_folder)
+
+    harness = _TechnicalLoadHarness(
         config={
-            "technical_archive_folder": str(archive_folder),
             "operator_id": "sad",
         },
         work_dir=technical_folder,
     )
-    reloaded.show()
+    harness.show()
     qapp.processEvents()
+
     monkeypatch.setattr(
         h5_management_mixin.QFileDialog,
         "getOpenFileName",
         staticmethod(lambda *a, **k: (str(tech_path), "NeXus HDF5 Files (*.nxs.h5)")),
     )
-    reloaded.load_technical_h5()
-    qapp.processEvents()
 
-    assert reloaded.auxTable.rowCount() == 8
-    first_item = reloaded.auxTable.item(0, 1)
-    assert first_item is not None
-    first_source = str(first_item.data(Qt.UserRole) or "")
-    assert first_source.endswith(".npy")
-    assert Path(first_source).exists() is True
+    harness.load_technical_h5()
+    qapp.processEvents()
+    assert harness._sync_active_technical_container_from_table(show_errors=True) is True
+
+    initial_content = str(harness.ponis["PRIMARY"])
+    updated_content = initial_content + "\n# updated during test\n"
+    harness.ponis["PRIMARY"] = updated_content
+    harness.poni_files["PRIMARY"] = {"path": "/tmp/primary_updated.poni", "name": "primary_updated.poni"}
+
+    assert harness._sync_active_technical_container_from_table(show_errors=True) is True
+
+    with h5py.File(tech_path, "r") as h5f:
+        runtime_group = h5f["/entry/difra_runtime"]
+        assert str(runtime_group.attrs.get("technical_aux_rows_signature", "")).strip()
+        assert str(runtime_group.attrs.get("technical_poni_signature", "")).strip()
+        dataset = h5f["/entry/technical/poni/poni_primary"]
+        value = dataset[()]
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        else:
+            value = str(value)
+        assert value == updated_content
+        assert str(dataset.attrs.get("poni_filename", "")) == "primary_updated.poni"
 
 
 def test_new_technical_container_forces_active_session_archive_and_upload(

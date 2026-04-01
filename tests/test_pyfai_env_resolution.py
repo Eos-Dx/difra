@@ -35,3 +35,14 @@ def test_resolve_pyfai_env_uses_conda_for_non_eosdx(monkeypatch):
     harness = _Harness({"conda": "research-env"})
     monkeypatch.setattr(harness, "_read_pyfai_conda_from_global_config", lambda: "")
     assert harness._resolve_pyfai_conda_env() == "research-env"
+
+
+def test_build_windows_pyfai_script_uses_conda_run_and_no_capture_output():
+    script = _Harness({})._build_windows_pyfai_script(
+        folder=r"D:\Data\measurements",
+        env="ulster38",
+    )
+
+    assert "conda activate" not in script
+    assert "conda run --no-capture-output -n ulster38 pyfai-calib2" in script
+    assert "Set-Location 'D:\\Data\\measurements'" in script
