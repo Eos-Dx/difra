@@ -177,8 +177,6 @@ class ZonePointsMixin:
     def _setup_event_handlers(self):
         """Set up all event handlers for the UI components."""
         self.generatePointsBtn.clicked.connect(self.generate_zone_points)
-        if hasattr(self, "drawProfileBtn"):
-            self.drawProfileBtn.clicked.connect(self._toggle_profile_draw_mode)
         if hasattr(self, "clearProfileBtn"):
             self.clearProfileBtn.clicked.connect(self._clear_profile_paths)
         if hasattr(self, "rotateSamplePhotoBtn") and hasattr(

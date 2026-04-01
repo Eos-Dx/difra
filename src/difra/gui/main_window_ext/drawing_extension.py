@@ -19,6 +19,7 @@ class DrawingMixin:
         Modes included:
           - Rectangle ("rect"): for drawing rectangular shapes.
           - Circle ("ellipse"): for drawing elliptical shapes.
+          - Draw Profile ("profile"): for drawing a freehand profile path.
           - Crop ("crop"): for cropping the image.
           - Select (None): to disable drawing and enable selection.
 
@@ -31,6 +32,9 @@ class DrawingMixin:
         self.select_ellipse_act = QAction(
             "Circle", self, checkable=True, triggered=self.select_ellipse_mode
         )
+        self.select_profile_act = QAction(
+            "Draw Profile", self, checkable=True, triggered=self.select_profile_mode
+        )
         self.crop_act = QAction(
             "Crop", self, checkable=True, triggered=self.select_crop_mode
         )
@@ -42,6 +46,7 @@ class DrawingMixin:
         self.drawingModeGroup = QActionGroup(self)
         self.drawingModeGroup.addAction(self.select_rect_act)
         self.drawingModeGroup.addAction(self.select_ellipse_act)
+        self.drawingModeGroup.addAction(self.select_profile_act)
         self.drawingModeGroup.addAction(self.crop_act)
         self.drawingModeGroup.addAction(self.select_act)
 
@@ -55,6 +60,7 @@ class DrawingMixin:
         # Add each drawing mode action to the toolbar.
         self.toolbar.addAction(self.select_rect_act)
         self.toolbar.addAction(self.select_ellipse_act)
+        self.toolbar.addAction(self.select_profile_act)
         self.toolbar.addAction(self.crop_act)
         self.toolbar.addAction(self.select_act)
 
@@ -72,6 +78,12 @@ class DrawingMixin:
         """
         # Tell the image view to set its drawing mode to ellipse.
         self.image_view.set_drawing_mode("ellipse")
+
+    def select_profile_mode(self) -> None:
+        """
+        Switch to freehand profile drawing mode.
+        """
+        self.image_view.set_drawing_mode("profile")
 
     def select_crop_mode(self) -> None:
         """

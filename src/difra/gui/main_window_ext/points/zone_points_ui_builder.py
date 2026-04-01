@@ -134,13 +134,6 @@ class ZonePointsUIBuilder:
         parent.generatePointsBtn = QPushButton("Generate Points")
         layout.addWidget(parent.generatePointsBtn)
 
-        parent.drawProfileBtn = QPushButton("Draw Profile")
-        try:
-            parent.drawProfileBtn.setCheckable(True)
-        except Exception:
-            pass
-        layout.addWidget(parent.drawProfileBtn)
-
         parent.clearProfileBtn = QPushButton("Clear Profile")
         layout.addWidget(parent.clearProfileBtn)
 
