@@ -687,6 +687,32 @@ class H5ManagementLockingMixin:
                 return str(config_path)
         return "active setup config"
 
+    def _ensure_embedded_poni_before_review(
+        self,
+        container_path: Path,
+        *,
+        container_id: str,
+    ) -> bool:
+        """Best-effort sync of in-memory PONI selections into the active container."""
+        if self._container_has_poni_datasets(container_path):
+            return True
+
+        in_memory_ponis = getattr(self, "ponis", {}) or {}
+        if not any(str(text or "").strip() for text in in_memory_ponis.values()):
+            return False
+
+        sync_fn = getattr(self, "_sync_active_technical_container_from_table", None)
+        if not callable(sync_fn):
+            return False
+
+        synced = bool(sync_fn(show_errors=False))
+        if synced and self._container_has_poni_datasets(container_path):
+            self._log_technical_event(
+                f"Embedded PONI synchronized into container before review validation for {container_id}"
+            )
+            return True
+        return False
+
     def _current_operator_id_for_review(self) -> str:
         operator_id = ""
         operator_manager = getattr(self, "operator_manager", None)
@@ -822,6 +848,10 @@ class H5ManagementLockingMixin:
             return False
 
         if bool(decision):
+            self._ensure_embedded_poni_before_review(
+                Path(container_path),
+                container_id=container_id,
+            )
             center_errors, _center_warnings = self._validate_poni_centers_for_container(
                 Path(container_path)
             )
