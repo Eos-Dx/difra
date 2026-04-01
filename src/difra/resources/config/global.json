@@ -3,7 +3,7 @@
     "pyfai_conda": "ulster38",
     "container_version": "0.2",
     "default_setup": "Ulster (Xena)",
-    "DEV": true,
+    "DEV": false,
     "expected_technical_schema_version": "0.2",
     "validate_containers_before_locking": true,
     "difra_base_folder": "/Users/sad/dev/Data/difra",
@@ -42,7 +42,9 @@
             "SECONDARY": {
                 "row_target_px": 128,
                 "row_tolerance_px": 13,
-                "col_gt_px": 256
+                "col_gt_px": 256,
+                "col_tolerance_px": 10,
+                "col_max_px": 320
             }
         }
     }

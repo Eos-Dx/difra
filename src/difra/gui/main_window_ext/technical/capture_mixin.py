@@ -415,25 +415,45 @@ class TechnicalCaptureMixin:
             )
 
     def run_pyfai(self):
+        tm = _tm()
         self._log_technical_event("Starting PyFAI calibration...")
         env = self._resolve_pyfai_conda_env()
         if not env:
+            msg = (
+                "No conda environment configured for PyFAI.\n\n"
+                "Set 'pyfai_conda' (or 'conda') in your configuration to specify "
+                "which conda environment contains pyfai-calib2."
+            )
             self._log_technical_event("Error: No conda environment configured")
             logger.warning(
                 "No conda env set in self.config['pyfai_conda'] or self.config['conda']"
             )
+            tm.QMessageBox.warning(self, "PyFAI Not Configured", msg)
             return
 
         validate_folder = self._get_technical_module("validate_folder")
         folder = validate_folder(self._current_technical_output_folder())
 
         if os.name == "nt":
-            cmd = f"CALL conda activate {env} " f'&& cd /d "{folder}" ' f"&& pyfai-calib2"
-            start_cmd = f'start cmd /K "{cmd}"'
+            ps_content = "\n".join([
+                f"conda activate {env}",
+                f"Set-Location '{folder}'",
+                "pyfai-calib2",
+                "",
+            ])
             try:
-                subprocess.Popen(start_cmd, shell=True)
-                self._log_technical_event("PyFAI calibration launched in new window")
-                logger.info("Launched PyFAI in new cmd window")
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+                ) as ps_file:
+                    ps_file.write(ps_content)
+                    ps_path = ps_file.name
+                start_cmd = (
+                    f'Start-Process powershell '
+                    f'-ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "{ps_path}"'
+                )
+                subprocess.Popen(["powershell", "-NoProfile", "-Command", start_cmd])
+                self._log_technical_event("PyFAI calibration launched in new PowerShell window")
+                logger.info("Launched PyFAI in new PowerShell window via %s", ps_path)
             except Exception as e:
                 self._log_technical_event(f"Failed to launch PyFAI on Windows: {e}")
                 logger.warning("Failed to launch PyFAI on Windows: %s", e, exc_info=True)
