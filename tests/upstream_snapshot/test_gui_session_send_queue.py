@@ -174,11 +174,10 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
     old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
     assert len(old_dirs) == 1
     day_dir = old_dirs[0]
-    sample_dirs = [
-        path
-        for path in day_dir.iterdir()
-        if path.is_dir() and path.name != "calibration background"
-    ]
+    assert (day_dir / "calibration").is_dir() is True
+    measurements_dir = day_dir / "measurements"
+    assert measurements_dir.is_dir() is True
+    sample_dirs = [path for path in measurements_dir.iterdir() if path.is_dir()]
     assert len(sample_dirs) == 1
     archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
     assert len(archived_files) == 1

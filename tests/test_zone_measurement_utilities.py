@@ -3,6 +3,7 @@ from __future__ import annotations
 from difra.gui.main_window_ext.zone_measurements.logic.beam_center_utils import (
     get_beam_center,
 )
+from difra.gui.main_window_ext.points.zone_geometry import sample_points_along_polyline
 from difra.gui.main_window_ext.zone_measurements.measurement_table_utils import (
     add_measurement_to_table,
     delete_selected_points,
@@ -87,3 +88,18 @@ def test_delete_selected_points_removes_rows_in_reverse_order_and_cleans_widgets
     assert widget_a.deleted == 1
     assert widget_b.deleted == 1
     assert measurement_widgets == {}
+
+
+def test_sample_points_along_polyline_distributes_points_by_arc_length():
+    points = sample_points_along_polyline(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        5,
+    )
+
+    assert points == [
+        (0.0, 0.0),
+        (5.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 5.0),
+        (10.0, 10.0),
+    ]

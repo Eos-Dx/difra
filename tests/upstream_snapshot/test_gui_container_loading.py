@@ -3,6 +3,8 @@
 import os
 import json
 import shutil
+import sys
+import types
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +13,7 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.modules.setdefault("cv2", types.SimpleNamespace())
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -35,7 +38,9 @@ from difra.gui.main_window_ext import session_mixin, technical_measurements
 from difra.gui.main_window_ext.technical import h5_management_mixin
 from difra.gui.main_window_ext.technical import h5_management_lock_actions
 from difra.gui.main_window_ext import state_saver_extension
+from difra.gui.main_window_ext import session_flow_actions
 from difra.gui.session_manager import SessionManager
+from difra.gui.views.main_window_basic import MainWindowBasic
 
 
 @pytest.fixture(scope="module")
@@ -253,6 +258,39 @@ class _SessionAwareTechnicalLoadHarness(
         self.status_updates += 1
 
 
+class _MainWindowBasicHarness(MainWindowBasic):
+    def load_config(self):
+        return {"default_image_folder": "", "default_folder": ""}
+
+    def create_actions(self):
+        class _Act:
+            def setText(self, _text):
+                return None
+        self.toggle_dev_act = _Act()
+        return None
+
+    def create_menus(self):
+        return None
+
+    def create_tool_bar(self):
+        return None
+
+    def __init__(self):
+        super().__init__()
+        self.image_view = _FakeImageView()
+        self.session_manager = SessionManager(config={"operator_id": "sad"})
+        self.opened_paths = []
+
+    def delete_all_shapes_from_table(self):
+        return None
+
+    def delete_all_points(self):
+        return None
+
+    def _handle_new_sample_image(self, image_path: str):
+        self.opened_paths.append(str(image_path))
+
+
 def _get_primary_checkbox(table: QTableWidget, row: int) -> QCheckBox:
     container = table.cellWidget(row, 0)
     assert container is not None
@@ -307,6 +345,85 @@ def test_load_technical_h5_sets_primary_and_types(qapp, tmp_path, monkeypatch):
         assert "/processed_signal" in source_value
 
     assert type_counts == {"DARK": 2, "EMPTY": 2, "BACKGROUND": 2, "AGBH": 2}
+
+
+def test_open_image_requires_manual_session_container(qapp, tmp_path, monkeypatch):
+    harness = _MainWindowBasicHarness()
+    harness.show()
+    qapp.processEvents()
+
+    info_calls = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: info_calls.append((args[1], args[2])) or QMessageBox.Ok),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("file dialog should not open"))),
+    )
+
+    harness.open_image()
+
+    assert len(info_calls) == 1
+    assert info_calls[0][0] == "Create Session First"
+    assert harness.opened_paths == []
+
+
+def test_handle_new_sample_image_attaches_only_to_active_session(tmp_path, monkeypatch):
+    technical_path = _make_technical_container(tmp_path / "technical_attach")
+    lock_container(technical_path, user_id="sad")
+
+    class _Owner:
+        def __init__(self, config):
+            self.messages = []
+            self.status_updates = 0
+            self.session_manager = SessionManager(config=config)
+
+        def _append_session_log(self, message: str):
+            self.messages.append(str(message))
+
+        def update_session_status(self):
+            self.status_updates += 1
+
+        def _load_image_array_from_path(self, image_path):
+            return np.full((4, 4), 7, dtype=np.uint8)
+
+    owner = _Owner(config={"operator_id": "sad", "technical_folder": str(Path(technical_path).parent)})
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"fake")
+
+    info_calls = []
+    monkeypatch.setattr(
+        session_flow_actions.QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: info_calls.append((args[1], args[2])) or QMessageBox.Ok),
+    )
+
+    session_flow_actions.handle_new_sample_image(owner, str(image_path))
+    assert len(info_calls) == 1
+    assert info_calls[0][0] == "Create Session First"
+
+    info_calls.clear()
+    _session_id, session_path = owner.session_manager.create_session(
+        folder=tmp_path / "sessions",
+        distance_cm=17.0,
+        sample_id="ATTACH_SAMPLE",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-04-01",
+    )
+
+    session_flow_actions.handle_new_sample_image(owner, str(image_path))
+
+    with h5py.File(session_path, "r") as h5f:
+        data = h5f[f"{schema.GROUP_IMAGES}/img_001/data"][()]
+        assert int(data[0, 0]) == 7
+    assert owner.status_updates == 1
+    assert any("Attached sample image to active session" in msg for msg in owner.messages)
 
 
 def test_runtime_rows_signature_handles_numpy_metadata_scalars():

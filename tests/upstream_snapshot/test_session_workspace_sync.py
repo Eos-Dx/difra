@@ -220,3 +220,121 @@ def test_workspace_restore_reapplies_mapping_origin(tmp_path):
     assert harness.include_center == (123.0, 234.0)
     assert harness.real_x_pos_mm.value() == 7.25
     assert harness.real_y_pos_mm.value() == -3.75
+
+
+def test_workspace_sync_uses_holder_center_and_beam_anchor_when_rotation_confirmed(tmp_path):
+    technical_path = _make_locked_technical_container(tmp_path / "technical_rotated")
+    config = {"technical_folder": str(Path(technical_path).parent), "operator_id": "sad"}
+    harness = _Harness(config=config)
+
+    _sid, session_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_rotated",
+        distance_cm=17.0,
+        sample_id="ROT_SAMPLE",
+        study_name="ROT_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-25",
+    )
+
+    harness.pixel_to_mm_ratio = 10.0
+    harness.include_center = (0.0, 0.0)
+    harness.sample_holder_center_px = (100.0, 200.0)
+    harness.sample_photo_rotation_confirmed = True
+    harness.sample_photo_rotation_deg = 180
+    harness.sample_photo_beam_center_mm = (6.15, -9.15)
+    harness._extract_current_image_array = lambda: np.array(
+        [[1, 2, 3], [4, 5, 6]], dtype=np.uint8
+    )
+    harness.state = {
+        "shapes": [
+            {
+                "id": 1,
+                "type": "circle",
+                "role": "holder circle",
+                "physical_size_mm": 15.18,
+                "center_px": [100.0, 200.0],
+                "geometry": {"x": 24.1, "y": 124.1, "width": 151.8, "height": 151.8},
+            }
+        ],
+        "zone_points": [
+            {"id": 1, "x": 110.0, "y": 210.0, "type": "generated", "radius": 5}
+        ],
+    }
+
+    harness.sync_workspace_to_session_container(state=harness.state)
+
+    with h5py.File(session_path, "r") as h5f:
+        raw_image = h5f[f"{schema.GROUP_IMAGES}/img_001/data"][()]
+        rotated_image = h5f[f"{schema.GROUP_IMAGES}/img_002/data"][()]
+        assert raw_image.tolist() == [[1, 2, 3], [4, 5, 6]]
+        assert rotated_image.tolist() == [[6, 5, 4], [3, 2, 1]]
+        assert (
+            h5f[f"{schema.GROUP_IMAGES}/img_002"].attrs[schema.ATTR_IMAGE_TYPE]
+            == "sample_rotated"
+        )
+
+        mapping_raw = h5f[f"{schema.GROUP_IMAGES_MAPPING}/mapping"][()]
+        if isinstance(mapping_raw, bytes):
+            mapping_raw = mapping_raw.decode("utf-8")
+        mapping = json.loads(mapping_raw)
+        conversion = mapping.get("pixel_to_mm_conversion", {})
+        assert conversion.get("holder_circle_center_px") == [100.0, 200.0]
+        assert conversion.get("beam_center_mm") == [6.15, -9.15]
+        assert conversion.get("rotation_deg") == 180
+        assert conversion.get("rotation_confirmed") is True
+        assert conversion.get("workspace_image_type") == "sample_rotated"
+
+        pt_001 = h5f[f"{schema.GROUP_POINTS}/pt_001"]
+        mm = pt_001.attrs[schema.ATTR_PHYSICAL_COORDINATES_MM]
+        assert float(mm[0]) == 6.15 + (110.0 - 100.0) / 10.0
+        assert float(mm[1]) == -9.15 + (210.0 - 200.0) / 10.0
+
+
+def test_workspace_restore_prefers_rotated_image_dataset_when_rotation_confirmed(tmp_path):
+    technical_path = _make_locked_technical_container(tmp_path / "technical_restore_rot")
+    config = {"technical_folder": str(Path(technical_path).parent), "operator_id": "sad"}
+    harness = _Harness(config=config)
+
+    _sid, session_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_restore_rot",
+        distance_cm=17.0,
+        sample_id="RESTORE_ROT_SAMPLE",
+        study_name="RESTORE_ROT_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-25",
+    )
+
+    displayed = {}
+
+    def _capture_image(image_array):
+        displayed["image"] = np.array(image_array)
+        return True
+
+    harness._set_image_from_array = _capture_image
+    harness._extract_current_image_array = lambda: np.array(
+        [[11, 12, 13], [21, 22, 23]], dtype=np.uint8
+    )
+    harness.pixel_to_mm_ratio = 10.0
+    harness.sample_holder_center_px = (100.0, 200.0)
+    harness.sample_photo_rotation_confirmed = True
+    harness.sample_photo_rotation_deg = 180
+    harness.state = {
+        "shapes": [],
+        "zone_points": [],
+    }
+
+    harness.sync_workspace_to_session_container(state=harness.state)
+
+    harness.sample_photo_rotation_confirmed = False
+    harness.sample_photo_rotation_deg = 0
+    harness._restore_session_workspace_from_container(Path(session_path))
+
+    assert displayed["image"].tolist() == [[23, 22, 21], [13, 12, 11]]
+    assert harness.sample_photo_rotation_confirmed is True
+    assert harness.sample_photo_workspace_image_type == "sample_rotated"

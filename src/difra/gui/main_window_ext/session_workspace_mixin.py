@@ -12,6 +12,10 @@ from difra.gui.main_window_ext import session_workspace_restore
 
 
 class SessionWorkspaceMixin:
+    SAMPLE_PHOTO_DEFAULT_LOAD_POSITION_MM = (-13.9, -6.0)
+    SAMPLE_PHOTO_DEFAULT_BEAM_CENTER_MM = (6.15, -9.15)
+    SAMPLE_PHOTO_ROTATED_IMAGE_TYPE = "sample_rotated"
+
     @staticmethod
     def _normalize_xy_pair(value):
         if isinstance(value, (list, tuple)) and len(value) >= 2:
@@ -26,6 +30,29 @@ class SessionWorkspaceMixin:
                 )
                 return None
         return None
+
+    def _get_sample_photo_beam_center_mm(self):
+        pair = self._normalize_xy_pair(getattr(self, "sample_photo_beam_center_mm", None))
+        if pair is not None:
+            return (float(pair[0]), float(pair[1]))
+        return tuple(self.SAMPLE_PHOTO_DEFAULT_BEAM_CENTER_MM)
+
+    def _get_holder_center_px(self):
+        pair = self._normalize_xy_pair(getattr(self, "sample_holder_center_px", None))
+        if pair is not None:
+            return (float(pair[0]), float(pair[1]))
+        return None
+
+    def _use_sample_photo_rotated_mapping(self) -> bool:
+        if not bool(getattr(self, "sample_photo_rotation_confirmed", False)):
+            return False
+        if self._get_holder_center_px() is None:
+            return False
+        try:
+            ratio = float(getattr(self, "pixel_to_mm_ratio", 0.0))
+        except Exception:
+            ratio = 0.0
+        return ratio > 0.0
 
     def _set_spin_value_if_present(self, attr_name: str, value: float):
         widget = getattr(self, attr_name, None)
@@ -94,6 +121,13 @@ class SessionWorkspaceMixin:
         if ratio == 0.0:
             return (0.0, 0.0)
 
+        if self._use_sample_photo_rotated_mapping():
+            center_x, center_y = self._get_holder_center_px()
+            beam_x_mm, beam_y_mm = self._get_sample_photo_beam_center_mm()
+            x_mm = beam_x_mm + (float(x_px) - center_x) / ratio
+            y_mm = beam_y_mm + (float(y_px) - center_y) / ratio
+            return (float(x_mm), float(y_mm))
+
         center_x, center_y = self._get_include_center_px()
         ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
         x_mm = ref_x_mm - (float(x_px) - center_x) / ratio
@@ -113,13 +147,33 @@ class SessionWorkspaceMixin:
         center_x, center_y = self._get_include_center_px()
         ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
 
-        return {
+        payload = {
             "ratio": ratio,
             "units": "mm/pixel",
             "include_center_px": [float(center_x), float(center_y)],
             "stage_reference_mm": [float(ref_x_mm), float(ref_y_mm)],
             "formula": "x_mm = ref_x_mm - (x_px - center_x_px) / ratio",
         }
+        holder_center = self._get_holder_center_px()
+        if holder_center is not None:
+            payload["holder_circle_center_px"] = [float(holder_center[0]), float(holder_center[1])]
+        payload["rotation_deg"] = int(getattr(self, "sample_photo_rotation_deg", 0) or 0)
+        payload["rotation_confirmed"] = bool(getattr(self, "sample_photo_rotation_confirmed", False))
+        payload["raw_image_type"] = "sample"
+        payload["workspace_image_type"] = (
+            self.SAMPLE_PHOTO_ROTATED_IMAGE_TYPE
+            if bool(getattr(self, "sample_photo_rotation_confirmed", False))
+            else "sample"
+        )
+        beam_center = self._get_sample_photo_beam_center_mm()
+        payload["beam_center_mm"] = [float(beam_center[0]), float(beam_center[1])]
+        load_position = self._normalize_xy_pair(getattr(self, "sample_photo_load_position_mm", None))
+        if load_position is None:
+            load_position = tuple(self.SAMPLE_PHOTO_DEFAULT_LOAD_POSITION_MM)
+        payload["load_position_mm"] = [float(load_position[0]), float(load_position[1])]
+        if self._use_sample_photo_rotated_mapping():
+            payload["formula"] = "x_mm = beam_x_mm + (x_px - holder_center_x_px) / ratio"
+        return payload
 
     def _image_file_signature(self):
         if not hasattr(self, "image_view"):
@@ -245,10 +299,46 @@ class SessionWorkspaceMixin:
             return None
 
         image_path = getattr(self.image_view, "current_image_path", None)
-        if not image_path:
+        if image_path:
+            return self._load_image_array_from_path(image_path)
+
+        current_pixmap = getattr(self.image_view, "current_pixmap", None)
+        if current_pixmap is None:
             return None
 
-        return self._load_image_array_from_path(image_path)
+        try:
+            import numpy as np
+            from PyQt5.QtGui import QImage
+
+            image = current_pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+            width = image.width()
+            height = image.height()
+            ptr = image.bits()
+            ptr.setsize(image.byteCount())
+            array = np.frombuffer(ptr, dtype=np.uint8).reshape((height, width, 4))
+            return array.copy()
+        except Exception as exc:
+            logger.warning(f"Failed to extract current pixmap for session sync: {exc}")
+            return None
+
+    @staticmethod
+    def _build_rotated_image_array(image_array, rotation_deg: int):
+        if image_array is None:
+            return None
+
+        try:
+            import numpy as np
+
+            normalized_rotation = int(rotation_deg or 0) % 360
+            if normalized_rotation == 0:
+                return np.ascontiguousarray(image_array)
+            if normalized_rotation == 180:
+                return np.ascontiguousarray(np.rot90(image_array, 2))
+            quarter_turns = normalized_rotation // 90
+            return np.ascontiguousarray(np.rot90(image_array, quarter_turns))
+        except Exception as exc:
+            logger.warning(f"Failed to rotate sample image for session sync: {exc}")
+            return None
 
     def sync_workspace_to_session_container(self, state=None):
         """Persist image/zones/points snapshot into active unlocked session container."""
@@ -282,7 +372,24 @@ class SessionWorkspaceMixin:
             image_sig = self._image_file_signature()
 
             with h5py.File(session_path, "r") as h5f:
-                image_exists = f"{schema.GROUP_IMAGES}/img_001/data" in h5f
+                raw_image_exists = False
+                rotated_image_exists = False
+                images_group = h5f.get(schema.GROUP_IMAGES)
+                if images_group:
+                    for image_id in sorted(images_group.keys()):
+                        image_group = images_group.get(image_id)
+                        if image_group is None or "data" not in image_group:
+                            continue
+                        image_type = image_group.attrs.get(
+                            getattr(schema, "ATTR_IMAGE_TYPE", "image_type"),
+                            "",
+                        )
+                        image_type = self._decode_attr(image_type) if hasattr(self, "_decode_attr") else str(image_type)
+                        image_type = str(image_type or "").strip().lower()
+                        if image_type == "sample":
+                            raw_image_exists = True
+                        elif image_type == self.SAMPLE_PHOTO_ROTATED_IMAGE_TYPE:
+                            rotated_image_exists = True
                 zones_exist = schema.GROUP_IMAGES_ZONES in h5f
                 mapping_exists = f"{schema.GROUP_IMAGES_MAPPING}/mapping" in h5f
                 points_exist = schema.GROUP_POINTS in h5f
@@ -304,13 +411,26 @@ class SessionWorkspaceMixin:
             needs_points_sync = (not has_measurements) and (
                 (not points_exist) or (points_sig != getattr(self, "_session_sync_points_sig", None))
             )
-            needs_image_sync = not image_exists
+            needs_raw_image_sync = not raw_image_exists
+            rotation_confirmed = bool(getattr(self, "sample_photo_rotation_confirmed", False))
+            rotation_deg = int(getattr(self, "sample_photo_rotation_deg", 0) or 0)
+            rotated_image_sig = {
+                "image_sig": image_sig,
+                "rotation_confirmed": rotation_confirmed,
+                "rotation_deg": rotation_deg,
+            }
+            rotated_image_sig = self._sync_signature(rotated_image_sig)
+            needs_rotated_image_sync = rotation_confirmed and (
+                (not rotated_image_exists)
+                or (rotated_image_sig != getattr(self, "_session_sync_rotated_image_sig", None))
+            )
 
             overall_sig = self._sync_signature(
                 {
                     "session": session_path_str,
                     "image_sig": image_sig,
-                    "image_exists": image_exists,
+                    "raw_image_exists": raw_image_exists,
+                    "rotated_image_sig": rotated_image_sig if rotation_confirmed else None,
                     "shapes_sig": shapes_sig,
                     "mapping_sig": mapping_sig,
                     "effective_points_sig": effective_points_sig,
@@ -320,8 +440,11 @@ class SessionWorkspaceMixin:
                 return
 
             did_write = False
-            if needs_image_sync:
+            image_array = None
+            if needs_raw_image_sync or needs_rotated_image_sync:
                 image_array = self._extract_current_image_array()
+
+            if needs_raw_image_sync:
                 if image_array is not None:
                     writer.add_image(
                         file_path=session_path,
@@ -340,6 +463,17 @@ class SessionWorkspaceMixin:
                     logger.warning(
                         "Session image is immutable after first write; ignoring changed source image path"
                     )
+
+            if needs_rotated_image_sync and image_array is not None:
+                rotated_image_array = self._build_rotated_image_array(image_array, rotation_deg)
+                if rotated_image_array is not None:
+                    writer.add_image(
+                        file_path=session_path,
+                        image_index=2,
+                        image_data=rotated_image_array,
+                        image_type=self.SAMPLE_PHOTO_ROTATED_IMAGE_TYPE,
+                    )
+                    did_write = True
 
             if needs_shapes_sync:
                 with h5py.File(session_path, "a") as h5f:
@@ -411,6 +545,9 @@ class SessionWorkspaceMixin:
             self._session_sync_mapping_sig = mapping_sig
             self._session_sync_points_sig = effective_points_sig
             self._session_sync_last_image_sig = image_sig
+            self._session_sync_rotated_image_sig = (
+                rotated_image_sig if rotation_confirmed else None
+            )
             self._session_sync_overall_sig = overall_sig
 
             if did_write and hasattr(self, "_append_session_log"):

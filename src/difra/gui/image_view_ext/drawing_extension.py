@@ -1,8 +1,13 @@
 import uuid
 
 from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QPen
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectItem
+from PyQt5.QtGui import QPainterPath, QPen
+from PyQt5.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsPathItem,
+    QGraphicsRectItem,
+)
 
 
 class DrawingMixin:
@@ -13,9 +18,12 @@ class DrawingMixin:
         self.pen = self._create_pen()
         self.start_point = None
         self.current_shape = None
+        self.current_profile_points = []
         self.shapes = []  # List to hold drawn shapes (each: {"id", "type", "item"})
         self.shape_counter = 1
         self.shape_updated_callback = None
+        if not hasattr(self, "profile_paths"):
+            self.profile_paths = []
 
     def _create_pen(self):
         return QPen(Qt.red, 2, Qt.DashLine)
@@ -24,12 +32,23 @@ class DrawingMixin:
         self.drawing_mode = mode
 
     def mousePressEvent(self, event):
-        if self.drawing_mode in ["rect", "ellipse", "crop"]:
+        if self.drawing_mode in ["rect", "ellipse", "crop", "profile"]:
             # Do nothing if no image is loaded.
             if self.current_pixmap is None:
                 print("No image loaded. Please open an image first.")
                 return
             self.start_point = self.mapToScene(event.pos())
+            if self.drawing_mode == "profile":
+                self.current_profile_points = [(float(self.start_point.x()), float(self.start_point.y()))]
+                path = QPainterPath(self.start_point)
+                path_item = QGraphicsPathItem(path)
+                path_item.setPen(self.pen)
+                path_item.setFlags(
+                    QGraphicsItem.ItemIsSelectable
+                )
+                self.current_shape = path_item
+                self.scene.addItem(path_item)
+                return
             rect = QRectF(self.start_point, self.start_point)
             if self.drawing_mode in ["rect", "crop"]:
                 rect_item = QGraphicsRectItem(rect)
@@ -54,6 +73,15 @@ class DrawingMixin:
     def mouseMoveEvent(self, event):
         if self.drawing_mode and self.start_point and self.current_shape:
             current_point = self.mapToScene(event.pos())
+            if self.drawing_mode == "profile":
+                point = (float(current_point.x()), float(current_point.y()))
+                if not self.current_profile_points or point != self.current_profile_points[-1]:
+                    self.current_profile_points.append(point)
+                    path = QPainterPath(self.start_point)
+                    for x_value, y_value in self.current_profile_points[1:]:
+                        path.lineTo(float(x_value), float(y_value))
+                    self.current_shape.setPath(path)
+                return
             rect = QRectF(self.start_point, current_point).normalized()
             if hasattr(self.current_shape, "setRect"):
                 self.current_shape.setRect(rect)
@@ -97,8 +125,23 @@ class DrawingMixin:
                     self.shape_counter += 1
                     if self.shape_updated_callback:
                         self.shape_updated_callback()
+            elif self.drawing_mode == "profile":
+                if self.current_shape and len(self.current_profile_points) >= 2:
+                    profile_info = {
+                        "id": f"profile_{uuid.uuid4().hex[:8]}",
+                        "type": "Profile",
+                        "item": self.current_shape,
+                        "points": list(self.current_profile_points),
+                        "active": True,
+                    }
+                    self.profile_paths = [profile_info]
+                    if self.shape_updated_callback:
+                        self.shape_updated_callback()
+                elif self.current_shape is not None:
+                    self.scene.removeItem(self.current_shape)
 
             self.start_point = None
             self.current_shape = None
+            self.current_profile_points = []
         else:
             super().mouseReleaseEvent(event)

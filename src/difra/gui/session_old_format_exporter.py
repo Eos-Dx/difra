@@ -785,7 +785,7 @@ class SessionOldFormatExporter:
         default_distance_int: int,
         calibration_group_hash: str,
     ) -> Tuple[int, str, Dict[Tuple[str, str], str], Dict[str, Dict[str, Any]], Optional[Path]]:
-        calibration_root = day_dir / "calibration background"
+        calibration_root = day_dir / "calibration"
         events, canonical_distance_int = cls._collect_technical_events(
             h5f=h5f,
             day_token=day_token,
@@ -1095,6 +1095,8 @@ class SessionOldFormatExporter:
             root.mkdir(parents=True, exist_ok=True)
             day_dir = root / day_token
             day_dir.mkdir(parents=True, exist_ok=True)
+            measurements_root = day_dir / "measurements"
+            measurements_root.mkdir(parents=True, exist_ok=True)
 
             group_hash = cls._as_text(state_payload.get("CALIBRATION_GROUP_HASH"), "").strip()
             if not group_hash:
@@ -1119,7 +1121,8 @@ class SessionOldFormatExporter:
                 study_name=study_name,
                 session_id=session_id,
             )
-            sample_dir = day_dir / cls._safe_token(sample_folder_name, "sample")
+            specimen_folder_name = cls._safe_token(sample_folder_name, "sample")
+            sample_dir = measurements_root / specimen_folder_name
             sample_dir.mkdir(parents=True, exist_ok=True)
 
             sample_base_with_distance = cls._derive_sample_base_with_distance(
@@ -1204,7 +1207,7 @@ class SessionOldFormatExporter:
                 except Exception:
                     pass
 
-            state_filename = f"{sample_base_with_distance}_state.json"
+            state_filename = "session.json"
             state_path = sample_dir / state_filename
             state_path.write_text(
                 json.dumps(state_payload, indent=2),

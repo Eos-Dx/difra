@@ -30,6 +30,27 @@ class ZoneMeasurementsUtilsMixin:
         if not hasattr(self, "pixel_to_mm_ratio") or not hasattr(self, "include_center"):
             return -1.0, -1.0
 
+        use_rotated = False
+        holder_center = None
+        if hasattr(self, "_use_sample_photo_rotated_mapping"):
+            try:
+                use_rotated = bool(self._use_sample_photo_rotated_mapping())
+            except Exception:
+                use_rotated = False
+        if use_rotated and hasattr(self, "_get_holder_center_px"):
+            try:
+                holder_center = self._get_holder_center_px()
+            except Exception:
+                holder_center = None
+        if use_rotated and holder_center is not None and hasattr(self, "_get_sample_photo_beam_center_mm"):
+            try:
+                beam_x_mm, beam_y_mm = self._get_sample_photo_beam_center_mm()
+            except Exception:
+                beam_x_mm, beam_y_mm = (0.0, 0.0)
+            x = (x_mm - beam_x_mm) * self.pixel_to_mm_ratio + holder_center[0]
+            y = (y_mm - beam_y_mm) * self.pixel_to_mm_ratio + holder_center[1]
+            return x, y
+
         x = (
             self.real_x_pos_mm.value() - x_mm
         ) * self.pixel_to_mm_ratio + self.include_center[0]

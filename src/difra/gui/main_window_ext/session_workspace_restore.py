@@ -22,9 +22,17 @@ def restore_session_workspace_from_container(owner, session_path: Path):
         restored_shapes = []
         restored_points = []
         restored_image = False
+        restored_raw_image = None
+        restored_rotated_image = None
+        restored_workspace_image_type = "sample"
         restored_ratio = None
         restored_include_center = None
         restored_stage_reference = None
+        restored_holder_center = None
+        restored_rotation_deg = 0
+        restored_rotation_confirmed = False
+        restored_beam_center = None
+        restored_load_position = None
 
         with h5py.File(session_path, "r") as h5f:
             images_group = h5f.get(schema.GROUP_IMAGES)
@@ -32,10 +40,24 @@ def restore_session_workspace_from_container(owner, session_path: Path):
                 image_keys = sorted(
                     key for key in images_group.keys() if key.startswith("img_")
                 )
-                if image_keys:
-                    image_group = images_group[image_keys[0]]
-                    if "data" in image_group:
-                        restored_image = owner._set_image_from_array(image_group["data"][:])
+                for image_key in image_keys:
+                    image_group = images_group[image_key]
+                    if "data" not in image_group:
+                        continue
+                    image_type = owner._decode_attr(
+                        image_group.attrs.get(
+                            getattr(schema, "ATTR_IMAGE_TYPE", "image_type"),
+                            "",
+                        )
+                    )
+                    image_type = str(image_type or "").strip().lower()
+                    image_array = image_group["data"][:]
+                    if image_type == "sample":
+                        restored_raw_image = image_array
+                    elif image_type == "sample_rotated":
+                        restored_rotated_image = image_array
+                    elif restored_raw_image is None:
+                        restored_raw_image = image_array
 
             zones_group = h5f.get(schema.GROUP_IMAGES_ZONES)
             if zones_group:
@@ -136,9 +158,44 @@ def restore_session_workspace_from_container(owner, session_path: Path):
                         or conversion.get("reference_mm")
                         or conversion.get("stage_origin_mm")
                     )
+                    restored_holder_center = owner._normalize_xy_pair(
+                        conversion.get("holder_circle_center_px")
+                    )
+                    restored_beam_center = owner._normalize_xy_pair(
+                        conversion.get("beam_center_mm")
+                    )
+                    restored_load_position = owner._normalize_xy_pair(
+                        conversion.get("load_position_mm")
+                    )
+                    restored_workspace_image_type = str(
+                        conversion.get("workspace_image_type")
+                        or conversion.get("rotated_image_type")
+                        or "sample"
+                    ).strip().lower()
+                    try:
+                        restored_rotation_deg = int(conversion.get("rotation_deg", 0) or 0)
+                    except Exception:
+                        restored_rotation_deg = 0
+                    restored_rotation_confirmed = bool(conversion.get("rotation_confirmed", False))
+
+        display_image = restored_raw_image
+        if (
+            restored_rotation_confirmed
+            and restored_workspace_image_type == "sample_rotated"
+            and restored_rotated_image is not None
+        ):
+            display_image = restored_rotated_image
+
+        if display_image is not None:
+            restored_image = owner._set_image_from_array(display_image)
 
         owner.state["shapes"] = restored_shapes
         owner.state["zone_points"] = restored_points
+        owner._sample_photo_has_explicit_holder_circle = any(
+            str(shape.get("role", "") or "").lower()
+            in ("holder circle", "calibration square")
+            for shape in restored_shapes
+        )
 
         if hasattr(owner, "_restore_shapes"):
             owner._restore_shapes(restored_shapes)
@@ -162,6 +219,45 @@ def restore_session_workspace_from_container(owner, session_path: Path):
         if restored_stage_reference is not None:
             owner._set_spin_value_if_present("real_x_pos_mm", restored_stage_reference[0])
             owner._set_spin_value_if_present("real_y_pos_mm", restored_stage_reference[1])
+        if restored_holder_center is not None:
+            owner.sample_holder_center_px = (
+                float(restored_holder_center[0]),
+                float(restored_holder_center[1]),
+            )
+        if restored_beam_center is not None:
+            owner.sample_photo_beam_center_mm = (
+                float(restored_beam_center[0]),
+                float(restored_beam_center[1]),
+            )
+        if restored_load_position is not None:
+            owner.sample_photo_load_position_mm = (
+                float(restored_load_position[0]),
+                float(restored_load_position[1]),
+            )
+        owner.sample_photo_rotation_deg = int(restored_rotation_deg)
+        owner.sample_photo_rotation_confirmed = bool(restored_rotation_confirmed)
+        owner.sample_photo_workspace_image_type = restored_workspace_image_type
+        owner._sample_photo_rotation_prompted = bool(restored_rotation_confirmed)
+        apply_rotation = getattr(owner, "_apply_sample_photo_rotation_to_workspace", None)
+        if (
+            callable(apply_rotation)
+            and restored_rotation_deg
+            and not (
+                restored_rotation_confirmed
+                and restored_workspace_image_type == "sample_rotated"
+                and restored_rotated_image is not None
+            )
+        ):
+            try:
+                apply_rotation(rotate_geometry=False)
+            except Exception:
+                logger.debug("Failed to reapply sample photo display rotation", exc_info=True)
+        update_rotation_ui = getattr(owner, "_update_sample_photo_rotation_ui", None)
+        if callable(update_rotation_ui):
+            try:
+                update_rotation_ui()
+            except Exception:
+                logger.debug("Failed to refresh sample photo rotation UI", exc_info=True)
         if hasattr(owner, "update_conversion_label"):
             owner.update_conversion_label()
         if hasattr(owner, "update_coordinates"):

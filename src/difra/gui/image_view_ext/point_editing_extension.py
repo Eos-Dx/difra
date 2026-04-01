@@ -28,6 +28,9 @@ class PointEditingMixin:
             pos = self.mapToScene(event.pos())
             include_shape = None
             for shape in self.shapes:
+                if shape.get("role", "include") in ("holder circle", "sample holder"):
+                    include_shape = shape["item"]
+                    break
                 if shape.get("role", "include") == "include":
                     include_shape = shape["item"]
                     break

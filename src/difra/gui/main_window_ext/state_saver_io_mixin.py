@@ -187,6 +187,8 @@ class StateSaverIOMixin:
                         "uid": s.get("uid"),
                         "type": s.get("type"),
                         "role": s.get("role", "include"),
+                        "physical_size_mm": s.get("physical_size_mm"),
+                        "center_px": list(s.get("center_px")) if s.get("center_px") else None,
                         "geometry": {
                             "x": rect.x(),
                             "y": rect.y(),

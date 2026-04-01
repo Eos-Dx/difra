@@ -14,6 +14,7 @@ class ImageViewBasic(QGraphicsView):
         # New attributes to store state:
         self.current_image_path = None
         self.rotation_angle = 0
+        self.profile_paths = []
 
     def set_image(self, pixmap: QPixmap, image_path=None):
         self.current_pixmap = pixmap
