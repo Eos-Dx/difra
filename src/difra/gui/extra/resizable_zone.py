@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectIt
 class ResizeHandle(QGraphicsEllipseItem):
     """Small draggable handle for resizing zones."""
 
-    HANDLE_SIZE = 8
+    HANDLE_SIZE = 14
 
     def __init__(self, parent_zone, position: str):
         """
@@ -29,12 +29,11 @@ class ResizeHandle(QGraphicsEllipseItem):
 
         # Make it draggable
         self.setFlags(
-            QGraphicsItem.ItemIsMovable |
-            QGraphicsItem.ItemSendsGeometryChanges |
             QGraphicsItem.ItemIgnoresTransformations
         )
         self.setCursor(self._get_cursor())
         self.setZValue(1000)  # Always on top
+        self._restore_parent_movable = None
 
     def _get_cursor(self):
         """Get appropriate cursor for handle position."""
@@ -59,6 +58,212 @@ class ResizeHandle(QGraphicsEllipseItem):
             new_pos = value
             self.parent_zone.resize_from_handle(self.position, new_pos)
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        parent = getattr(self, "parent_zone", None)
+        if parent is not None:
+            try:
+                self._restore_parent_movable = bool(
+                    parent.flags() & QGraphicsItem.ItemIsMovable
+                )
+                parent.setFlag(QGraphicsItem.ItemIsMovable, False)
+            except Exception:
+                self._restore_parent_movable = None
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        parent = getattr(self, "parent_zone", None)
+        if parent is not None:
+            try:
+                new_pos = parent.mapFromScene(event.scenePos())
+            except Exception:
+                new_pos = event.pos()
+            parent.resize_from_handle(self.position, new_pos)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        parent = getattr(self, "parent_zone", None)
+        if parent is not None and self._restore_parent_movable is not None:
+            try:
+                parent.setFlag(QGraphicsItem.ItemIsMovable, self._restore_parent_movable)
+            except Exception:
+                pass
+        self._restore_parent_movable = None
+        event.accept()
+
+
+class ResizableEllipseItem(QGraphicsEllipseItem):
+    """Editable ellipse with draggable handles used before holder-circle calibration."""
+
+    def __init__(self, x: float, y: float, width: float, height: float):
+        rect = QRectF(float(x), float(y), max(10.0, float(width)), max(10.0, float(height)))
+        super().__init__(rect)
+        self._handles = {}
+        self._handles_visible = False
+        self._updating_handles = False
+        self.geometry_changed_callback = None
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setAcceptHoverEvents(True)
+        self._create_handles()
+        self._update_handle_positions()
+        self._set_handles_visible(False)
+
+    def _create_handles(self):
+        for pos in ("N", "S", "E", "W", "NE", "NW", "SE", "SW"):
+            handle = ResizeHandle(self, pos)
+            handle.setParentItem(self)
+            self._handles[pos] = handle
+
+    def _update_handle_positions(self):
+        self._updating_handles = True
+        rect = self.rect()
+        center = rect.center()
+        left = rect.left()
+        right = rect.right()
+        top = rect.top()
+        bottom = rect.bottom()
+        self._handles["N"].setPos(center.x(), top)
+        self._handles["S"].setPos(center.x(), bottom)
+        self._handles["E"].setPos(right, center.y())
+        self._handles["W"].setPos(left, center.y())
+        self._handles["NE"].setPos(right, top)
+        self._handles["NW"].setPos(left, top)
+        self._handles["SE"].setPos(right, bottom)
+        self._handles["SW"].setPos(left, bottom)
+        self._updating_handles = False
+
+    def _set_handles_visible(self, visible: bool):
+        self._handles_visible = visible
+        for handle in self._handles.values():
+            handle.setVisible(bool(visible))
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedChange:
+            self._set_handles_visible(bool(value))
+        elif change == QGraphicsItem.ItemPositionHasChanged:
+            self._update_handle_positions()
+            callback = getattr(self, "geometry_changed_callback", None)
+            if callable(callback):
+                callback()
+        return super().itemChange(change, value)
+
+    def resize_from_handle(self, handle_position: str, handle_scene_pos: QPointF):
+        rect = QRectF(self.rect())
+        min_size = 10.0
+
+        if "W" in handle_position:
+            rect.setLeft(min(handle_scene_pos.x(), rect.right() - min_size))
+        if "E" in handle_position:
+            rect.setRight(max(handle_scene_pos.x(), rect.left() + min_size))
+        if "N" in handle_position:
+            rect.setTop(min(handle_scene_pos.y(), rect.bottom() - min_size))
+        if "S" in handle_position:
+            rect.setBottom(max(handle_scene_pos.y(), rect.top() + min_size))
+
+        self.setRect(rect.normalized())
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()
+
+    def hoverEnterEvent(self, event):
+        self.setCursor(Qt.SizeAllCursor)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
+
+class ResizableRectangleItem(QGraphicsRectItem):
+    """Editable rectangle with draggable handles."""
+
+    def __init__(self, x: float, y: float, width: float, height: float):
+        rect = QRectF(float(x), float(y), max(10.0, float(width)), max(10.0, float(height)))
+        super().__init__(rect)
+        self._handles = {}
+        self._handles_visible = False
+        self._updating_handles = False
+        self.geometry_changed_callback = None
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setAcceptHoverEvents(True)
+        self._create_handles()
+        self._update_handle_positions()
+        self._set_handles_visible(False)
+
+    def _create_handles(self):
+        for pos in ("N", "S", "E", "W", "NE", "NW", "SE", "SW"):
+            handle = ResizeHandle(self, pos)
+            handle.setParentItem(self)
+            self._handles[pos] = handle
+
+    def _update_handle_positions(self):
+        self._updating_handles = True
+        rect = self.rect()
+        center = rect.center()
+        left = rect.left()
+        right = rect.right()
+        top = rect.top()
+        bottom = rect.bottom()
+        self._handles["N"].setPos(center.x(), top)
+        self._handles["S"].setPos(center.x(), bottom)
+        self._handles["E"].setPos(right, center.y())
+        self._handles["W"].setPos(left, center.y())
+        self._handles["NE"].setPos(right, top)
+        self._handles["NW"].setPos(left, top)
+        self._handles["SE"].setPos(right, bottom)
+        self._handles["SW"].setPos(left, bottom)
+        self._updating_handles = False
+
+    def _set_handles_visible(self, visible: bool):
+        self._handles_visible = visible
+        for handle in self._handles.values():
+            handle.setVisible(bool(visible))
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedChange:
+            self._set_handles_visible(bool(value))
+        elif change == QGraphicsItem.ItemPositionHasChanged:
+            self._update_handle_positions()
+            callback = getattr(self, "geometry_changed_callback", None)
+            if callable(callback):
+                callback()
+        return super().itemChange(change, value)
+
+    def resize_from_handle(self, handle_position: str, handle_scene_pos: QPointF):
+        rect = QRectF(self.rect())
+        min_size = 10.0
+
+        if "W" in handle_position:
+            rect.setLeft(min(handle_scene_pos.x(), rect.right() - min_size))
+        if "E" in handle_position:
+            rect.setRight(max(handle_scene_pos.x(), rect.left() + min_size))
+        if "N" in handle_position:
+            rect.setTop(min(handle_scene_pos.y(), rect.bottom() - min_size))
+        if "S" in handle_position:
+            rect.setBottom(max(handle_scene_pos.y(), rect.top() + min_size))
+
+        self.setRect(rect.normalized())
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()
+
+    def hoverEnterEvent(self, event):
+        self.setCursor(Qt.SizeAllCursor)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
 
 
 class ResizableZoneItem(QGraphicsEllipseItem):
@@ -93,7 +298,8 @@ class ResizableZoneItem(QGraphicsEllipseItem):
         # Make zone selectable and movable
         self.setFlags(
             QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemIsMovable
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
 
@@ -240,7 +446,8 @@ class ResizableSquareItem(QGraphicsRectItem):
         self.setData(99, self._side)
         self.setFlags(
             QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemIsMovable
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
         self._create_handles()

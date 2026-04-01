@@ -7,11 +7,13 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPointF, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication, QGraphicsRectItem, QMainWindow
 
+from difra.gui.extra.resizable_zone import ResizableEllipseItem, ResizableRectangleItem
 from difra.gui.main_window_ext.shape_table_extension import ShapeTableMixin
+from difra.gui.views.image_view import ImageView
 
 
 @pytest.fixture(scope="module")
@@ -45,6 +47,8 @@ class _ShapeHarness(QMainWindow, ShapeTableMixin):
         self.pixel_to_mm_ratio = 1.0
         self.include_center = (0.0, 0.0)
         self._conversion_updates = 0
+        self._deleted_points = 0
+        self._cleared_profiles = 0
         self.create_shape_table()
 
     def update_conversion_label(self):
@@ -52,6 +56,17 @@ class _ShapeHarness(QMainWindow, ShapeTableMixin):
 
     def _get_stage_limits(self):
         return {"x": (-14.0, 14.0), "y": (-10.0, 10.0)}
+
+    def delete_all_points(self):
+        self._deleted_points += 1
+        self.image_view.points_dict["generated"]["points"] = []
+        self.image_view.points_dict["generated"]["zones"] = []
+        self.image_view.points_dict["user"]["points"] = []
+        self.image_view.points_dict["user"]["zones"] = []
+
+    def _clear_profile_paths(self):
+        self._cleared_profiles += 1
+        self.image_view.profile_paths = []
 
 
 def test_sample_holder_draws_stage_limit_outline(qapp):
@@ -205,3 +220,138 @@ def test_square_only_can_trigger_rotation_prompt_and_define_center(qapp, monkeyp
     assert harness.sample_holder_center_px == pytest.approx((208.25, 115.0))
     assert harness.include_center == pytest.approx((208.25, 115.0))
     assert question_calls == ["Rotate Sample Holder"]
+
+
+def test_drawn_ellipse_is_immediately_resizable(qapp):
+    view = ImageView()
+    pixmap = QPixmap(400, 300)
+    pixmap.fill(Qt.white)
+    view.set_image(pixmap)
+    callback_hits = []
+    view.shape_updated_callback = lambda: callback_hits.append("updated")
+
+    view.set_drawing_mode("ellipse")
+    item = ResizableEllipseItem(50.0, 60.0, 80.0, 40.0)
+    item.geometry_changed_callback = view.shape_updated_callback
+    view.scene.addItem(item)
+    item.setSelected(True)
+
+    assert isinstance(item, ResizableEllipseItem)
+    assert any(handle.isVisible() for handle in item._handles.values())
+
+    east_handle = item._handles["E"]
+    original_rect = item.rect()
+    item.resize_from_handle("E", east_handle.pos() + QPointF(25.0, 0.0))
+
+    resized_rect = item.rect()
+    assert resized_rect.width() > original_rect.width()
+    assert callback_hits
+
+
+def test_drawn_rectangle_is_immediately_resizable(qapp):
+    view = ImageView()
+    pixmap = QPixmap(400, 300)
+    pixmap.fill(Qt.white)
+    view.set_image(pixmap)
+    callback_hits = []
+    view.shape_updated_callback = lambda: callback_hits.append("updated")
+
+    item = ResizableRectangleItem(40.0, 50.0, 70.0, 30.0)
+    item.geometry_changed_callback = view.shape_updated_callback
+    view.scene.addItem(item)
+    item.setSelected(True)
+
+    assert isinstance(item, ResizableRectangleItem)
+    assert any(handle.isVisible() for handle in item._handles.values())
+
+    south_handle = item._handles["S"]
+    original_rect = item.rect()
+    item.resize_from_handle("S", south_handle.pos() + QPointF(0.0, 20.0))
+
+    resized_rect = item.rect()
+    assert resized_rect.height() > original_rect.height()
+    assert callback_hits
+
+
+def test_calibration_geometry_change_clears_points_profiles_and_non_calibration_shapes(qapp, monkeypatch):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
+        staticmethod(lambda *args, **kwargs: (15.18, True)),
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
+        staticmethod(lambda *args, **kwargs: 16384),
+    )
+
+    circle_item = ResizableEllipseItem(100.0, 100.0, 120.0, 80.0)
+    include_item = QGraphicsRectItem(20.0, 20.0, 30.0, 30.0)
+    exclude_item = QGraphicsRectItem(60.0, 60.0, 20.0, 20.0)
+    harness.image_view.scene.addItem(circle_item)
+    harness.image_view.scene.addItem(include_item)
+    harness.image_view.scene.addItem(exclude_item)
+    circle_info = {
+        "id": 1,
+        "uid": "holder",
+        "type": "Circle",
+        "item": circle_item,
+        "role": "include",
+    }
+    include_info = {
+        "id": 2,
+        "uid": "include",
+        "type": "Rectangle",
+        "item": include_item,
+        "role": "include",
+    }
+    exclude_info = {
+        "id": 3,
+        "uid": "exclude",
+        "type": "Rectangle",
+        "item": exclude_item,
+        "role": "exclude",
+    }
+    harness.image_view.shapes.extend([circle_info, include_info, exclude_info])
+    harness.image_view.profile_paths = [{"item": object(), "points": [(0.0, 0.0), (1.0, 1.0)]}]
+    harness.image_view.points_dict["generated"]["points"] = [object()]
+    harness.image_view.points_dict["generated"]["zones"] = [object()]
+    harness.image_view.points_dict["user"]["points"] = [object()]
+    harness.image_view.points_dict["user"]["zones"] = [object()]
+
+    harness.define_shape_as_calibration_role(circle_info, harness.ROLE_HOLDER_CIRCLE)
+    circle_info["item"].resize_from_handle("E", circle_info["item"]._handles["E"].pos() + QPointF(10.0, 0.0))
+
+    assert harness._deleted_points >= 1
+    assert harness._cleared_profiles >= 1
+    assert include_info not in harness.image_view.shapes
+    assert exclude_info not in harness.image_view.shapes
+    assert circle_info in harness.image_view.shapes
+    assert circle_info["role"] == harness.ROLE_HOLDER_CIRCLE
+
+
+def test_stage_limit_outline_uses_holder_center_and_beam_center_mm(qapp):
+    harness = _ShapeHarness()
+    harness.pixel_to_mm_ratio = 10.0
+    harness.sample_holder_center_px = (200.0, 150.0)
+    harness.sample_photo_beam_center_mm = (6.15, -9.15)
+
+    shape_item = QGraphicsRectItem(180.0, 130.0, 40.0, 40.0)
+    harness.image_view.scene.addItem(shape_item)
+    shape_info = {
+        "id": 10,
+        "uid": "holder_outline",
+        "type": "Circle",
+        "item": shape_item,
+        "role": harness.ROLE_HOLDER_CIRCLE,
+    }
+    harness.image_view.shapes.append(shape_info)
+
+    harness._draw_stage_limit_outline(shape_info, 200.0, 150.0)
+
+    outline = shape_info.get("stage_limit_outline")
+    assert outline is not None
+    rect = outline.rect()
+    assert rect.x() == pytest.approx(-1.5)
+    assert rect.y() == pytest.approx(141.5)
+    assert rect.width() == pytest.approx(280.0)
+    assert rect.height() == pytest.approx(200.0)

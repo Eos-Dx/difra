@@ -16,7 +16,12 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 
-from difra.gui.extra.resizable_zone import ResizableSquareItem, ResizableZoneItem
+from difra.gui.extra.resizable_zone import (
+    ResizableEllipseItem,
+    ResizableRectangleItem,
+    ResizableSquareItem,
+    ResizableZoneItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +334,38 @@ class ShapeTableMixin:
         except Exception:
             return 0.0, 0.0
 
+    def _stage_mm_to_overlay_pixels(self, x_mm: float, y_mm: float, default_center_px):
+        try:
+            px_per_mm = float(getattr(self, "pixel_to_mm_ratio", 0.0) or 0.0)
+        except Exception:
+            px_per_mm = 0.0
+        if px_per_mm <= 0.0:
+            return None
+
+        holder_center = getattr(self, "sample_holder_center_px", None)
+        if holder_center is not None:
+            try:
+                holder_x = float(holder_center[0])
+                holder_y = float(holder_center[1])
+                beam_center = tuple(
+                    getattr(self, "sample_photo_beam_center_mm", self.DEFAULT_BEAM_CENTER_MM)
+                )
+                beam_x_mm = float(beam_center[0])
+                beam_y_mm = float(beam_center[1])
+                return (
+                    (float(x_mm) - beam_x_mm) * px_per_mm + holder_x,
+                    (float(y_mm) - beam_y_mm) * px_per_mm + holder_y,
+                )
+            except Exception:
+                logger.debug("Failed to convert stage mm to holder-centered pixels", exc_info=True)
+
+        ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
+        center_x, center_y = default_center_px
+        return (
+            center_x + (ref_x_mm - float(x_mm)) * px_per_mm,
+            center_y + (ref_y_mm - float(y_mm)) * px_per_mm,
+        )
+
     def _draw_stage_limit_outline(self, shape_info, cx: float, cy: float) -> None:
         if not hasattr(self, "_get_stage_limits"):
             return
@@ -340,21 +377,15 @@ class ShapeTableMixin:
         if not limits:
             return
 
-        try:
-            px_per_mm = float(getattr(self, "pixel_to_mm_ratio", 0.0) or 0.0)
-        except Exception:
-            px_per_mm = 0.0
-        if px_per_mm <= 0.0:
-            return
-
-        ref_x_mm, ref_y_mm = self._get_stage_reference_mm()
         x_min, x_max = limits["x"]
         y_min, y_max = limits["y"]
 
-        x_a = cx + (ref_x_mm - float(x_min)) * px_per_mm
-        x_b = cx + (ref_x_mm - float(x_max)) * px_per_mm
-        y_a = cy + (ref_y_mm - float(y_min)) * px_per_mm
-        y_b = cy + (ref_y_mm - float(y_max)) * px_per_mm
+        a = self._stage_mm_to_overlay_pixels(float(x_min), float(y_min), (float(cx), float(cy)))
+        b = self._stage_mm_to_overlay_pixels(float(x_max), float(y_max), (float(cx), float(cy)))
+        if a is None or b is None:
+            return
+        x_a, y_a = a
+        x_b, y_b = b
 
         outline = QGraphicsRectItem(
             min(x_a, x_b),
@@ -395,6 +426,10 @@ class ShapeTableMixin:
             cx, cy = item.get_center()
             diameter = 2.0 * item.get_radius()
             rect = QRectF(cx - diameter / 2.0, cy - diameter / 2.0, diameter, diameter)
+        elif isinstance(item, ResizableEllipseItem):
+            rect = item.rect()
+            cx = rect.x() + rect.width() / 2.0
+            cy = rect.y() + rect.height() / 2.0
         else:
             rect = item.rect() if hasattr(item, "rect") else item.sceneBoundingRect()
             cx = rect.x() + rect.width() / 2.0
@@ -439,6 +474,9 @@ class ShapeTableMixin:
         return new_item
 
     def _on_shape_geometry_changed(self, shape_info):
+        role = str((shape_info or {}).get("role", "") or "").lower()
+        if role in (self.ROLE_CALIBRATION_SQUARE, self.ROLE_HOLDER_CIRCLE):
+            self._clear_sample_photo_dependents()
         try:
             self.apply_shape_role(shape_info)
         except Exception:
@@ -453,6 +491,33 @@ class ShapeTableMixin:
                 refresh_points()
             except Exception:
                 logger.debug("Failed to update points table after shape geometry change", exc_info=True)
+
+    def _clear_sample_photo_dependents(self, keep_shape_info=None):
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return
+
+        for shape_info in list(getattr(image_view, "shapes", []) or []):
+            if keep_shape_info is not None and shape_info is keep_shape_info:
+                continue
+            role = str(shape_info.get("role", "") or "").lower()
+            if role in (self.ROLE_CALIBRATION_SQUARE, self.ROLE_HOLDER_CIRCLE):
+                continue
+            self._delete_shape_info(shape_info)
+
+        clear_profiles = getattr(self, "_clear_profile_paths", None)
+        if callable(clear_profiles):
+            try:
+                clear_profiles()
+            except Exception:
+                logger.debug("Failed to clear profile paths after calibration change", exc_info=True)
+
+        delete_points = getattr(self, "delete_all_points", None)
+        if callable(delete_points):
+            try:
+                delete_points()
+            except Exception:
+                logger.debug("Failed to clear points after calibration change", exc_info=True)
 
     def _prompt_physical_size_mm(self, *, role: str, current_value: float | None = None) -> float | None:
         self._ensure_shape_calibration_defaults()
@@ -1020,6 +1085,11 @@ class ShapeTableMixin:
                             item.geometry_changed_callback = None
                             item.set_side(min(w, h))
                             item.geometry_changed_callback = callback
+                        elif isinstance(item, ResizableRectangleItem):
+                            item.setRect(x, y, max(10.0, w), max(10.0, h))
+                            updater = getattr(item, "_update_handle_positions", None)
+                            if callable(updater):
+                                updater()
                         elif isinstance(item, ResizableZoneItem):
                             item._center_x = x + max(w, h) / 2.0
                             item._center_y = y + max(w, h) / 2.0
@@ -1027,6 +1097,11 @@ class ShapeTableMixin:
                             item.geometry_changed_callback = None
                             item.set_radius(max(w, h) / 2.0)
                             item.geometry_changed_callback = callback
+                        elif isinstance(item, ResizableEllipseItem):
+                            item.setRect(x, y, max(10.0, w), max(10.0, h))
+                            updater = getattr(item, "_update_handle_positions", None)
+                            if callable(updater):
+                                updater()
                         elif hasattr(item, "setRect"):
                             item.setRect(x, y, w, h)
                         if shape_info.get("role") in (
