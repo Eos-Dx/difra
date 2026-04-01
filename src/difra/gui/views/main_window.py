@@ -88,6 +88,20 @@ class MainWindow(
             logger.debug("Creating technical panel...")
             self.create_technical_panel()  # this defines self.measDock
             logger.debug("Technical panel created")
+            try:
+                reconcile_technical = getattr(
+                    self,
+                    "reconcile_startup_technical_containers",
+                    None,
+                )
+                if callable(reconcile_technical):
+                    reconcile_technical()
+            except Exception as e:
+                logger.warning(
+                    "Failed to reconcile startup technical containers: %s",
+                    e,
+                    exc_info=True,
+                )
 
             # 2. Create the Zone Points dock (left bottom)
             logger.debug("Creating zone points widget...")

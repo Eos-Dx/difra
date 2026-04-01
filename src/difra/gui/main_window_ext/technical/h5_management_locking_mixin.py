@@ -1,7 +1,12 @@
 """Technical H5 validation/locking responsibilities."""
 
 from . import h5_management_mixin as _module
-from .poni_center_validation import parse_poni_center_px, validate_poni_centers
+from .poni_center_validation import (
+    normalize_alias_mapping_to_rule_aliases,
+    parse_poni_center_px,
+    resolve_poni_rule_alias,
+    validate_poni_centers,
+)
 
 os = _module.os
 logger = _module.logger
@@ -332,7 +337,8 @@ class H5ManagementLockingMixin:
 
     def _resolve_demo_poni_center_px(self, alias: str, detector_size=(256, 256)):
         """Resolve demo center in pixels from main.json center rules when available."""
-        alias_key = str(alias or "").strip().upper()
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        alias_key = resolve_poni_rule_alias(alias, cfg.get("detectors", []))
         # Fixed demo targets requested by workflow for fake PRIMARY/SECONDARY.
         if alias_key == "PRIMARY":
             return 128.0, 8.0
@@ -345,7 +351,6 @@ class H5ManagementLockingMixin:
         except Exception:
             width, height = 256.0, 256.0
 
-        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
         validation_cfg = cfg.get("poni_center_validation", {})
         if not isinstance(validation_cfg, dict):
             validation_cfg = {}
@@ -358,7 +363,6 @@ class H5ManagementLockingMixin:
         if not isinstance(detector_rules, dict):
             detector_rules = {}
 
-        alias_key = str(alias or "").strip().upper()
         rule = {}
         if defaults:
             rule.update(defaults)
@@ -643,7 +647,8 @@ class H5ManagementLockingMixin:
                 sizes[alias] = (int(width), int(height))
             except Exception:
                 sizes[alias] = (256, 256)
-        return sizes
+        detector_cfgs = self.config.get("detectors", []) if hasattr(self, "config") else []
+        return normalize_alias_mapping_to_rule_aliases(sizes, detector_cfgs)
 
     def _validate_poni_centers_for_container(self, container_path: Path):
         cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
@@ -661,6 +666,11 @@ class H5ManagementLockingMixin:
         except Exception as exc:
             return [f"PONI center validation failed while reading container: {exc}"], []
 
+        detector_cfgs = cfg.get("detectors", [])
+        poni_text_by_alias = normalize_alias_mapping_to_rule_aliases(
+            poni_text_by_alias,
+            detector_cfgs,
+        )
         detector_sizes = self._detector_sizes_by_alias()
         return validate_poni_centers(
             poni_text_by_alias=poni_text_by_alias,
@@ -1042,6 +1052,19 @@ class H5ManagementLockingMixin:
 
         return True
 
+    def _has_ready_poni_file_selection(self, aliases) -> bool:
+        if not isinstance(getattr(self, "poni_files", None), dict):
+            return False
+
+        for alias in sorted({str(alias).strip() for alias in (aliases or []) if str(alias).strip()}):
+            info = self.poni_files.get(alias)
+            if not isinstance(info, dict):
+                return False
+            candidate_path = str(info.get("path") or "").strip()
+            if not candidate_path or not os.path.exists(candidate_path):
+                return False
+        return True
+
     def _launch_poni_update_for_container(self, container_path: Path) -> bool:
         """Run Update PONI flow for a specific container path."""
         update_fn = getattr(self, "update_active_technical_container_poni", None)
@@ -1108,6 +1131,27 @@ class H5ManagementLockingMixin:
                         "Validation will now continue before lock.",
                     )
                     return True
+
+        if self._has_ready_poni_file_selection(aliases):
+            if hasattr(self, "_sync_active_technical_container_from_table"):
+                synced = self._sync_active_technical_container_from_table(show_errors=False)
+                if not synced:
+                    QMessageBox.warning(
+                        self,
+                        "PONI Sync Failed",
+                        "Prepared PONI files were found, but syncing them into the container failed.\n\n"
+                        "Fix technical rows and try locking again.",
+                    )
+                    self._log_technical_event(
+                        f"Lock blocked: failed to sync preselected PONI into {container_id}"
+                    )
+                    return False
+
+            if self._container_has_poni_datasets(container_path):
+                self._log_technical_event(
+                    f"PONI datasets auto-applied before lock for {container_id}"
+                )
+                return True
 
         reply = QMessageBox.question(
             self,

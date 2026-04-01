@@ -245,6 +245,63 @@ def test_demo_mode_auto_provisions_poni_then_locks(monkeypatch):
         assert len(_MessageBoxStub.information_calls) >= 1
 
 
+def test_demo_mode_lock_auto_syncs_demo_poni_before_regular_lock_flow(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        container_path = Path(tmp) / "technical_test.nxs.h5"
+        _create_container(container_path, schema_version="0.2")
+        harness = _Harness(container_path)
+        harness.config["DEV"] = True
+        _MessageBoxStub.reset()
+
+        monkeypatch.setattr(
+            locking_mod,
+            "get_container_manager",
+            lambda _cfg: _ContainerManagerStub(locked=False),
+        )
+        monkeypatch.setattr(
+            locking_mod,
+            "get_technical_validator",
+            lambda _cfg: _ValidatorStub((True, [], [])),
+        )
+        monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+
+        call_order = []
+        monkeypatch.setattr(
+            harness,
+            "_container_has_poni_datasets",
+            lambda *_a, **_k: False,
+        )
+        monkeypatch.setattr(
+            harness,
+            "_collect_lock_detector_aliases",
+            lambda *_a, **_k: ["SAXS", "WAXS"],
+        )
+        monkeypatch.setattr(
+            harness,
+            "_auto_provision_demo_poni_files",
+            lambda aliases: (call_order.append(("auto", tuple(aliases))), True)[1],
+        )
+        monkeypatch.setattr(
+            harness,
+            "_sync_active_technical_container_from_table",
+            lambda **kwargs: (call_order.append(("sync", bool(kwargs.get("show_errors")))), True)[1],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            harness,
+            "_ensure_poni_before_lock",
+            lambda *_a, **_k: (call_order.append(("ensure", None)), True)[1],
+        )
+
+        harness.lock_active_technical_container()
+
+        assert ("auto", ("SAXS", "WAXS")) in call_order
+        assert ("sync", False) in call_order
+        assert ("ensure", None) in call_order
+        assert call_order.index(("auto", ("SAXS", "WAXS"))) < call_order.index(("ensure", None))
+        assert len(harness.lock_calls) == 1
+
+
 def test_pre_lock_sync_is_silent_when_sync_fails(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         container_path = Path(tmp) / "technical_test.nxs.h5"
@@ -386,6 +443,56 @@ def test_update_poni_updates_active_container_with_silent_sync(monkeypatch):
         assert sync_flags == [False]
         assert len(_MessageBoxStub.information_calls) >= 1
         assert harness.events[-1].startswith("Updated PONI files for active technical container")
+
+
+def test_lock_auto_uses_preselected_poni_files_without_prompt(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        container_path = Path(tmp) / "technical_test.nxs.h5"
+        _create_container(container_path, schema_version="0.2")
+        harness = _Harness(container_path)
+        _MessageBoxStub.reset()
+
+        ready_dir = Path(tmp) / "poni_ready"
+        ready_dir.mkdir(parents=True, exist_ok=True)
+        saxs_path = ready_dir / "saxs_demo.poni"
+        waxs_path = ready_dir / "waxs_demo.poni"
+        saxs_path.write_text("Distance: 0.17\nPixelSize1: 5.5e-05\n", encoding="utf-8")
+        waxs_path.write_text("Distance: 0.17\nPixelSize1: 5.5e-05\n", encoding="utf-8")
+        harness.poni_files = {
+            "SAXS": {"path": str(saxs_path), "name": saxs_path.name},
+            "WAXS": {"path": str(waxs_path), "name": waxs_path.name},
+        }
+
+        monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+        monkeypatch.setattr(
+            harness,
+            "_collect_lock_detector_aliases",
+            lambda *_a, **_k: ["SAXS", "WAXS"],
+        )
+        sync_calls = []
+        monkeypatch.setattr(
+            harness,
+            "_sync_active_technical_container_from_table",
+            lambda **kwargs: (sync_calls.append(bool(kwargs.get("show_errors"))), True)[1],
+            raising=False,
+        )
+        has_poni_states = iter([False, True])
+        monkeypatch.setattr(
+            harness,
+            "_container_has_poni_datasets",
+            lambda *_a, **_k: next(has_poni_states),
+        )
+        monkeypatch.setattr(
+            harness,
+            "_prompt_poni_selection_for_lock",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("selection dialog should be skipped")),
+        )
+
+        result = harness._ensure_poni_before_lock(container_path, "tech_test_001")
+
+        assert result is True
+        assert sync_calls == [False]
+        assert any("auto-applied before lock" in event for event in harness.events)
 
 
 def test_update_poni_blocks_for_locked_container(monkeypatch):
@@ -704,3 +811,16 @@ def test_demo_poni_compliance_detects_wrong_center_and_accepts_secondary_over_25
         poni_text=secondary_over,
         detector_size=(256, 256),
     )
+
+
+def test_demo_center_alias_mapping_supports_saxs_and_waxs():
+    harness = _Harness(Path("/tmp/nonexistent_demo_container.nxs.h5"))
+    harness.config = {
+        "detectors": [
+            {"alias": "SAXS", "poni_center_rule_alias": "PRIMARY"},
+            {"alias": "WAXS", "poni_center_rule_alias": "SECONDARY"},
+        ]
+    }
+
+    assert harness._resolve_demo_poni_center_px("SAXS", (256, 256)) == (128.0, 8.0)
+    assert harness._resolve_demo_poni_center_px("WAXS", (256, 256)) == (128.0, 280.0)

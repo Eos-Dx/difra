@@ -3,7 +3,9 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import pytest
 import difra.gui.main_window_ext.zone_measurements.logic.process_results_mixin as results_module
+from difra.gui.technical.widgets import DetectorProfilePreview
 from difra.gui.main_window_ext.zone_measurements.logic.process_results_mixin import (
     ZoneMeasurementsProcessResultsMixin,
 )
@@ -867,3 +869,21 @@ def test_confirm_poni_settings_uses_config_fallback_and_passes_when_complete(mon
 
     assert result is True
     assert warnings == []
+
+
+def test_detector_profile_preview_uses_log_normalization():
+    normalized = DetectorProfilePreview._normalize_profile_log([1.0, 10.0, 100.0])
+
+    assert len(normalized) == 3
+    assert normalized[0] == pytest.approx(0.0)
+    assert normalized[1] == pytest.approx(0.5)
+    assert normalized[2] == pytest.approx(1.0)
+
+
+def test_detector_profile_preview_clamps_non_positive_values_to_smallest_positive():
+    normalized = DetectorProfilePreview._normalize_profile_log([0.0, 1.0, 100.0])
+
+    assert len(normalized) == 3
+    assert normalized[0] == pytest.approx(0.0)
+    assert normalized[1] == pytest.approx(0.0)
+    assert normalized[2] == pytest.approx(1.0)

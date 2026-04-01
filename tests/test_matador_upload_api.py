@@ -9,6 +9,8 @@ from difra.gui.matador_upload_api import (
     StubMatadorUploadApi,
     build_matador_upload_api,
     load_matador_reference_cache,
+    normalize_matador_base_url,
+    normalize_matador_token,
     refresh_matador_reference_cache,
     save_matador_reference_cache,
     sha256_file,
@@ -33,6 +35,22 @@ def test_build_matador_upload_api_uses_real_client_when_env_present(monkeypatch)
     assert isinstance(api, RealMatadorUploadApi)
     assert api.base_url == "https://dev-gamma.matur.co.uk"
     assert api.token == "token-value"
+
+
+def test_normalize_matador_base_url_accepts_page_urls():
+    assert (
+        normalize_matador_base_url("https://dev-gamma.matur.co.uk/analytics/studies")
+        == "https://dev-gamma.matur.co.uk"
+    )
+    assert (
+        normalize_matador_base_url('"https://dev-gamma.matur.co.uk/difra-api-token"')
+        == "https://dev-gamma.matur.co.uk"
+    )
+
+
+def test_normalize_matador_token_strips_quotes_and_bearer_prefix():
+    assert normalize_matador_token('"abc.def.ghi"') == "abc.def.ghi"
+    assert normalize_matador_token("Bearer abc.def.ghi") == "abc.def.ghi"
 
 
 def test_stub_ingest_flow_hash_verifies_uploaded_file(tmp_path: Path):

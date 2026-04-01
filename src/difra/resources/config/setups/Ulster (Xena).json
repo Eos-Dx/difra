@@ -35,6 +35,7 @@
         },
         {
             "alias": "SAXS",
+            "poni_center_rule_alias": "PRIMARY",
             "type": "DummyDetector",
             "id": "DUMMY-0001",
             "size": {
@@ -50,6 +51,7 @@
         },
         {
             "alias": "WAXS",
+            "poni_center_rule_alias": "SECONDARY",
             "type": "DummyDetector",
             "id": "DUMMY-0002",
             "size": {

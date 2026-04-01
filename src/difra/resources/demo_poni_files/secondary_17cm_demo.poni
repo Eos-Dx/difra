@@ -1,0 +1,12 @@
+# Auto-generated fake PONI (DEMO mode)
+poni_version: 2.1
+Detector: Detector
+Detector_config: {"pixel1": 5.4999999999999995e-05, "pixel2": 5.4999999999999995e-05, "max_shape": [256, 256], "orientation": 3}
+Distance: 0.170000
+Poni1: 0.007040
+Poni2: 0.015400
+Rot1: 0
+Rot2: 0
+Rot3: 0
+Wavelength: 1.5406e-10
+# Detector alias: SECONDARY

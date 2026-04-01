@@ -2,6 +2,7 @@
 
 import os
 import json
+import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from container.v0_2 import schema, technical_container, writer as session_writer
 from container.v0_2.container_manager import lock_container
 from difra.gui.main_window_ext import session_mixin, technical_measurements
 from difra.gui.main_window_ext.technical import h5_management_mixin
+from difra.gui.main_window_ext.technical import h5_management_lock_actions
 from difra.gui.main_window_ext import state_saver_extension
 from difra.gui.session_manager import SessionManager
 
@@ -305,6 +307,28 @@ def test_load_technical_h5_sets_primary_and_types(qapp, tmp_path, monkeypatch):
         assert "/processed_signal" in source_value
 
     assert type_counts == {"DARK": 2, "EMPTY": 2, "BACKGROUND": 2, "AGBH": 2}
+
+
+def test_runtime_rows_signature_handles_numpy_metadata_scalars():
+    payload = [
+        {
+            "alias": "SAXS",
+            "technical_type": "AGBH",
+            "is_primary": True,
+            "source_ref": "h5ref:///tmp/example.h5#/entry/technical/tech_evt_000001/det_saxs/processed_signal",
+            "source_path": "",
+            "row_id": "row_000001",
+            "metadata": {
+                "integration_time_ms": np.float64(100.0),
+                "n_frames": np.int64(2),
+                "thickness": np.float32(1.5),
+            },
+        }
+    ]
+
+    signature = h5_management_mixin.H5ManagementMixin._runtime_rows_signature(payload)
+    assert isinstance(signature, str)
+    assert len(signature) == 64
 
 
 def test_load_technical_files_without_container(qapp, tmp_path, monkeypatch):
@@ -1262,7 +1286,10 @@ def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_pa
     lock_container(tech_path, user_id="sad")
 
     harness = _TechnicalLoadHarness(
-        config={"technical_archive_folder": str(archive_folder)},
+        config={
+            "technical_folder": str(technical_folder),
+            "technical_archive_folder": str(archive_folder),
+        },
         work_dir=technical_folder,
     )
 
@@ -1273,6 +1300,93 @@ def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_pa
     assert not tech_path.exists()
     assert archived_path.exists()
     assert archived_path.parent.parent == archive_folder
+
+
+def test_startup_reconcile_option_label_includes_time_distance_and_lock_status(qapp, tmp_path):
+    technical_folder = tmp_path / "technical_option_label"
+    tech_path = _make_technical_container(technical_folder)
+    lock_container(tech_path, user_id="sad")
+
+    harness = _TechnicalLoadHarness(
+        config={"technical_folder": str(technical_folder)},
+        work_dir=technical_folder,
+    )
+
+    label = harness._format_startup_technical_container_option(tech_path)
+
+    assert tech_path.name in label
+    assert "17.00 cm" in label
+    assert "LOCKED" in label
+
+
+def test_startup_reconcile_keeps_selected_container_and_deletes_duplicate(qapp, tmp_path, monkeypatch):
+    technical_folder = tmp_path / "technical_multi"
+    archive_folder = tmp_path / "archive" / "technical"
+    keep_path = _make_technical_container(technical_folder)
+    duplicate_path = technical_folder / "technical_duplicate.nxs.h5"
+    shutil.copy2(keep_path, duplicate_path)
+
+    archived_dup_dir = archive_folder / "previous_dup"
+    archived_dup_dir.mkdir(parents=True, exist_ok=True)
+    archived_duplicate = archived_dup_dir / "technical_duplicate.nxs.h5"
+    shutil.copy2(duplicate_path, archived_duplicate)
+
+    harness = _TechnicalLoadHarness(
+        config={
+            "technical_folder": str(technical_folder),
+            "technical_archive_folder": str(archive_folder),
+        },
+        work_dir=technical_folder,
+    )
+    selected = []
+    monkeypatch.setattr(
+        harness,
+        "_prompt_startup_technical_container_selection",
+        lambda candidates: ("keep", keep_path),
+    )
+    monkeypatch.setattr(
+        harness,
+        "load_technical_h5_from_path",
+        lambda file_path, show_dialogs=False: (selected.append(Path(file_path)), True)[1],
+    )
+
+    result = harness.reconcile_startup_technical_containers()
+
+    assert result is True
+    assert keep_path.exists()
+    assert not duplicate_path.exists()
+    assert selected == [keep_path]
+
+
+def test_startup_reconcile_none_selected_archives_all_non_duplicates(qapp, tmp_path, monkeypatch):
+    technical_folder = tmp_path / "technical_multi_archive"
+    archive_folder = tmp_path / "archive" / "technical"
+    first_path = _make_technical_container(technical_folder)
+    second_path = technical_folder / "technical_second.nxs.h5"
+    shutil.copy2(first_path, second_path)
+    with h5py.File(second_path, "a") as h5f:
+        h5f.attrs["startup_variant"] = "second"
+
+    harness = _TechnicalLoadHarness(
+        config={
+            "technical_folder": str(technical_folder),
+            "technical_archive_folder": str(archive_folder),
+        },
+        work_dir=technical_folder,
+    )
+    monkeypatch.setattr(
+        harness,
+        "_prompt_startup_technical_container_selection",
+        lambda candidates: ("none", None),
+    )
+
+    result = harness.reconcile_startup_technical_containers()
+
+    assert result is True
+    assert not first_path.exists()
+    assert not second_path.exists()
+    archived_h5 = list(archive_folder.rglob("*.nxs.h5"))
+    assert len(archived_h5) == 2
 
 
 def test_replacement_archive_remaps_aux_table_h5refs_to_archived_file(qapp, tmp_path):
@@ -1363,6 +1477,87 @@ def test_archive_active_container_locks_then_archives_container_and_related_file
     assert (archive_subdir / related_poni.name).exists()
 
 
+def test_sync_runtime_rows_are_metadata_only_and_lock_rewrites_paths(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_compact"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+
+    harness = _TechnicalLoadHarness(
+        config={
+            "technical_archive_folder": str(archive_folder),
+            "operator_id": "sad",
+        },
+        work_dir=technical_folder,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    monkeypatch.setattr(
+        h5_management_mixin.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(tech_path), "NeXus HDF5 Files (*.nxs.h5)")),
+    )
+
+    harness.load_technical_h5()
+    qapp.processEvents()
+    assert harness._sync_active_technical_container_from_table(show_errors=True) is True
+
+    runtime_path = "/entry/difra_runtime/technical_aux_rows/row_000001"
+    with h5py.File(tech_path, "r") as h5f:
+        assert runtime_path in h5f
+        assert f"{runtime_path}/processed_signal" not in h5f
+        assert str(h5f[runtime_path].attrs.get("source_file", "")).endswith(".npy")
+        assert str(h5f["/entry/difra_runtime"].attrs.get("technical_aux_rows_signature", "")).strip()
+
+    with h5py.File(tech_path, "a") as h5f:
+        h5f.create_dataset("/entry/bloat_payload", data=np.ones((2048, 2048), dtype=np.float64))
+        del h5f["/entry/bloat_payload"]
+    bloated_size = tech_path.stat().st_size
+
+    with h5py.File(tech_path, "r") as h5f:
+        container_id = str(h5f.attrs["container_id"])
+
+    locked = h5_management_lock_actions.lock_container(
+        harness,
+        str(tech_path),
+        container_id,
+    )
+    assert locked is True
+    assert tech_path.exists() is True
+    assert tech_path.stat().st_size < bloated_size
+
+    with h5py.File(tech_path, "r") as h5f:
+        source_file = str(h5f[runtime_path].attrs.get("source_file", ""))
+        assert source_file.startswith(str(archive_folder))
+        assert Path(source_file).exists() is True
+
+    reloaded = _TechnicalLoadHarness(
+        config={
+            "technical_archive_folder": str(archive_folder),
+            "operator_id": "sad",
+        },
+        work_dir=technical_folder,
+    )
+    reloaded.show()
+    qapp.processEvents()
+    monkeypatch.setattr(
+        h5_management_mixin.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(tech_path), "NeXus HDF5 Files (*.nxs.h5)")),
+    )
+    reloaded.load_technical_h5()
+    qapp.processEvents()
+
+    assert reloaded.auxTable.rowCount() == 8
+    first_item = reloaded.auxTable.item(0, 1)
+    assert first_item is not None
+    first_source = str(first_item.data(Qt.UserRole) or "")
+    assert first_source.endswith(".npy")
+    assert Path(first_source).exists() is True
+
+
 def test_new_technical_container_forces_active_session_archive_and_upload(
     qapp, tmp_path, monkeypatch
 ):
@@ -1431,8 +1626,8 @@ def test_new_technical_container_forces_active_session_archive_and_upload(
     archived_sessions = sorted(measurements_archive.rglob("session_*.nxs.h5"))
     assert len(archived_sessions) == 1
     archived_session = archived_sessions[0]
-    assert harness.session_manager.container_manager.get_transfer_status(archived_session) == "sent"
+    assert harness.session_manager.container_manager.get_transfer_status(archived_session) == "unsent"
     assert harness.session_manager.container_manager.is_container_locked(archived_session)
     with h5py.File(archived_session, "r") as h5f:
-        assert h5f.attrs.get("upload_status") == "success"
-        assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_")
+        assert h5f.attrs.get("upload_status") == "unsent"
+        assert str(h5f.attrs.get("upload_session_id", "")) == ""

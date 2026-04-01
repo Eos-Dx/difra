@@ -109,26 +109,16 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
         mark_transferred = getattr(container_manager, "mark_container_transferred", None)
         if callable(mark_transferred):
             mark_transferred(Path(archived_session_path), sent=False)
-        SessionLifecycleActions.write_upload_metadata(
+        SessionLifecycleActions._write_container_attrs(
             Path(archived_session_path),
-            uploader_id=uploader_id,
-            lock_user=lock_user,
-        )
-        unsent_result = SessionLifecycleActions.execute_upload_stub(
-            Path(archived_session_path),
-            uploader_id=uploader_id,
-            lock_user=lock_user,
-            simulate_failure=True,
-            failure_message="Deferred Matador upload after forced technical close",
-        )
-        SessionLifecycleActions.write_upload_result_metadata(
-            Path(archived_session_path),
-            upload_result=unsent_result,
-        )
-        SessionLifecycleActions.append_upload_attempt_log(
-            Path(archived_session_path),
-            operator_id=str(uploader_id or lock_user or "unknown"),
-            upload_result=unsent_result,
+            {
+                "uploaded_by": str(uploader_id or lock_user or "unknown"),
+                "upload_status": SessionLifecycleActions.TRANSFER_STATUS_UNSENT,
+                "upload_result_message": "Deferred Matador upload after forced technical close",
+                SessionLifecycleActions.TRANSFER_STATUS_ATTR: SessionLifecycleActions.TRANSFER_STATUS_UNSENT,
+                SessionLifecycleActions.SESSION_STATE_ATTR: "archived",
+                SessionLifecycleActions.SESSION_STATE_REASON_ATTR: "archived_without_send",
+            },
         )
 
         owner.session_manager.close_session()

@@ -1,10 +1,14 @@
 """Technical H5 loading/table population responsibilities."""
 
 from pathlib import Path
+import hashlib
+import json
 
 import numpy as np
 
 from . import h5_management_mixin as _module
+from .poni_center_validation import resolve_poni_rule_alias
+from . import technical_startup_reconcile
 
 os = _module.os
 shutil = _module.shutil
@@ -21,6 +25,8 @@ from difra.gui.main_window_ext.technical import h5_management_loading_actions
 
 
 class H5ManagementLoadingMixin:
+    RUNTIME_ROWS_SIGNATURE_ATTR = "technical_aux_rows_signature"
+
     @staticmethod
     def _safe_archive_token(value: str, fallback: str = "unknown") -> str:
         token = "".join(
@@ -296,6 +302,36 @@ class H5ManagementLoadingMixin:
         )
         return candidates
 
+    def _list_archived_technical_containers(self):
+        return technical_startup_reconcile.list_archived_technical_containers(self)
+
+    def _find_duplicate_archived_technical_container(self, container_path: Path):
+        return technical_startup_reconcile.find_duplicate_archived_technical_container(
+            self,
+            container_path,
+        )
+
+    def _delete_storage_technical_container(self, container_path: Path) -> bool:
+        return technical_startup_reconcile.delete_storage_technical_container(
+            self,
+            container_path,
+        )
+
+    def _format_startup_technical_container_option(self, container_path: Path) -> str:
+        return technical_startup_reconcile.format_startup_technical_container_option(
+            self,
+            container_path,
+        )
+
+    def _prompt_startup_technical_container_selection(self, candidates):
+        return technical_startup_reconcile.prompt_startup_technical_container_selection(
+            self,
+            candidates,
+        )
+
+    def reconcile_startup_technical_containers(self):
+        return technical_startup_reconcile.reconcile_startup_technical_containers(self)
+
     def _lock_and_archive_technical_container(self, existing_path: Path) -> Path:
         container_manager = get_container_manager(
             self.config if hasattr(self, "config") else None
@@ -566,6 +602,69 @@ class H5ManagementLoadingMixin:
             f"No readable measurement source for row: {source_path or source_ref}"
         )
 
+    @staticmethod
+    def _json_safe_runtime_value(value):
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {
+                str(key): H5ManagementLoadingMixin._json_safe_runtime_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                H5ManagementLoadingMixin._json_safe_runtime_value(item)
+                for item in value
+            ]
+        return value
+
+    @staticmethod
+    def _normalize_runtime_row_for_signature(entry):
+        metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+        normalized_metadata = {
+            "integration_time_ms": H5ManagementLoadingMixin._json_safe_runtime_value(
+                metadata.get("integration_time_ms")
+            ),
+            "n_frames": H5ManagementLoadingMixin._json_safe_runtime_value(
+                metadata.get("n_frames")
+            ),
+            "thickness": H5ManagementLoadingMixin._json_safe_runtime_value(
+                metadata.get("thickness")
+            ),
+        }
+        return {
+            "alias": H5ManagementLoadingMixin._json_safe_runtime_value(
+                str(entry.get("alias") or "")
+            ),
+            "technical_type": H5ManagementLoadingMixin._json_safe_runtime_value(
+                str(entry.get("technical_type") or "")
+            ),
+            "is_primary": H5ManagementLoadingMixin._json_safe_runtime_value(
+                bool(entry.get("is_primary"))
+            ),
+            "source_ref": H5ManagementLoadingMixin._json_safe_runtime_value(
+                str(entry.get("source_ref") or "")
+            ),
+            "source_path": H5ManagementLoadingMixin._json_safe_runtime_value(
+                str(entry.get("source_path") or "")
+            ),
+            "row_id": H5ManagementLoadingMixin._json_safe_runtime_value(
+                str(entry.get("row_id") or "")
+            ),
+            "metadata": normalized_metadata,
+        }
+
+    @classmethod
+    def _runtime_rows_signature(cls, runtime_rows):
+        payload = [
+            cls._normalize_runtime_row_for_signature(entry)
+            for entry in (runtime_rows or [])
+        ]
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
     def _sync_active_technical_container_from_table(self, show_errors: bool = False):
         from difra.gui.container_api import get_technical_container
 
@@ -658,8 +757,23 @@ class H5ManagementLoadingMixin:
                 }
             )
 
+        runtime_signature = self._runtime_rows_signature(runtime_rows)
+
         try:
             import h5py
+
+            with h5py.File(active_path, "a") as h5f:
+                runtime_group = h5f.get(schema.GROUP_RUNTIME)
+                existing_signature = ""
+                if runtime_group is not None:
+                    existing_signature = str(
+                        runtime_group.attrs.get(self.RUNTIME_ROWS_SIGNATURE_ATTR, "") or ""
+                    ).strip()
+                if existing_signature == runtime_signature:
+                    sync_state = getattr(self, "_sync_container_state", None)
+                    if callable(sync_state):
+                        sync_state(Path(active_path), reason="table_sync_noop")
+                    return True
 
             with h5py.File(active_path, "a") as h5f:
                 runtime_rows_path = f"{schema.GROUP_RUNTIME}/technical_aux_rows"
@@ -687,13 +801,9 @@ class H5ManagementLoadingMixin:
                         value = metadata.get(key)
                         if value is not None:
                             row_group.attrs[key] = value
-
-                    row_group.create_dataset(
-                        schema.DATASET_PROCESSED_SIGNAL,
-                        data=np.asarray(entry["data"]),
-                        compression="gzip",
-                        compression_opts=4,
-                    )
+                runtime_parent = h5f.get(schema.GROUP_RUNTIME)
+                if runtime_parent is not None:
+                    runtime_parent.attrs[self.RUNTIME_ROWS_SIGNATURE_ATTR] = runtime_signature
 
             # Rebuild canonical technical group from PRIMARY rows only.
             primary_map = {}
@@ -850,9 +960,6 @@ class H5ManagementLoadingMixin:
         rows = []
         for row_name in sorted(runtime_group.keys()):
             row_group = runtime_group[row_name]
-            if schema.DATASET_PROCESSED_SIGNAL not in row_group:
-                continue
-
             alias = row_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
             if isinstance(alias, bytes):
                 alias = alias.decode("utf-8", errors="replace")
@@ -863,15 +970,42 @@ class H5ManagementLoadingMixin:
             source_file = row_group.attrs.get("source_file", "")
             if isinstance(source_file, bytes):
                 source_file = source_file.decode("utf-8", errors="replace")
+            source_ref = row_group.attrs.get("source_ref", "")
+            if isinstance(source_ref, bytes):
+                source_ref = source_ref.decode("utf-8", errors="replace")
 
-            dataset_path = f"{row_group.name}/{schema.DATASET_PROCESSED_SIGNAL}"
+            dataset_path = ""
+            source_container = ""
+            source_kind = "file"
+            if source_file:
+                source_kind = "file"
+            elif schema.DATASET_PROCESSED_SIGNAL in row_group:
+                source_kind = "container"
+                source_container = str(h5_path)
+                dataset_path = f"{row_group.name}/{schema.DATASET_PROCESSED_SIGNAL}"
+            else:
+                parsed_container, parsed_dataset = self._parse_h5ref(str(source_ref))
+                if parsed_container and parsed_dataset:
+                    source_kind = "container"
+                    source_container = str(parsed_container)
+                    dataset_path = str(parsed_dataset)
+                elif source_ref and os.path.exists(str(source_ref)):
+                    source_file = str(source_ref)
+                else:
+                    source_kind = "file"
+            if not source_file and source_ref and os.path.exists(str(source_ref)):
+                source_file = str(source_ref)
+
+            if source_kind == "file" and not source_file:
+                continue
+
             rows.append(
                 {
                     "alias": alias or "UNKNOWN",
                     "technical_type": (technical_type or "").upper() or None,
                     "is_primary": bool(row_group.attrs.get("is_primary", False)),
-                    "source_kind": "container",
-                    "source_container": str(h5_path),
+                    "source_kind": source_kind,
+                    "source_container": source_container,
                     "source_dataset": dataset_path,
                     "source_path": str(source_file or ""),
                     "source_row_id": str(row_group.attrs.get("row_id", row_name) or row_name),
@@ -946,14 +1080,9 @@ class H5ManagementLoadingMixin:
                 )
         return rows
 
-    @staticmethod
-    def _normalize_center_preview_alias(alias: str) -> str:
-        key = str(alias or "").strip().upper()
-        if key == "SAXS":
-            return "PRIMARY"
-        if key == "WAXS":
-            return "SECONDARY"
-        return key
+    def _normalize_center_preview_alias(self, alias: str) -> str:
+        detector_cfgs = self.config.get("detectors", []) if hasattr(self, "config") else []
+        return resolve_poni_rule_alias(alias, detector_cfgs)
 
     def _detector_sizes_for_center_preview(self):
         sizes = {}
