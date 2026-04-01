@@ -387,8 +387,9 @@ def test_center_validation_failure_suggests_updating_poni_or_main_config(monkeyp
             lambda *_a, **_k: (
                 [
                     (
-                        "PONI center mismatch for SAXS: row=128.00px, col=200.00px, "
-                        "expected col > 256.00"
+                        "PONI center for SAXS is outside the allowed zone. "
+                        "Actual center: row=128.00px, col=200.00px. "
+                        "Allowed rule: col > 256.00."
                     )
                 ],
                 [],
@@ -401,8 +402,10 @@ def test_center_validation_failure_suggests_updating_poni_or_main_config(monkeyp
         assert len(_MessageBoxStub.critical_calls) == 1
         title, text = _MessageBoxStub.critical_calls[0]
         assert title == "Validation Failed"
-        assert "update PONI file center values" in text
-        assert "main.json (poni_center_validation)" in text
+        assert "Actual center: row=128.00px, col=200.00px" in text
+        assert "Allowed rule: col > 256.00." in text
+        assert "update the PONI center values" in text
+        assert "poni_center_validation" in text
 
 
 def test_update_poni_updates_active_container_with_silent_sync(monkeypatch):
@@ -616,6 +619,12 @@ def test_poni_review_accept_out_of_zone_hard_fails_and_blocks_lock(monkeypatch):
             _MessageBoxStub.question = original_question
 
         assert result is False
+        assert len(_MessageBoxStub.critical_calls) >= 1
+        title, text = _MessageBoxStub.critical_calls[0]
+        assert title == "PONI Validation Failed"
+        assert "PONI center is outside the allowed zone." in text
+        assert "- center out of zone" in text
+        assert "poni_center_validation" in text
         with h5py.File(container_path, "r") as h5f:
             assert h5f.attrs.get("poni_center_review_status") == "rejected"
             assert bool(h5f.attrs.get("poni_center_in_allowed_zone", True)) is False

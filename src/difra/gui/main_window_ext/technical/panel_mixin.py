@@ -460,7 +460,7 @@ class TechnicalPanelMixin:
             stage_controller = None
             if hasattr(self, "hardware_controller") and self.hardware_controller:
                 stage_controller = self.hardware_controller.stage_controller
-            elif hasattr(self, "stage_controller"):
+            elif getattr(self, "stage_controller", None) is not None:
                 stage_controller = self.stage_controller
             elif hasattr(self, "hardware_client") and self.hardware_client:
                 stage_controller = self.hardware_client.stage_controller

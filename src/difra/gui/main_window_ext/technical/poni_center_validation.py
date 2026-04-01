@@ -164,8 +164,9 @@ def _format_rule_violation(
     expected: str,
 ) -> str:
     return (
-        f"PONI center mismatch for {alias}: "
-        f"row={row_px:.2f}px, col={col_px:.2f}px, expected {expected}"
+        f"PONI center for {alias} is outside the allowed zone. "
+        f"Actual center: row={row_px:.2f}px, col={col_px:.2f}px. "
+        f"Allowed rule: {expected}."
     )
 
 

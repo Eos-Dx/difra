@@ -678,6 +678,15 @@ class H5ManagementLockingMixin:
             validation_config=validation_cfg,
         )
 
+    def _poni_validation_config_label(self) -> str:
+        config_path = getattr(self, "_active_config_path", None)
+        if config_path:
+            try:
+                return str(Path(config_path).name)
+            except Exception:
+                return str(config_path)
+        return "active setup config"
+
     def _current_operator_id_for_review(self) -> str:
         operator_id = ""
         operator_manager = getattr(self, "operator_manager", None)
@@ -861,12 +870,17 @@ class H5ManagementLockingMixin:
                 state=self.STATE_REJECTED_BLOCKED,
                 reason="center_out_of_zone",
             )
+            details = "\n".join(f"- {err}" for err in center_errors[:4])
+            if len(center_errors) > 4:
+                details += f"\n- ... and {len(center_errors) - 4} more"
             QMessageBox.critical(
                 self,
                 "PONI Validation Failed",
-                "Center point is outside the valid zone.\n\n"
+                "PONI center is outside the allowed zone.\n\n"
+                f"{details}\n\n"
                 "Lock cannot continue.\n"
-                "Adjust PONI/distance settings and load valid PONI files.",
+                f"Adjust the PONI values or update poni_center_validation in {self._poni_validation_config_label()}, "
+                "then load valid PONI files.",
             )
             if prompt_reload_on_reject:
                 retry = QMessageBox.question(
@@ -1270,7 +1284,8 @@ class H5ManagementLockingMixin:
                 )
             if center_error_count > 0:
                 remediation_lines.append(
-                    "Center position check failed: update PONI file center values or update limits in main.json (poni_center_validation)."
+                    "Center position check failed: update the PONI center values or update "
+                    f"poni_center_validation in {self._poni_validation_config_label()}."
                 )
 
             message = (

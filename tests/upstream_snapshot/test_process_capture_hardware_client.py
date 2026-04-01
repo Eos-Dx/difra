@@ -46,10 +46,11 @@ class _StubStageController:
 
 
 class _StubHardwareClient:
-    def __init__(self):
+    def __init__(self, stage_controller=None):
         self.calls = []
         self._x = 0.0
         self._y = 0.0
+        self.stage_controller = stage_controller
 
     def move_to(self, position_mm, axis, timeout_s=25.0):
         self.calls.append((position_mm, axis, timeout_s))
@@ -123,9 +124,22 @@ class _StubPointItem:
         return self._rect
 
 
-def test_move_stage_prefers_hardware_client():
+def test_move_stage_prefers_hardware_client_stage_controller():
     h = _Harness()
-    h.hardware_client = _StubHardwareClient()
+    client_stage = _StubStageController()
+    h.hardware_client = _StubHardwareClient(stage_controller=client_stage)
+    h.stage_controller = _StubStageController()
+
+    out = h._move_stage(1.5, -2.0, timeout_s=7.0)
+    assert out == (1.5, -2.0)
+    assert h.hardware_client.calls == []
+    assert client_stage.calls == [(1.5, -2.0, 7.0)]
+    assert h.stage_controller.calls == []
+
+
+def test_move_stage_falls_back_to_hardware_client_axis_moves_when_stage_controller_missing():
+    h = _Harness()
+    h.hardware_client = _StubHardwareClient(stage_controller=None)
     h.stage_controller = _StubStageController()
 
     out = h._move_stage(1.5, -2.0, timeout_s=7.0)

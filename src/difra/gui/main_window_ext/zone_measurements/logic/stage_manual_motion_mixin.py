@@ -7,6 +7,13 @@ import threading
 class StageManualMotionMixin:
     """Async/manual movement controls (goto/home/load)."""
 
+    def _move_client_xy(self, client, x: float, y: float, timeout_s: float):
+        stage = getattr(client, "stage_controller", None)
+        if stage is not None:
+            return stage.move_stage(float(x), float(y), move_timeout=timeout_s)
+        client.move_to(x, axis="x", timeout_s=timeout_s)
+        return client.move_to(y, axis="y", timeout_s=timeout_s)
+
     def _set_manual_motion_controls_enabled(self, enabled: bool) -> None:
         controls = ("gotoBtn", "homeBtn", "loadPosBtn", "initializeBtn")
         for name in controls:
@@ -108,8 +115,7 @@ class StageManualMotionMixin:
 
         def _worker():
             client = self._ensure_hardware_client()
-            client.move_to(x, axis="x", timeout_s=25)
-            return client.move_to(y, axis="y", timeout_s=25)
+            return self._move_client_xy(client, x, y, timeout_s=25)
 
         def _on_success(res):
             try:
@@ -182,8 +188,7 @@ class StageManualMotionMixin:
 
             def _worker():
                 client = self._ensure_hardware_client()
-                client.move_to(home_x, axis="x", timeout_s=25)
-                return client.move_to(home_y, axis="y", timeout_s=25)
+                return self._move_client_xy(client, home_x, home_y, timeout_s=25)
 
             def _on_success(res):
                 try:
@@ -246,8 +251,7 @@ class StageManualMotionMixin:
 
             def _worker():
                 client = self._ensure_hardware_client()
-                client.move_to(load_x, axis="x", timeout_s=25)
-                return client.move_to(load_y, axis="y", timeout_s=25)
+                return self._move_client_xy(client, load_x, load_y, timeout_s=25)
 
             def _on_success(res):
                 try:
