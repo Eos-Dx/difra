@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -92,6 +93,28 @@ def _create_session_file(folder: Path, sample: str, study: str) -> Path:
         acquisition_date="2026-02-13",
     )
     return Path(session_path)
+
+
+def _make_session_complete(session_path: Path):
+    session_writer.add_image(
+        session_path,
+        image_index=1,
+        image_data=np.ones((8, 8), dtype=np.float32),
+        image_type="sample",
+    )
+    session_writer.add_point(
+        session_path,
+        point_index=1,
+        pixel_coordinates=[10.0, 12.0],
+        physical_coordinates_mm=[1.0, 2.0],
+    )
+    session_writer.add_measurement(
+        session_path,
+        point_index=1,
+        measurement_data={"PRIMARY": np.ones((4, 4), dtype=np.float32)},
+        detector_metadata={"PRIMARY": {"integration_time_ms": 100.0}},
+        poni_alias_map={"PRIMARY": "PRIMARY"},
+    )
 
 
 def _row_checkbox(table, row):
@@ -289,3 +312,49 @@ def test_archived_container_manual_generate_old_format(qapp, tmp_path, monkeypat
 
     old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
     assert len(old_dirs) == 1
+
+
+def test_session_queue_close_archives_and_marks_incomplete(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+
+    complete_session = _create_session_file(measurements_folder, "SAMPLE_OK", "STUDY_OK")
+    incomplete_session = _create_session_file(measurements_folder, "SAMPLE_BAD", "STUDY_BAD")
+    _make_session_complete(complete_session)
+
+    session_manager = _FakeSessionManager()
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+        },
+        session_manager=session_manager,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._on_close_all_sessions()
+    qapp.processEvents()
+
+    assert harness.pending_sessions_table.rowCount() == 0
+    assert harness.archived_sessions_table.rowCount() == 2
+
+    archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
+    assert len(archived_files) == 2
+
+    archived_statuses = {}
+    for archived in archived_files:
+        with h5py.File(archived, "r") as h5f:
+            archived_statuses[str(h5f.attrs.get(schema.ATTR_SAMPLE_ID))] = (
+                str(h5f.attrs.get("transfer_status")),
+                str(h5f.attrs.get("session_completion_status")),
+            )
+
+    assert archived_statuses["SAMPLE_OK"] == ("unsent", "complete")
+    assert archived_statuses["SAMPLE_BAD"] == ("not_complete", "not_complete")

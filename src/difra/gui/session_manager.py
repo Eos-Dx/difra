@@ -1010,10 +1010,28 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             "matadorMachineId",
             session_attrs.get("matador_machine_id"),
         )
+        project_id = session_attrs.get(
+            "matadorProjectId",
+            session_attrs.get("matador_project_id"),
+        )
+        project_name = session_attrs.get(
+            "matadorProjectName",
+            session_attrs.get("matador_project_name"),
+        )
         if study_id not in (None, ""):
             extra_attrs["matadorStudyId"] = int(study_id)
         if machine_id not in (None, ""):
             extra_attrs["matadorMachineId"] = int(machine_id)
+        if project_id not in (None, ""):
+            try:
+                extra_attrs["matadorProjectId"] = int(project_id)
+            except Exception:
+                logger.warning(
+                    "Ignoring non-integer Matador project id during session creation",
+                    project_id=project_id,
+                )
+        if project_name not in (None, ""):
+            extra_attrs["matadorProjectName"] = self._as_text(project_name)
         try:
             with h5py.File(self.session_path, "a") as h5f:
                 for key, value in extra_attrs.items():
@@ -1231,12 +1249,28 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             pass
 
         transfer_status = "unsent"
-        get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)
-        if callable(get_transfer_status):
-            try:
-                transfer_status = str(get_transfer_status(self.session_path) or "unsent")
-            except Exception:
-                transfer_status = "unsent"
+        try:
+            with h5py.File(self.session_path, "r") as h5f:
+                explicit_transfer_status = self._as_text(
+                    h5f.attrs.get("transfer_status"),
+                    "",
+                ).strip()
+                if explicit_transfer_status.lower() == "not_complete":
+                    transfer_status = explicit_transfer_status
+                else:
+                    get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)
+                    if callable(get_transfer_status):
+                        try:
+                            transfer_status = str(get_transfer_status(self.session_path) or "unsent")
+                        except Exception:
+                            transfer_status = "unsent"
+        except Exception:
+            get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)
+            if callable(get_transfer_status):
+                try:
+                    transfer_status = str(get_transfer_status(self.session_path) or "unsent")
+                except Exception:
+                    transfer_status = "unsent"
         
         return {
             "active": True,

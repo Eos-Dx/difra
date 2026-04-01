@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple, TypeVar
+
+_T = TypeVar("_T")
 
 
 def _to_float(value) -> Optional[float]:
@@ -18,6 +20,39 @@ def _to_float(value) -> Optional[float]:
 
 def _normalize_alias(alias: str) -> str:
     return str(alias or "").strip().upper()
+
+
+def resolve_poni_rule_alias(
+    alias: str,
+    detector_configs: Optional[Sequence[Mapping]] = None,
+) -> str:
+    alias_key = _normalize_alias(alias)
+    for detector_cfg in detector_configs or ():
+        if not isinstance(detector_cfg, Mapping):
+            continue
+        configured_alias = _normalize_alias(detector_cfg.get("alias"))
+        if configured_alias != alias_key:
+            continue
+        mapped_alias = _normalize_alias(
+            detector_cfg.get("poni_center_rule_alias") or detector_cfg.get("poni_rule_alias")
+        )
+        if mapped_alias:
+            return mapped_alias
+        break
+    return alias_key
+
+
+def normalize_alias_mapping_to_rule_aliases(
+    values_by_alias: Optional[Mapping[str, _T]],
+    detector_configs: Optional[Sequence[Mapping]] = None,
+) -> Dict[str, _T]:
+    normalized: Dict[str, _T] = {}
+    for alias, value in (values_by_alias or {}).items():
+        alias_key = resolve_poni_rule_alias(alias, detector_configs)
+        if not alias_key:
+            continue
+        normalized[alias_key] = value
+    return normalized
 
 
 def parse_poni_center_px(

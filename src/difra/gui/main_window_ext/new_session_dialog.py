@@ -53,6 +53,8 @@ class NewSessionDialog(QDialog):
         self._matador_cache_saved_at = ""
         self._last_auto_study_name = ""
         self._last_auto_project_name = ""
+        self._selected_matador_project_id = None
+        self._selected_matador_project_name = ""
 
         self.setWindowTitle("New Session")
         self.setModal(True)
@@ -73,8 +75,7 @@ class NewSessionDialog(QDialog):
         form_layout.addRow("Study*:", self.study_name_edit)
 
         self.project_id_edit = QLineEdit()
-        self.project_id_edit.setPlaceholderText("e.g. Horizon")
-        form_layout.addRow("Project:", self.project_id_edit)
+        self.project_id_edit.hide()
 
         matador_group = QGroupBox("Matador Reference Data")
         matador_layout = QFormLayout(matador_group)
@@ -162,7 +163,7 @@ class NewSessionDialog(QDialog):
             "If Matador is unavailable, enter Study ID and Machine ID manually.\n"
             "Beam energy: Read from global config.\n"
             "<b>Note:</b> Distance must match technical container distance.\n"
-            "If Project is left blank, Study will be used.\n"
+            "Project is read from the selected Matador Study and stored in the session metadata.\n"
             "Specimen ID can be filled by QR scanner input."
         )
         info_label.setStyleSheet("color: gray; font-style: italic;")
@@ -258,6 +259,9 @@ class NewSessionDialog(QDialog):
         study_name = str(
             self.settings.value("matador/last_study_name", "", type=str) or ""
         ).strip()
+        project_name = str(
+            self.settings.value("matador/last_project_name", "", type=str) or ""
+        ).strip()
         project_id = str(
             self.settings.value("matador/last_project_id", "", type=str) or ""
         ).strip()
@@ -270,9 +274,20 @@ class NewSessionDialog(QDialog):
         if study_name:
             self.study_name_edit.setText(study_name)
             self._last_auto_study_name = study_name
+        if project_name:
+            self.project_id_edit.setText(project_name)
+            self._last_auto_project_name = project_name
+        elif study_name:
+            self.project_id_edit.setText(study_name)
+            self._last_auto_project_name = study_name
         if project_id:
-            self.project_id_edit.setText(project_id)
-            self._last_auto_project_name = project_id
+            try:
+                self._selected_matador_project_id = int(project_id)
+            except Exception:
+                self._selected_matador_project_id = None
+        else:
+            self._selected_matador_project_id = None
+        self._selected_matador_project_name = self.project_id_edit.text().strip()
         if matador_study_id:
             self.matador_study_id_edit.setText(matador_study_id)
         if matador_machine_id:
@@ -286,8 +301,16 @@ class NewSessionDialog(QDialog):
             self.study_name_edit.text().strip(),
         )
         self.settings.setValue(
+            "matador/last_project_name",
+            self.project_id_edit.text().strip() or self.study_name_edit.text().strip(),
+        )
+        self.settings.setValue(
             "matador/last_project_id",
-            self.project_id_edit.text().strip(),
+            (
+                ""
+                if self._selected_matador_project_id in (None, "")
+                else str(self._selected_matador_project_id)
+            ),
         )
         self.settings.setValue(
             "matador/last_matador_study_id",
@@ -304,6 +327,7 @@ class NewSessionDialog(QDialog):
         keys = [
             "matador/last_operator_id",
             "matador/last_study_name",
+            "matador/last_project_name",
             "matador/last_project_id",
             "matador/last_matador_study_id",
             "matador/last_matador_machine_id",
@@ -318,6 +342,8 @@ class NewSessionDialog(QDialog):
         self.matador_machine_id_edit.clear()
         self._last_auto_study_name = ""
         self._last_auto_project_name = ""
+        self._selected_matador_project_id = None
+        self._selected_matador_project_name = ""
 
         self.matador_study_combo.blockSignals(True)
         self.matador_study_combo.setCurrentIndex(0)
@@ -448,6 +474,9 @@ class NewSessionDialog(QDialog):
     def _on_matador_study_changed(self) -> None:
         study = self.matador_study_combo.currentData()
         if not isinstance(study, dict):
+            self._selected_matador_project_name = (
+                self.project_id_edit.text().strip() or self.study_name_edit.text().strip()
+            )
             return
 
         study_id = str(study.get("id") or "").strip()
@@ -463,13 +492,23 @@ class NewSessionDialog(QDialog):
             self._last_auto_study_name = study_name
 
         project_name = str(study.get("projectName") or "").strip()
-        current_project_name = self.project_id_edit.text().strip()
-        if project_name and (
-            not current_project_name
-            or current_project_name == self._last_auto_project_name
-        ):
+        if project_name:
             self.project_id_edit.setText(project_name)
             self._last_auto_project_name = project_name
+            self._selected_matador_project_name = project_name
+        elif study_name:
+            self.project_id_edit.setText(study_name)
+            self._last_auto_project_name = study_name
+            self._selected_matador_project_name = study_name
+
+        project_id = study.get("projectId")
+        if project_id in (None, ""):
+            self._selected_matador_project_id = None
+        else:
+            try:
+                self._selected_matador_project_id = int(project_id)
+            except Exception:
+                self._selected_matador_project_id = None
 
     def _on_matador_machine_changed(self) -> None:
         machine = self.matador_machine_combo.currentData()
@@ -593,12 +632,14 @@ class NewSessionDialog(QDialog):
     def get_parameters(self):
         """Get session parameters from dialog."""
         specimen_id = self.specimen_id_edit.text().strip()
+        project_name = self.project_id_edit.text().strip() or self.study_name_edit.text().strip()
         return {
             "sample_id": specimen_id,
             "specimenId": specimen_id,
             "study_name": self.study_name_edit.text().strip(),
-            "project_id": self.project_id_edit.text().strip()
-            or self.study_name_edit.text().strip(),
+            "project_id": project_name,
+            "matadorProjectId": self._selected_matador_project_id,
+            "matadorProjectName": self._selected_matador_project_name or project_name,
             "matadorStudyId": int(self.matador_study_id_edit.text().strip()),
             "matadorMachineId": int(self.matador_machine_id_edit.text().strip()),
             "distance_cm": float(self.distance_edit.text()),

@@ -126,6 +126,8 @@ def _build_dialog_like(operator_manager) -> SimpleNamespace:
         _set_matador_status=lambda message: None,
         _last_auto_study_name="",
         _last_auto_project_name="",
+        _selected_matador_project_id=None,
+        _selected_matador_project_name="",
         matador_study_combo=_FakeCombo(),
         matador_machine_combo=_FakeCombo(),
     )
@@ -140,7 +142,7 @@ def qapp():
     return app
 
 
-def test_dialog_constructor_builds_widgets_and_applies_defaults(qapp):
+def test_dialog_constructor_builds_widgets_and_applies_defaults(qapp, tmp_path):
     operators = {
         "op2": {
             "name": "Beta",
@@ -156,7 +158,11 @@ def test_dialog_constructor_builds_widgets_and_applies_defaults(qapp):
     }
     manager = _FakeOperatorManager(operators, current_id="op1")
 
-    dialog = NewSessionDialog(manager, default_distance=21.5)
+    dialog = NewSessionDialog(
+        manager,
+        default_distance=21.5,
+        matador_cache_path=tmp_path / "missing_matador_cache.json",
+    )
     try:
         assert dialog.windowTitle() == "New Session"
         assert dialog.isModal() is True
@@ -203,18 +209,20 @@ def test_dialog_loads_cached_matador_references(qapp, tmp_path):
         dialog.matador_machine_combo.setCurrentIndex(1)
         assert dialog.study_name_edit.text() == "Horizon_Grant1"
         assert dialog.project_id_edit.text() == "Horizon"
+        assert dialog._selected_matador_project_id == 11
         assert dialog.matador_study_id_edit.text() == "1701"
         assert dialog.matador_machine_id_edit.text() == "1751"
     finally:
         dialog.deleteLater()
 
 
-def test_dialog_restores_last_defaults_from_settings(qapp, monkeypatch):
+def test_dialog_restores_last_defaults_from_settings(qapp, monkeypatch, tmp_path):
     settings = _FakeSettings(
         {
             "matador/last_operator_id": "op1",
             "matador/last_study_name": "Keele_Grant2",
-            "matador/last_project_id": "Keele",
+            "matador/last_project_name": "Keele",
+            "matador/last_project_id": "77",
             "matador/last_matador_study_id": "1701",
             "matador/last_matador_machine_id": "1751",
         }
@@ -225,11 +233,16 @@ def test_dialog_restores_last_defaults_from_settings(qapp, monkeypatch):
         current_id=None,
     )
 
-    dialog = NewSessionDialog(manager, default_distance=17.0)
+    dialog = NewSessionDialog(
+        manager,
+        default_distance=17.0,
+        matador_cache_path=tmp_path / "missing_matador_cache.json",
+    )
     try:
         assert dialog.operator_combo.currentData() == "op1"
         assert dialog.study_name_edit.text() == "Keele_Grant2"
         assert dialog.project_id_edit.text() == "Keele"
+        assert dialog._selected_matador_project_id == 77
         assert dialog.matador_study_id_edit.text() == "1701"
         assert dialog.matador_machine_id_edit.text() == "1751"
     finally:
@@ -424,6 +437,7 @@ def test_save_last_session_defaults_persists_last_selection():
     fake_dialog.settings = _FakeSettings()
     fake_dialog.study_name_edit = _FakeLineEdit("Keele_Grant2")
     fake_dialog.project_id_edit = _FakeLineEdit("Keele")
+    fake_dialog._selected_matador_project_id = 77
     fake_dialog.matador_study_id_edit = _FakeLineEdit("1701")
     fake_dialog.matador_machine_id_edit = _FakeLineEdit("1751")
 
@@ -431,7 +445,8 @@ def test_save_last_session_defaults_persists_last_selection():
 
     assert fake_dialog.settings.values["matador/last_operator_id"] == "op-1"
     assert fake_dialog.settings.values["matador/last_study_name"] == "Keele_Grant2"
-    assert fake_dialog.settings.values["matador/last_project_id"] == "Keele"
+    assert fake_dialog.settings.values["matador/last_project_name"] == "Keele"
+    assert fake_dialog.settings.values["matador/last_project_id"] == "77"
     assert fake_dialog.settings.values["matador/last_matador_study_id"] == "1701"
     assert fake_dialog.settings.values["matador/last_matador_machine_id"] == "1751"
     assert fake_dialog.settings.synced is True
@@ -443,6 +458,7 @@ def test_clear_remembered_matador_defaults_resets_saved_values():
         {
             "matador/last_operator_id": "op-1",
             "matador/last_study_name": "Keele_Grant2",
+            "matador/last_project_name": "Keele",
             "matador/last_project_id": "Keele",
             "matador/last_matador_study_id": "1701",
             "matador/last_matador_machine_id": "1751",
@@ -472,6 +488,8 @@ def test_clear_remembered_matador_defaults_resets_saved_values():
     assert fake_dialog.matador_machine_combo.current_index == 0
     assert fake_dialog._last_auto_study_name == ""
     assert fake_dialog._last_auto_project_name == ""
+    assert fake_dialog._selected_matador_project_id is None
+    assert fake_dialog._selected_matador_project_name == ""
     assert fake_dialog.settings.synced is True
     assert status_messages[-1] == (
         "Remembered Matador defaults cleared. Refresh or choose new values."
@@ -483,6 +501,8 @@ def test_get_parameters_trims_values_and_uses_study_as_project_fallback():
     fake_dialog.specimen_id_edit = _FakeLineEdit(" 64101 ")
     fake_dialog.study_name_edit = _FakeLineEdit(" study-1 ")
     fake_dialog.project_id_edit = _FakeLineEdit(" ")
+    fake_dialog._selected_matador_project_id = None
+    fake_dialog._selected_matador_project_name = ""
     fake_dialog.matador_study_id_edit = _FakeLineEdit(" 1701 ")
     fake_dialog.matador_machine_id_edit = _FakeLineEdit(" 1751 ")
     fake_dialog.distance_edit = _FakeLineEdit("18.25")
@@ -495,6 +515,8 @@ def test_get_parameters_trims_values_and_uses_study_as_project_fallback():
         "specimenId": "64101",
         "study_name": "study-1",
         "project_id": "study-1",
+        "matadorProjectId": None,
+        "matadorProjectName": "study-1",
         "matadorStudyId": 1701,
         "matadorMachineId": 1751,
         "distance_cm": 18.25,

@@ -1,7 +1,9 @@
 import json
 
 from difra.gui.main_window_ext.technical.poni_center_validation import (
+    normalize_alias_mapping_to_rule_aliases,
     parse_poni_center_px,
+    resolve_poni_rule_alias,
     validate_poni_centers,
 )
 
@@ -98,3 +100,28 @@ def test_validate_poni_centers_is_noop_when_disabled():
     )
     assert errors == []
     assert warnings == []
+
+
+def test_resolve_poni_rule_alias_uses_detector_config_mapping():
+    detector_cfgs = [
+        {"alias": "SAXS", "poni_center_rule_alias": "PRIMARY"},
+        {"alias": "WAXS", "poni_center_rule_alias": "SECONDARY"},
+    ]
+
+    assert resolve_poni_rule_alias("SAXS", detector_cfgs) == "PRIMARY"
+    assert resolve_poni_rule_alias("WAXS", detector_cfgs) == "SECONDARY"
+    assert resolve_poni_rule_alias("PRIMARY", detector_cfgs) == "PRIMARY"
+
+
+def test_normalize_alias_mapping_to_rule_aliases_rekeys_demo_aliases():
+    detector_cfgs = [
+        {"alias": "SAXS", "poni_center_rule_alias": "PRIMARY"},
+        {"alias": "WAXS", "poni_center_rule_alias": "SECONDARY"},
+    ]
+
+    normalized = normalize_alias_mapping_to_rule_aliases(
+        {"SAXS": "left", "WAXS": "right"},
+        detector_cfgs,
+    )
+
+    assert normalized == {"PRIMARY": "left", "SECONDARY": "right"}

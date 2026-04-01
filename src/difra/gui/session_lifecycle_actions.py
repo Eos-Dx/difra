@@ -21,6 +21,7 @@ from difra.gui.matador_upload_api import (
     build_matador_upload_api,
     sha256_file,
 )
+from difra.gui.main_window_ext.technical.helpers import _get_difra_base_folder
 from difra.gui.session_lifecycle_service import SessionLifecycleService
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
@@ -41,6 +42,8 @@ class SendArchiveResult:
     upload_session_id: str = ""
     upload_success: int = 0
     upload_failed: int = 0
+    archived_complete: int = 0
+    archived_not_complete: int = 0
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,12 @@ class SessionLifecycleActions:
     SESSION_STATE_ATTR = "session_state"
     SESSION_STATE_REASON_ATTR = "session_state_reason"
     SESSION_STATE_UPDATED_ATTR = "session_state_updated_at"
+    TRANSFER_STATUS_ATTR = "transfer_status"
+    TRANSFER_STATUS_NOT_COMPLETE = "not_complete"
+    TRANSFER_STATUS_UNSENT = "unsent"
+    COMPLETION_STATUS_ATTR = "session_completion_status"
+    COMPLETION_STATUS_COMPLETE = "complete"
+    COMPLETION_STATUS_NOT_COMPLETE = "not_complete"
 
     DEFAULT_MEASUREMENT_CLEANUP_PATTERNS = [
         "*.txt",
@@ -99,6 +108,31 @@ class SessionLifecycleActions:
             if text:
                 return text
         return "unknown"
+
+    @staticmethod
+    def _notify_progress(
+        progress_callback: Optional[Any],
+        *,
+        message: str,
+        current: Optional[int] = None,
+        total: Optional[int] = None,
+        kind: str = "",
+        container_path: Optional[Path] = None,
+    ) -> None:
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(
+                {
+                    "message": str(message or "").strip(),
+                    "current": current,
+                    "total": total,
+                    "kind": str(kind or "").strip(),
+                    "container_path": str(container_path) if container_path else "",
+                }
+            )
+        except Exception:
+            logger.debug("Suppressed session send progress callback exception", exc_info=True)
 
     @classmethod
     def _write_container_attrs(cls, container_path: Path, attrs: Dict[str, Any]) -> bool:
@@ -222,6 +256,18 @@ class SessionLifecycleActions:
             config=config,
             archive_folder=archive_folder,
         )
+
+    @classmethod
+    def resolve_matador_logs_root(cls, config: Optional[Dict[str, Any]] = None) -> Path:
+        cfg = config or {}
+        configured = str(cfg.get("matador_logs_folder") or "").strip()
+        if configured:
+            path = Path(configured)
+        else:
+            difra_base = Path(_get_difra_base_folder(cfg))
+            path = difra_base.parent / "matador_logs"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @classmethod
     def _zip_directory(cls, source_dir: Path, output_zip: Path) -> Path:
@@ -379,12 +425,28 @@ class SessionLifecycleActions:
         file_id: int,
         attempts: int = 6,
         delay_sec: float = 2.0,
+        progress_callback: Optional[Any] = None,
+        status_label: str = "",
+        current: Optional[int] = None,
+        total: Optional[int] = None,
+        container_path: Optional[Path] = None,
     ):
         last_status = None
         for index in range(max(int(attempts), 1)):
             status = upload_api.get_file_status(int(file_id))
             last_status = status
             upload_status = str(status.upload_status or "").upper()
+            SessionLifecycleActions._notify_progress(
+                progress_callback,
+                message=(
+                    f"{status_label} verification attempt {index + 1}/{max(int(attempts), 1)}: "
+                    f"{upload_status or 'PENDING'}"
+                ).strip(),
+                current=current,
+                total=total,
+                kind="file_status",
+                container_path=container_path,
+            )
             if upload_status == "HASH_VERIFIED":
                 return status
             if upload_status == "FAILED":
@@ -404,7 +466,18 @@ class SessionLifecycleActions:
         config: Optional[Dict[str, Any]] = None,
         simulate_failure: bool = False,
         failure_message: Optional[str] = None,
+        progress_callback: Optional[Any] = None,
+        current: Optional[int] = None,
+        total: Optional[int] = None,
     ) -> UploadStubResult:
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Starting Matador upload...",
+            current=current,
+            total=total,
+            kind="upload_started",
+            container_path=Path(archived_path),
+        )
         if simulate_failure:
             local_checksum = sha256_file(Path(archived_path))
             return UploadStubResult(
@@ -427,6 +500,14 @@ class SessionLifecycleActions:
             uploader_id=uploader_id,
         )
 
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
+            current=current,
+            total=total,
+            kind="create_session",
+            container_path=Path(archived_path),
+        )
         ingest_session = upload_backend.find_or_create_session(
             MatadorFindOrCreateSessionRequest(
                 study_id=int(session_metadata["study_id"]),
@@ -438,6 +519,14 @@ class SessionLifecycleActions:
         )
 
         zip_checksum = sha256_file(Path(old_format_zip_path))
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Now registering ZIP...",
+            current=current,
+            total=total,
+            kind="register_zip",
+            container_path=Path(archived_path),
+        )
         zip_registered = upload_backend.register_file(
             MatadorRegisterFileRequest(
                 ingest_session_id=int(ingest_session.id),
@@ -452,15 +541,36 @@ class SessionLifecycleActions:
                 expected_size_bytes=int(Path(old_format_zip_path).stat().st_size),
             )
         )
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Now uploading ZIP...",
+            current=current,
+            total=total,
+            kind="upload_zip",
+            container_path=Path(archived_path),
+        )
         upload_backend.upload_file_bytes(zip_registered.presigned_url, Path(old_format_zip_path))
         zip_status = cls._poll_until_hash_verified(
             upload_backend,
             file_id=int(zip_registered.id),
             attempts=int((config or {}).get("matador_poll_attempts", 6)),
             delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
+            progress_callback=progress_callback,
+            status_label=f"{Path(archived_path).name}: ZIP",
+            current=current,
+            total=total,
+            container_path=Path(archived_path),
         )
 
         h5_checksum = sha256_file(Path(archived_path))
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Now registering H5 container...",
+            current=current,
+            total=total,
+            kind="register_h5",
+            container_path=Path(archived_path),
+        )
         h5_registered = upload_backend.register_file(
             MatadorRegisterFileRequest(
                 ingest_session_id=int(ingest_session.id),
@@ -476,12 +586,25 @@ class SessionLifecycleActions:
                 expected_size_bytes=int(Path(archived_path).stat().st_size),
             )
         )
+        cls._notify_progress(
+            progress_callback,
+            message=f"{Path(archived_path).name}: Now uploading H5 container...",
+            current=current,
+            total=total,
+            kind="upload_h5",
+            container_path=Path(archived_path),
+        )
         upload_backend.upload_file_bytes(h5_registered.presigned_url, Path(archived_path))
         h5_status = cls._poll_until_hash_verified(
             upload_backend,
             file_id=int(h5_registered.id),
             attempts=int((config or {}).get("matador_poll_attempts", 6)),
             delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
+            progress_callback=progress_callback,
+            status_label=f"{Path(archived_path).name}: H5",
+            current=current,
+            total=total,
+            container_path=Path(archived_path),
         )
 
         zip_ok = (
@@ -505,6 +628,17 @@ class SessionLifecycleActions:
                 "Matador upload incomplete: "
                 f"zip={zip_state or 'unknown'} h5={h5_state or 'unknown'}"
             )
+        cls._notify_progress(
+            progress_callback,
+            message=(
+                f"{Path(archived_path).name}: Final upload status: "
+                f"{'SUCCESS' if success else 'FAILED'} | {message}"
+            ),
+            current=current,
+            total=total,
+            kind="upload_finished",
+            container_path=Path(archived_path),
+        )
 
         session_marker = str(ingest_session.id)
         if hasattr(ingest_session, "session_token") and str(ingest_session.session_token or "").strip():
@@ -603,12 +737,17 @@ class SessionLifecycleActions:
         upload_result: UploadStubResult,
     ) -> bool:
         """Persist upload session/result payload in session container metadata."""
+        send_status = "successful" if upload_result.success else "unsuccessful"
+        send_reason = "" if upload_result.success else str(upload_result.message)
         return cls._write_container_attrs(
             container_path,
             {
                 "upload_session_id": str(upload_result.upload_session_id),
                 "upload_status": "success" if upload_result.success else "failed",
                 "upload_result_message": str(upload_result.message),
+                "matador_send_status": send_status,
+                "matador_send_reason": send_reason,
+                "matador_send_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "upload_bytes": int(upload_result.bytes_uploaded),
                 "upload_local_checksum_sha256": str(
                     upload_result.local_checksum_sha256
@@ -775,6 +914,215 @@ class SessionLifecycleActions:
         )
         return changed
 
+    @staticmethod
+    def _decode_attr(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value or "")
+
+    @classmethod
+    def inspect_session_completeness(cls, session_path: Path) -> Dict[str, Any]:
+        """Inspect archived/pending session content and decide if Matador send is allowed."""
+        summary: Dict[str, Any] = {
+            "is_complete": False,
+            "has_sample_image": False,
+            "completed_measurements": 0,
+            "total_measurements": 0,
+            "reasons": [],
+        }
+
+        with h5py.File(session_path, "r") as h5f:
+            images_group = h5f.get("/entry/images")
+            if images_group is not None:
+                for image_name in images_group.keys():
+                    if not str(image_name).startswith("img_"):
+                        continue
+                    image_group = images_group[image_name]
+                    image_type = cls._decode_attr(
+                        image_group.attrs.get("image_type", "")
+                    ).strip().lower()
+                    if image_type == "sample":
+                        summary["has_sample_image"] = True
+                        break
+
+            measurements_group = h5f.get("/entry/measurements")
+            if measurements_group is not None:
+                for point_group in measurements_group.values():
+                    for measurement_group in point_group.values():
+                        summary["total_measurements"] += 1
+                        measurement_status = cls._decode_attr(
+                            measurement_group.attrs.get("measurement_status", "")
+                        ).strip().lower()
+                        if measurement_status == "completed":
+                            summary["completed_measurements"] += 1
+
+        reasons: List[str] = []
+        if not summary["has_sample_image"]:
+            reasons.append("missing sample image")
+        if int(summary["completed_measurements"]) <= 0:
+            reasons.append("no completed measurements")
+        summary["reasons"] = reasons
+        summary["is_complete"] = not reasons
+        return summary
+
+    @classmethod
+    def archive_session_containers(
+        cls,
+        container_paths: Iterable[Path],
+        *,
+        container_manager: Any,
+        archive_folder: Path,
+        active_session_path: Optional[Path] = None,
+        lock_user: Optional[str] = None,
+        uploader_id: Optional[str] = None,
+        session_ids: Optional[Dict[str, str]] = None,
+        force_not_complete: bool = False,
+        reason_message: Optional[str] = None,
+    ) -> SendArchiveResult:
+        """Archive selected session containers without Matador send.
+
+        Containers with no sample image or no completed measurements are archived as
+        NOT_COMPLETE and later blocked from send. Complete containers are archived
+        as UNSENT so the operator can send them another time.
+        """
+        result = SendArchiveResult()
+        active_resolved = (
+            Path(active_session_path).resolve()
+            if active_session_path is not None
+            else None
+        )
+        cleanup_folders = set()
+        session_id_by_path = session_ids or {}
+        resolved_uploader_id = cls._resolve_uploader_id(
+            explicit_uploader_id=uploader_id,
+            lock_user=lock_user,
+        )
+
+        for container_path in container_paths:
+            candidate = Path(container_path)
+            try:
+                if not candidate.exists():
+                    continue
+
+                was_active = False
+                if active_resolved is not None:
+                    try:
+                        was_active = candidate.resolve() == active_resolved
+                    except Exception:
+                        was_active = False
+
+                completeness = cls.inspect_session_completeness(candidate)
+                mark_not_complete = bool(force_not_complete or not completeness["is_complete"])
+
+                try:
+                    cls.finalize_session_container(
+                        session_path=candidate,
+                        container_manager=container_manager,
+                        lock_user=lock_user,
+                    )
+                except Exception as exc:
+                    result.failed.append(
+                        f"{candidate.name}: lock/validation skipped ({type(exc).__name__}: {exc})"
+                    )
+
+                explicit_session_id = session_id_by_path.get(str(candidate))
+                archived_path = SessionLifecycleService.archive_session_container(
+                    session_path=candidate,
+                    session_id=explicit_session_id,
+                    archive_folder=archive_folder,
+                )
+
+                cls._archive_measurement_artifacts(
+                    measurements_folder=candidate.parent,
+                    destination_folder=archived_path.parent,
+                )
+                try:
+                    cleanup_folders.add(str(candidate.parent.resolve()))
+                except Exception:
+                    cleanup_folders.add(str(candidate.parent))
+
+                attrs: Dict[str, Any] = {
+                    cls.SESSION_STATE_ATTR: "archived",
+                    cls.SESSION_STATE_UPDATED_ATTR: time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "uploaded_by": resolved_uploader_id,
+                }
+                if mark_not_complete:
+                    reasons = list(completeness.get("reasons") or [])
+                    reason_text = ", ".join(reasons) if reasons else "container incomplete"
+                    attrs.update(
+                        {
+                            cls.SESSION_STATE_REASON_ATTR: "archived_not_complete",
+                            cls.TRANSFER_STATUS_ATTR: cls.TRANSFER_STATUS_NOT_COMPLETE,
+                            cls.COMPLETION_STATUS_ATTR: cls.COMPLETION_STATUS_NOT_COMPLETE,
+                            "upload_status": cls.TRANSFER_STATUS_NOT_COMPLETE,
+                            "upload_result_message": (
+                                str(reason_message or "").strip()
+                                or "Session archived as NOT_COMPLETE; Matador send is blocked."
+                            )
+                            + f" Reasons: {reason_text}.",
+                        }
+                    )
+                    result.archived_not_complete += 1
+                else:
+                    attrs.update(
+                        {
+                            cls.SESSION_STATE_REASON_ATTR: "archived_without_send",
+                            cls.TRANSFER_STATUS_ATTR: cls.TRANSFER_STATUS_UNSENT,
+                            cls.COMPLETION_STATUS_ATTR: cls.COMPLETION_STATUS_COMPLETE,
+                            "upload_status": cls.TRANSFER_STATUS_UNSENT,
+                            "upload_result_message": (
+                                str(reason_message or "").strip()
+                                or "Session archived without Matador send."
+                            ),
+                        }
+                    )
+                    result.archived_complete += 1
+
+                cls._write_container_attrs(Path(archived_path), attrs)
+                result.archived_paths.append(archived_path)
+                result.moved += 1
+
+                if was_active:
+                    result.archived_active_session = True
+            except Exception as exc:
+                result.failed.append(f"{candidate.name}: {exc}")
+
+        for folder_str in sorted(cleanup_folders):
+            try:
+                result.cleaned_artifacts += cls._cleanup_measurement_artifacts(
+                    Path(folder_str)
+                )
+            except Exception as exc:
+                result.failed.append(f"cleanup {folder_str}: {exc}")
+
+        return result
+
+    @classmethod
+    def archive_not_complete_session_containers(
+        cls,
+        container_paths: Iterable[Path],
+        *,
+        container_manager: Any,
+        archive_folder: Path,
+        active_session_path: Optional[Path] = None,
+        lock_user: Optional[str] = None,
+        uploader_id: Optional[str] = None,
+        session_ids: Optional[Dict[str, str]] = None,
+        reason_message: Optional[str] = None,
+    ) -> SendArchiveResult:
+        """Compatibility wrapper for explicit NOT_COMPLETE archival flows."""
+        return cls.archive_session_containers(
+            container_paths=container_paths,
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            active_session_path=active_session_path,
+            lock_user=lock_user,
+            uploader_id=uploader_id,
+            session_ids=session_ids,
+            force_not_complete=True,
+            reason_message=reason_message,
+        )
+
     @classmethod
     def send_and_archive_session_containers(
         cls,
@@ -792,6 +1140,7 @@ class SessionLifecycleActions:
         session_ids: Optional[Dict[str, str]] = None,
         config: Optional[Dict[str, Any]] = None,
         export_old_format: Optional[bool] = None,
+        progress_callback: Optional[Any] = None,
     ) -> SendArchiveResult:
         """Lock (if needed) and archive selected session containers."""
         result = SendArchiveResult()
@@ -817,11 +1166,23 @@ class SessionLifecycleActions:
         session_id_by_path = session_ids or {}
         cleanup_folders = set()
 
-        for container_path in container_paths:
+        queued_paths = [Path(path) for path in container_paths]
+        total_containers = len(queued_paths)
+
+        for item_index, container_path in enumerate(queued_paths, start=1):
             candidate = Path(container_path)
             try:
                 if not candidate.exists():
                     continue
+
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{item_index}/{total_containers}] {candidate.name}: Starting send+archive workflow...",
+                    current=item_index,
+                    total=total_containers,
+                    kind="container_started",
+                    container_path=candidate,
+                )
 
                 was_active = False
                 if active_resolved is not None:
@@ -831,6 +1192,14 @@ class SessionLifecycleActions:
                         was_active = False
 
                 try:
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: Finalizing session container...",
+                        current=item_index,
+                        total=total_containers,
+                        kind="finalize_container",
+                        container_path=candidate,
+                    )
                     cls.finalize_session_container(
                         session_path=candidate,
                         container_manager=container_manager,
@@ -845,6 +1214,14 @@ class SessionLifecycleActions:
                 old_format_zip_path = None
                 if not use_stub_h5_only:
                     try:
+                        cls._notify_progress(
+                            progress_callback,
+                            message=f"[{item_index}/{total_containers}] {candidate.name}: Building old-format folder and ZIP...",
+                            current=item_index,
+                            total=total_containers,
+                            kind="prepare_old_format",
+                            container_path=candidate,
+                        )
                         _summary, archived_old_format_dir, old_format_zip_path = (
                             cls._prepare_old_format_payload(
                                 candidate,
@@ -853,12 +1230,28 @@ class SessionLifecycleActions:
                             )
                         )
                         result.old_format_paths.append(archived_old_format_dir)
+                        cls._notify_progress(
+                            progress_callback,
+                            message=f"[{item_index}/{total_containers}] {candidate.name}: ZIP folder with old-format data is ready.",
+                            current=item_index,
+                            total=total_containers,
+                            kind="old_format_ready",
+                            container_path=candidate,
+                        )
                     except Exception as exc:
                         result.old_format_failed.append(f"{candidate.name}: {exc}")
                         old_format_zip_path = None
 
                 explicit_session_id = session_id_by_path.get(str(candidate))
                 try:
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: Archiving H5 container...",
+                        current=item_index,
+                        total=total_containers,
+                        kind="archive_container",
+                        container_path=candidate,
+                    )
                     archived_path = SessionLifecycleService.archive_session_container(
                         session_path=candidate,
                         session_id=explicit_session_id,
@@ -924,6 +1317,9 @@ class SessionLifecycleActions:
                             if simulate_upload_failure
                             else None
                         ),
+                        progress_callback=progress_callback,
+                        current=item_index,
+                        total=total_containers,
                     )
                 if upload_result.upload_session_id and not result.upload_session_id:
                     result.upload_session_id = str(upload_result.upload_session_id)
@@ -963,6 +1359,14 @@ class SessionLifecycleActions:
 
                 if effective_upload_success:
                     result.upload_success += 1
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: SUCCESS - ZIP and H5 container uploaded and verified.",
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_done",
+                        container_path=Path(archived_path),
+                    )
                 else:
                     result.upload_failed += 1
                     if upload_result.success and not metadata_write_ok:
@@ -973,6 +1377,14 @@ class SessionLifecycleActions:
                         result.failed.append(
                             f"{candidate.name}: upload failed ({upload_result.message})"
                         )
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - {upload_result.message}",
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_failed",
+                        container_path=Path(archived_path),
+                    )
                 result.archived_paths.append(archived_path)
                 result.moved += 1
                 cls._write_container_attrs(
@@ -998,6 +1410,14 @@ class SessionLifecycleActions:
                     result.archived_active_session = True
             except Exception as exc:
                 result.failed.append(f"{candidate.name}: {exc}")
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - unexpected error ({exc})",
+                    current=item_index,
+                    total=total_containers,
+                    kind="container_failed",
+                    container_path=candidate,
+                )
 
         for folder_str in sorted(cleanup_folders):
             try:

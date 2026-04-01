@@ -36,38 +36,52 @@ class DetectorProfilePreview(QWidget):
         self._has_profile = False
         self.update()
 
+    @staticmethod
+    def _normalize_profile_log(values):
+        import numpy as np
+
+        arr = np.asarray(values, dtype=float).ravel()
+        if arr.size < 2:
+            return []
+
+        finite = np.isfinite(arr)
+        if not np.any(finite):
+            return []
+        arr = arr[finite]
+        if arr.size < 2:
+            return []
+
+        sample_size = min(int(arr.size), 240)
+        if arr.size > sample_size:
+            idx = np.linspace(0, arr.size - 1, sample_size).astype(int)
+            arr = arr[idx]
+
+        positive = arr[arr > 0]
+        if positive.size == 0:
+            return []
+
+        floor = float(positive.min())
+        arr = np.maximum(arr, floor)
+        log_arr = np.log10(arr)
+
+        min_v = float(log_arr.min())
+        max_v = float(log_arr.max())
+        span = max_v - min_v
+        if span <= 1e-12:
+            normalized = np.full(log_arr.shape, 0.5, dtype=float)
+        else:
+            normalized = (log_arr - min_v) / span
+
+        return normalized.tolist()
+
     def set_profile(self, values):
         try:
-            import numpy as np
-
-            arr = np.asarray(values, dtype=float).ravel()
-            if arr.size < 2:
+            normalized = self._normalize_profile_log(values)
+            if len(normalized) < 2:
                 self.clear_profile()
                 return
 
-            finite = np.isfinite(arr)
-            if not np.any(finite):
-                self.clear_profile()
-                return
-            arr = arr[finite]
-            if arr.size < 2:
-                self.clear_profile()
-                return
-
-            sample_size = min(int(arr.size), 240)
-            if arr.size > sample_size:
-                idx = np.linspace(0, arr.size - 1, sample_size).astype(int)
-                arr = arr[idx]
-
-            min_v = float(arr.min())
-            max_v = float(arr.max())
-            span = max_v - min_v
-            if span <= 1e-12:
-                normalized = np.full(arr.shape, 0.5, dtype=float)
-            else:
-                normalized = (arr - min_v) / span
-
-            self._profile = normalized.tolist()
+            self._profile = normalized
             self._has_profile = True
             self.update()
         except Exception:

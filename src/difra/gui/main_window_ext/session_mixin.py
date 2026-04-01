@@ -20,6 +20,7 @@ from difra.gui.container_api import (
     get_writer,
 )
 from difra.gui.main_window_ext.new_session_dialog import NewSessionDialog
+from difra.gui.main_window_ext import session_flow_actions
 from difra.gui.session_manager import SessionManager
 from difra.gui.operator_manager import OperatorManager, OperatorSelectionDialog
 
@@ -357,6 +358,24 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     # Any other schema attributes can be passed from params
                     **{k: v for k, v in params.items() if k not in ['sample_id', 'operator_id', 'distance_cm']},
                 )
+
+                attached_image_path = None
+                try:
+                    attached_image_path = session_flow_actions.prompt_and_attach_sample_image(
+                        self
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to attach sample image after manual session creation: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Sample Image Not Loaded",
+                        "Session was created, but the selected sample image could not be loaded.\n\n"
+                        f"{exc}",
+                    )
                 
                 QMessageBox.information(
                     self,
@@ -364,8 +383,9 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     f"Session created successfully!\n\n"
                     f"Specimen ID: {params['sample_id']}\n"
                     f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
-                    f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
-                    f"Container: {session_path.name}",
+                    f"Container: {session_path.name}\n"
+                    f"Sample image: "
+                    f"{Path(attached_image_path).name if attached_image_path else 'not loaded'}",
                 )
                 
                 logger.info(

@@ -13,6 +13,10 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QDialogButtonBox
 
 from difra.gui.container_api import get_container_version
+from difra.gui.main_window_ext.technical.poni_center_preview import (
+    resolve_overlay_zone,
+    resolve_preview_limits,
+)
 from difra.gui.technical.analysis_compat import (
     create_mask,
     initialize_azimuthal_integrator_df,
@@ -520,61 +524,6 @@ def show_measurement_window(
     return dialog
 
 
-def _resolve_overlay_zone(rule: dict, width_px: int, height_px: int):
-    """Return (x, y, w, h) for allowed center zone from JSON rule."""
-    if not isinstance(rule, dict):
-        return None
-
-    def _as_float(value):
-        try:
-            if value is None or value == "":
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    row_target = _as_float(rule.get("row_target_px"))
-    row_tol_px = _as_float(rule.get("row_tolerance_px"))
-    if row_tol_px is None:
-        row_tol_percent = _as_float(rule.get("row_tolerance_percent"))
-        if row_tol_percent is not None:
-            row_tol_px = (float(height_px) * float(row_tol_percent)) / 100.0
-    if row_target is None:
-        row_target = float(height_px) / 2.0
-    if row_tol_px is None:
-        row_tol_px = 0.0
-
-    y_min = row_target - row_tol_px
-    y_max = row_target + row_tol_px
-
-    col_target = _as_float(rule.get("col_target_px"))
-    col_tol_px = _as_float(rule.get("col_tolerance_px"))
-    col_min_px = _as_float(rule.get("col_min_px"))
-    col_max_px = _as_float(rule.get("col_max_px"))
-    col_gt_px = _as_float(rule.get("col_gt_px"))
-    col_lt_px = _as_float(rule.get("col_lt_px"))
-
-    if col_target is not None and col_tol_px is not None:
-        x_min = col_target - col_tol_px
-        x_max = col_target + col_tol_px
-    else:
-        x_min = col_min_px if col_min_px is not None else 0.0
-        x_max = col_max_px if col_max_px is not None else float(width_px)
-        if col_gt_px is not None:
-            x_min = max(x_min, col_gt_px)
-        if col_lt_px is not None:
-            x_max = min(x_max, col_lt_px)
-
-    x_min = max(0.0, min(float(width_px), float(x_min)))
-    x_max = max(0.0, min(float(width_px), float(x_max)))
-    y_min = max(0.0, min(float(height_px), float(y_min)))
-    y_max = max(0.0, min(float(height_px), float(y_max)))
-
-    if x_max <= x_min or y_max <= y_min:
-        return None
-    return (x_min, y_min, x_max - x_min, y_max - y_min)
-
-
 def show_poni_centers_preview_window(
     *,
     aliases,
@@ -640,9 +589,13 @@ def show_poni_centers_preview_window(
                 source_label = "AGBH"
 
         h, w = img.shape
-        ax.imshow(img, origin="lower", cmap="gray", aspect="equal")
-        ax.set_xlim(0, max(w - 1, 1))
-        ax.set_ylim(0, max(h - 1, 1))
+        ax.imshow(
+            img,
+            origin="lower",
+            cmap="gray",
+            aspect="equal",
+            extent=(0.0, float(w), 0.0, float(h)),
+        )
         ax.set_title(f"{alias} ({source_label})")
         ax.set_xlabel("col (px)")
         ax.set_ylabel("row (px)")
@@ -654,7 +607,7 @@ def show_poni_centers_preview_window(
         elif isinstance(defaults, dict):
             rule = dict(defaults)
 
-        zone = _resolve_overlay_zone(rule, w, h)
+        zone = resolve_overlay_zone(rule, w, h)
         if zone is not None:
             rect = Rectangle(
                 (zone[0], zone[1]),
@@ -678,6 +631,26 @@ def show_poni_centers_preview_window(
                 markeredgecolor="white",
                 markeredgewidth=0.8,
             )
+
+        detector_frame = Rectangle(
+            (0.0, 0.0),
+            float(w),
+            float(h),
+            facecolor="none",
+            edgecolor=(1.0, 1.0, 1.0, 0.55),
+            linewidth=1.0,
+            linestyle="--",
+        )
+        ax.add_patch(detector_frame)
+
+        x_min, x_max, y_min, y_max = resolve_preview_limits(
+            width_px=w,
+            height_px=h,
+            zone=zone,
+            center=center,
+        )
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
 
     fig.tight_layout()
 

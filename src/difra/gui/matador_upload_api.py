@@ -47,6 +47,32 @@ def _strip_trailing_slash(value: str) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _strip_wrapping_quotes(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1].strip()
+    return text
+
+
+def normalize_matador_base_url(value: str) -> str:
+    """Normalize Matador URL to origin-only form so pasted page URLs still work."""
+    text = _strip_wrapping_quotes(value)
+    if not text:
+        return ""
+    parsed = urllib_parse.urlparse(text)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return _strip_trailing_slash(text)
+
+
+def normalize_matador_token(value: str) -> str:
+    """Normalize Matador JWT pasted from shell exports or quoted snippets."""
+    text = _strip_wrapping_quotes(value)
+    if text.lower().startswith("bearer "):
+        text = text[7:].strip()
+    return text
+
+
 def _as_text(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -104,8 +130,8 @@ def refresh_matador_reference_cache(
 ) -> Dict[str, Any]:
     """Fetch Matador studies/machines from API and update the local cache."""
     api = RealMatadorUploadApi(
-        base_url=base_url,
-        token=token,
+        base_url=normalize_matador_base_url(base_url),
+        token=normalize_matador_token(token),
         timeout_sec=timeout_sec,
     )
     studies = api.list_studies()
@@ -503,7 +529,8 @@ class RealMatadorUploadApi:
         timeout_sec: float = 30.0,
     ):
         self.base_url = _strip_trailing_slash(base_url)
-        self.token = str(token or "").strip()
+        self.base_url = normalize_matador_base_url(self.base_url)
+        self.token = normalize_matador_token(token)
         self.timeout_sec = max(float(timeout_sec), 1.0)
         if not self.base_url:
             raise ValueError("Matador base URL is required")
@@ -774,7 +801,10 @@ def build_matador_upload_api(config: Optional[dict] = None) -> MatadorUploadApi:
     base_url = _strip_trailing_slash(
         _as_text(cfg.get("matador_url") or os.environ.get("MATADOR_URL"), "")
     )
-    token = _as_text(cfg.get("matador_token") or os.environ.get("MATADOR_TOKEN"), "").strip()
+    base_url = normalize_matador_base_url(base_url)
+    token = normalize_matador_token(
+        _as_text(cfg.get("matador_token") or os.environ.get("MATADOR_TOKEN"), "")
+    )
 
     if base_url and token and not bool(cfg.get("matador_force_stub", False)):
         timeout_sec = cfg.get("matador_timeout_sec")

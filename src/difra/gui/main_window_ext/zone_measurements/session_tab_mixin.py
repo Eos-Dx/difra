@@ -1,6 +1,7 @@
 """Session management tab for Zone Measurements."""
 
 from datetime import datetime, timedelta
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,6 +9,7 @@ from typing import List
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -20,6 +22,9 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QVBoxLayout,
@@ -44,6 +49,64 @@ logger = get_module_logger(__name__)
 
 class SessionTabMixin:
     """Mixin for session management tab in Zone Measurements."""
+
+    def _create_matador_send_progress_dialog(self, total_containers: int):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Matador Send Progress")
+        dialog.setModal(False)
+        dialog.resize(820, 520)
+
+        layout = QVBoxLayout(dialog)
+
+        status_label = QLabel("Preparing Matador send workflow...")
+        layout.addWidget(status_label)
+
+        progress_bar = QProgressBar(dialog)
+        progress_bar.setMinimum(0)
+        progress_bar.setMaximum(max(int(total_containers), 1))
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+
+        log_view = QPlainTextEdit(dialog)
+        log_view.setReadOnly(True)
+        layout.addWidget(log_view, 1)
+
+        close_button = QPushButton("Close", dialog)
+        close_button.setEnabled(False)
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button)
+
+        setattr(self, "_matador_send_progress_dialog", dialog)
+        dialog.finished.connect(
+            lambda *_args: setattr(self, "_matador_send_progress_dialog", None)
+        )
+        return dialog, status_label, progress_bar, log_view, close_button
+
+    def _write_matador_send_log(
+        self,
+        *,
+        runtime_config: dict,
+        log_lines: List[str],
+        workflow_result,
+    ) -> Path:
+        logs_root = SessionLifecycleActions.resolve_matador_logs_root(config=runtime_config)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = logs_root / f"matador_send_{timestamp}.log"
+        payload = {
+            "createdAt": datetime.now().isoformat(timespec="seconds"),
+            "uploadSessionId": str(getattr(workflow_result, "upload_session_id", "") or ""),
+            "uploadSuccess": int(getattr(workflow_result, "upload_success", 0)),
+            "uploadFailed": int(getattr(workflow_result, "upload_failed", 0)),
+            "moved": int(getattr(workflow_result, "moved", 0)),
+            "archivedPaths": [str(path) for path in getattr(workflow_result, "archived_paths", [])],
+            "oldFormatPaths": [str(path) for path in getattr(workflow_result, "old_format_paths", [])],
+            "failed": list(getattr(workflow_result, "failed", []) or []),
+            "oldFormatFailed": list(getattr(workflow_result, "old_format_failed", []) or []),
+            "logLines": list(log_lines or []),
+        }
+        with open(log_path, "w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, indent=2, ensure_ascii=False)
+        return log_path
 
     def _container_schema(self):
         return get_schema(self.config if hasattr(self, "config") else None)
@@ -178,9 +241,19 @@ class SessionTabMixin:
         )
         queue_btn_row_2.addWidget(self.clear_sessions_selection_btn)
 
+        self.close_selected_sessions_btn = QPushButton("Close Selected")
+        self.close_selected_sessions_btn.clicked.connect(
+            self._on_close_selected_sessions
+        )
+        queue_btn_row_2.addWidget(self.close_selected_sessions_btn)
+
         self.send_selected_sessions_btn = QPushButton("Close && Send Selected")
         self.send_selected_sessions_btn.clicked.connect(self._on_send_selected_sessions)
         queue_btn_row_2.addWidget(self.send_selected_sessions_btn)
+
+        self.close_all_sessions_btn = QPushButton("Close All")
+        self.close_all_sessions_btn.clicked.connect(self._on_close_all_sessions)
+        queue_btn_row_2.addWidget(self.close_all_sessions_btn)
 
         self.send_all_sessions_btn = QPushButton("Close && Send All")
         self.send_all_sessions_btn.clicked.connect(self._on_send_all_sessions)
@@ -577,9 +650,12 @@ class SessionTabMixin:
 
         menu = QMenu(table)
         load_action = menu.addAction("Load Container")
+        close_action = menu.addAction("Close / Archive")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
             self._open_session_container_path(container_path)
+        elif selected == close_action:
+            self._archive_sessions([container_path])
 
     def _show_archived_sessions_context_menu(self, pos):
         table = self.archived_sessions_table
@@ -628,6 +704,7 @@ class SessionTabMixin:
         ):
             active_session_path = Path(self.session_manager.session_path)
         batch_session_ids = {}
+        blocked = []
 
         for container_path in container_paths:
             if not Path(container_path).exists():
@@ -645,6 +722,18 @@ class SessionTabMixin:
             batch_session_ids[str(Path(container_path))] = (
                 info.get("session_id") or Path(container_path).stem
             )
+            if str(info.get("transfer_status") or "").strip().upper() == "NOT_COMPLETE":
+                blocked.append(Path(container_path).name)
+
+        if blocked:
+            QMessageBox.warning(
+                self,
+                "Send Blocked",
+                "The following session container(s) are marked NOT_COMPLETE and "
+                "cannot be sent to Matador:\n\n"
+                + "\n".join(blocked),
+            )
+            return
 
         lock_user = None
         if hasattr(self, "session_manager") and self.session_manager:
@@ -671,19 +760,59 @@ class SessionTabMixin:
         simulate_upload_failure = False
         simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
 
-        workflow_result = SessionLifecycleActions.send_and_archive_session_containers(
-            container_paths=container_paths,
-            container_manager=container_manager,
-            archive_folder=archive_folder,
-            active_session_path=active_session_path,
-            lock_user=lock_user,
-            uploader_id=uploader_id,
-            upload_session_id=None,
-            simulate_upload_failure=simulate_upload_failure,
-            session_ids=batch_session_ids,
-            config=runtime_config,
+        progress_dialog, progress_label, progress_bar, progress_log, close_button = (
+            self._create_matador_send_progress_dialog(len(container_paths))
         )
+        progress_dialog.show()
 
+        log_lines: List[str] = []
+        per_container_status = {}
+
+        def _progress_update(event):
+            if not isinstance(event, dict):
+                return
+            message = str(event.get("message") or "").strip()
+            current = int(event.get("current") or 0)
+            total = int(event.get("total") or max(len(container_paths), 1))
+            kind = str(event.get("kind") or "").strip()
+            container_name = Path(str(event.get("container_path") or "")).name
+
+            if message and hasattr(self, "_append_session_log"):
+                self._append_session_log(message)
+            if message:
+                log_lines.append(message)
+                progress_log.appendPlainText(message)
+
+            if kind in {"container_done", "container_failed"} and container_name:
+                per_container_status[container_name] = message
+
+            progress_bar.setMaximum(max(total, 1))
+            display_value = current
+            if kind not in {"container_done", "container_failed"} and current > 0:
+                display_value = current - 1
+            progress_bar.setValue(max(0, min(display_value, max(total, 1))))
+            progress_label.setText(message or "Sending session containers to Matador...")
+            QApplication.processEvents()
+
+        workflow_result = None
+        try:
+            workflow_result = SessionLifecycleActions.send_and_archive_session_containers(
+                container_paths=container_paths,
+                container_manager=container_manager,
+                archive_folder=archive_folder,
+                active_session_path=active_session_path,
+                lock_user=lock_user,
+                uploader_id=uploader_id,
+                upload_session_id=None,
+                simulate_upload_failure=simulate_upload_failure,
+                session_ids=batch_session_ids,
+                config=runtime_config,
+                progress_callback=_progress_update,
+            )
+        finally:
+            QApplication.processEvents()
+
+        progress_bar.setValue(max(len(container_paths), 1))
         if workflow_result.archived_active_session and hasattr(self, "session_manager"):
             self.session_manager.close_session()
 
@@ -714,7 +843,95 @@ class SessionTabMixin:
                     f"... and {len(workflow_result.old_format_failed) - 8} more"
                 )
 
-        QMessageBox.information(self, "Session Send Queue", "\n".join(summary))
+        if per_container_status:
+            summary.append("")
+            summary.append("Per-container result:")
+            for container_name in sorted(per_container_status.keys()):
+                summary.append(per_container_status[container_name])
+
+        log_path = self._write_matador_send_log(
+            runtime_config=runtime_config,
+            log_lines=log_lines + summary,
+            workflow_result=workflow_result,
+        )
+        summary.append("")
+        summary.append(f"Matador log saved to: {log_path}")
+
+        if workflow_result.upload_failed > 0 and hasattr(self, "_append_session_log"):
+            self._append_session_log(f"Matador send log saved: {log_path}")
+
+        progress_log.appendPlainText("")
+        for line in summary:
+            progress_log.appendPlainText(line)
+        progress_label.setText(
+            "Matador send finished with failures."
+            if workflow_result.upload_failed > 0
+            else "Matador send finished successfully."
+        )
+        close_button.setEnabled(True)
+        QApplication.processEvents()
+
+        self._refresh_session_container_lists()
+        if hasattr(self, "update_session_status"):
+            self.update_session_status()
+
+    def _archive_sessions(self, container_paths: List[Path]):
+        if not container_paths:
+            QMessageBox.information(self, "No Containers", "No session containers selected.")
+            return
+
+        container_manager = self._container_manager()
+        archive_folder = self._get_session_archive_folder()
+        archive_folder.mkdir(parents=True, exist_ok=True)
+
+        active_session_path = None
+        if (
+            hasattr(self, "session_manager")
+            and self.session_manager
+            and getattr(self.session_manager, "session_path", None)
+        ):
+            active_session_path = Path(self.session_manager.session_path)
+        batch_session_ids = {}
+        for container_path in container_paths:
+            if not Path(container_path).exists():
+                continue
+            batch_session_ids[str(Path(container_path))] = Path(container_path).stem
+
+        lock_user = None
+        if hasattr(self, "session_manager") and self.session_manager:
+            lock_user = getattr(self.session_manager, "operator_id", None)
+        operator_id = None
+        if hasattr(self, "operator_manager") and self.operator_manager:
+            get_current_operator_id = getattr(
+                self.operator_manager, "get_current_operator_id", None
+            )
+            if callable(get_current_operator_id):
+                operator_id = get_current_operator_id()
+
+        workflow_result = SessionLifecycleActions.archive_session_containers(
+            container_paths=container_paths,
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            active_session_path=active_session_path,
+            lock_user=lock_user,
+            uploader_id=operator_id,
+            session_ids=batch_session_ids,
+        )
+
+        if workflow_result.archived_active_session and hasattr(self, "session_manager"):
+            self.session_manager.close_session()
+
+        summary = [
+            f"Archived {workflow_result.moved} session container(s).",
+            f"Ready to send later: {workflow_result.archived_complete}",
+            f"Marked NOT_COMPLETE: {workflow_result.archived_not_complete}",
+            f"Cleaned measurement artifacts: {workflow_result.cleaned_artifacts}",
+        ]
+        if workflow_result.failed:
+            summary.append("")
+            summary.append("Details:")
+            summary.extend(workflow_result.failed[:8])
+        QMessageBox.information(self, "Session Archived", "\n".join(summary))
         self._refresh_session_container_lists()
         if hasattr(self, "update_session_status"):
             self.update_session_status()
@@ -734,7 +951,7 @@ class SessionTabMixin:
             "Close && Send Selected",
             (
                 f"Close, upload, and archive {len(selected)} selected session container(s)?\n\n"
-                "DIFRA will build one old-format ZIP and send one H5 per session."
+                "DIFRA will create one ZIP folder with old-format data and one H5 container per session."
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -743,6 +960,56 @@ class SessionTabMixin:
             return
 
         self._send_and_archive_sessions(selected)
+
+    def _on_close_selected_sessions(self):
+        selected = self._selected_pending_containers()
+        if not selected:
+            QMessageBox.warning(
+                self,
+                "No Selection",
+                "Select one or more session containers from the queue.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Close Selected",
+            (
+                f"Close and archive {len(selected)} selected session container(s)?\n\n"
+                "Complete containers will be archived as UNSENT.\n"
+                "Incomplete containers will be archived as NOT_COMPLETE and blocked from Matador send."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._archive_sessions(selected)
+
+    def _on_close_all_sessions(self):
+        all_containers = self._all_pending_containers()
+        if not all_containers:
+            QMessageBox.information(
+                self, "Queue Empty", "No session containers found in measurements folder."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Close All",
+            (
+                f"Close and archive ALL {len(all_containers)} queued session container(s)?\n\n"
+                "Complete containers will be archived as UNSENT.\n"
+                "Incomplete containers will be archived as NOT_COMPLETE and blocked from Matador send."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._archive_sessions(all_containers)
 
     def _on_send_all_sessions(self):
         all_containers = self._all_pending_containers()
@@ -757,7 +1024,7 @@ class SessionTabMixin:
             "Close && Send All",
             (
                 f"Close, upload, and archive ALL {len(all_containers)} queued session container(s)?\n\n"
-                "DIFRA will build one old-format ZIP and send one H5 per session."
+                "DIFRA will create one ZIP folder with old-format data and one H5 container per session."
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

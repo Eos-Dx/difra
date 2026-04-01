@@ -101,6 +101,11 @@ def test_session_manager_create_session_with_study(temp_dir, technical_container
         folder=temp_dir,
         sample_id="TEST_SAMPLE_002",
         study_name="STUDY_X",
+        project_id="PROJECT_X",
+        matadorProjectId=77,
+        matadorProjectName="PROJECT_X",
+        matadorStudyId=1701,
+        matadorMachineId=1751,
         distance_cm=17.0,
         operator_id="test_operator",
     )
@@ -111,6 +116,11 @@ def test_session_manager_create_session_with_study(temp_dir, technical_container
 
     with h5py.File(session_path, "r") as session_file:
         assert session_file.attrs.get(schema.ATTR_STUDY_NAME) == "STUDY_X"
+        assert session_file.attrs.get(schema.ATTR_PROJECT_ID) == "PROJECT_X"
+        assert session_file.attrs.get("matadorProjectId") == 77
+        assert session_file.attrs.get("matadorProjectName") == "PROJECT_X"
+        assert session_file.attrs.get("matadorStudyId") == 1701
+        assert session_file.attrs.get("matadorMachineId") == 1751
 
 
 def test_session_manager_falls_back_to_locked_technical_container(

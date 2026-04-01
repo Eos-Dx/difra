@@ -1,7 +1,9 @@
 """Procedural lock/archive helpers extracted from H5ManagementLockingMixin."""
 
 import logging
+import os
 import shutil
+import stat
 import time
 from pathlib import Path
 
@@ -62,6 +64,85 @@ except Exception:
 from difra.gui.container_api import get_container_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _rewrite_technical_source_paths(container_path: Path, archive_folder: Path) -> int:
+    """Repoint embedded source_file/source_ref attrs to archived raw files."""
+    import h5py
+
+    container_path = Path(container_path)
+    archive_folder = Path(archive_folder)
+    updated = 0
+    original_mode = container_path.stat().st_mode
+    writable_mode = original_mode | stat.S_IWUSR
+
+    try:
+        os.chmod(container_path, writable_mode)
+    except Exception:
+        pass
+
+    try:
+        with h5py.File(container_path, "a") as h5f:
+            def _visit(_name, obj):
+                nonlocal updated
+                if not hasattr(obj, "attrs"):
+                    return
+                for attr_name in ("source_file", "source_ref"):
+                    raw_value = obj.attrs.get(attr_name)
+                    if raw_value is None:
+                        continue
+                    if isinstance(raw_value, bytes):
+                        raw_value = raw_value.decode("utf-8", errors="replace")
+                    raw_text = str(raw_value or "").strip()
+                    if not raw_text or raw_text.startswith("h5ref://"):
+                        continue
+                    candidate = archive_folder / Path(raw_text).name
+                    if candidate.exists() and raw_text != str(candidate):
+                        obj.attrs[attr_name] = str(candidate)
+                        updated += 1
+
+            h5f.visititems(_visit)
+    finally:
+        try:
+            os.chmod(container_path, original_mode)
+        except Exception:
+            pass
+
+    return updated
+
+
+def _repack_hdf5_in_place(container_path: Path) -> tuple[float, float]:
+    """Compact an HDF5 file by copying live objects into a fresh file in place."""
+    import h5py
+
+    container_path = Path(container_path)
+    before_mb = float(container_path.stat().st_size) / 1024.0 / 1024.0
+    original_mode = container_path.stat().st_mode
+    writable_mode = original_mode | stat.S_IWUSR
+    temp_path = container_path.with_name(f".{container_path.name}.repack")
+
+    try:
+        os.chmod(container_path, writable_mode)
+    except Exception:
+        pass
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+    try:
+        with h5py.File(container_path, "r") as src, h5py.File(temp_path, "w") as dst:
+            for key, value in src.attrs.items():
+                dst.attrs[key] = value
+            for name in src.keys():
+                src.copy(name, dst, name=name)
+        os.replace(temp_path, container_path)
+        os.chmod(container_path, original_mode)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+    after_mb = float(container_path.stat().st_size) / 1024.0 / 1024.0
+    return before_mb, after_mb
 
 
 def _ensure_distances_configured(owner, *, action_name: str) -> bool:
@@ -531,6 +612,66 @@ def lock_active_technical_container(owner):
     if not _ensure_distances_configured(owner, action_name="Lock Container"):
         return False
 
+    if bool(getattr(owner, "config", {}).get("DEV", False)):
+        has_poni_fn = getattr(owner, "_container_has_poni_datasets", None)
+        collect_aliases = getattr(owner, "_collect_lock_detector_aliases", None)
+        auto_provision = getattr(owner, "_auto_provision_demo_poni_files", None)
+        sync_fn = getattr(owner, "_sync_active_technical_container_from_table", None)
+
+        missing_embedded_poni = False
+        if callable(has_poni_fn):
+            try:
+                missing_embedded_poni = not bool(has_poni_fn(container_path))
+            except Exception:
+                missing_embedded_poni = False
+
+        if missing_embedded_poni and callable(collect_aliases):
+            try:
+                aliases = list(collect_aliases(container_path) or [])
+            except Exception:
+                aliases = []
+
+            aliases = sorted({str(alias).strip() for alias in aliases if str(alias).strip()})
+            if aliases:
+                provisioned = False
+                if callable(auto_provision):
+                    try:
+                        provisioned = bool(auto_provision(aliases))
+                    except Exception:
+                        provisioned = False
+
+                loaded_poni = getattr(owner, "ponis", {})
+                has_loaded_poni = isinstance(loaded_poni, dict) and all(
+                    str(loaded_poni.get(alias) or "").strip()
+                    for alias in aliases
+                )
+
+                if (provisioned or has_loaded_poni) and callable(sync_fn):
+                    synced = bool(sync_fn(show_errors=False))
+                    if not synced:
+                        QMessageBox.warning(
+                            owner,
+                            "PONI Sync Failed",
+                            "DEMO PONI files were prepared automatically, but container sync failed.\n\n"
+                            "Fix technical rows and try locking again.",
+                        )
+                        if hasattr(owner, "_log_technical_event"):
+                            owner._log_technical_event(
+                                f"Lock blocked: failed to auto-sync demo PONI for {container_path.name}"
+                        )
+                        return False
+                    if provisioned:
+                        QMessageBox.information(
+                            owner,
+                            "Demo PONI Added",
+                            "DEMO mode detected. Fake PONI files were added automatically.\n\n"
+                            "Validation will now continue before lock.",
+                        )
+                        if hasattr(owner, "_log_technical_event"):
+                            owner._log_technical_event(
+                                f"Auto-synced DEMO PONI files before lock for {container_path.name}"
+                            )
+
     container_id = container_path.stem
     try:
         with h5py.File(container_path, "r") as h5f:
@@ -810,11 +951,19 @@ def lock_container(owner, container_path: str, container_id: str):
                 archive_folder=archive_subdir,
                 file_patterns=file_patterns,
             )
+            updated_sources = _rewrite_technical_source_paths(
+                Path(container_path),
+                archive_subdir,
+            )
             owner._update_aux_table_paths_after_archive(archive_subdir)
 
             if archived_count > 0:
                 owner._log_technical_event(
                     f"Archived {archived_count} data file(s) to {archive_subdir.name}"
+                )
+            if updated_sources > 0:
+                owner._log_technical_event(
+                    f"Updated {updated_sources} embedded source path(s) to {archive_subdir.name}"
                 )
             logger.info(
                 "Archived technical container companion files: id=%s archived=%d folder=%s",
@@ -825,6 +974,17 @@ def lock_container(owner, container_path: str, container_id: str):
         except Exception as exc:
             logger.warning("Failed to archive data files: %s", exc)
             owner._log_technical_event(f"Warning: Could not archive data files: {exc}")
+
+        try:
+            before_mb, after_mb = _repack_hdf5_in_place(Path(container_path))
+            owner._log_technical_event(
+                f"Compacted technical container: {before_mb:.1f} MB -> {after_mb:.1f} MB"
+            )
+        except Exception as exc:
+            logger.warning("Failed to repack technical container: %s", exc, exc_info=True)
+            owner._log_technical_event(
+                f"Warning: Could not compact technical container: {exc}"
+            )
 
         QMessageBox.information(
             owner,

@@ -24,6 +24,7 @@ class SessionTabPresenter:
     """Helpers for reading session metadata and rendering Session tab tables."""
 
     _ARCHIVE_STAMP_RE = re.compile(r"(\d{8}_\d{6})(?:_\d+)?$")
+    _TRANSFER_STATUS_NOT_COMPLETE = "NOT_COMPLETE"
 
     @staticmethod
     def decode_attr(value):
@@ -104,7 +105,10 @@ class SessionTabPresenter:
                 )
                 info["project_id"] = str(
                     cls.decode_attr(
-                        h5f.attrs.get("project_id", info["study_name"])
+                        h5f.attrs.get(
+                            "matadorProjectName",
+                            h5f.attrs.get("project_id", info["study_name"]),
+                        )
                     )
                 )
                 info["operator_id"] = str(
@@ -154,15 +158,28 @@ class SessionTabPresenter:
                         h5f.attrs.get("session_state", "")
                     )
                 )
+                explicit_transfer_status = str(
+                    cls.decode_attr(
+                        h5f.attrs.get(
+                            getattr(schema, "ATTR_TRANSFER_STATUS", "transfer_status"),
+                            "",
+                        )
+                    )
+                    or ""
+                ).strip()
+                if explicit_transfer_status.upper() == cls._TRANSFER_STATUS_NOT_COMPLETE:
+                    transfer_status = explicit_transfer_status
+                else:
+                    transfer_status = ""
                 locked = container_manager.is_container_locked(path)
                 info["lock_status"] = "LOCKED" if locked else "UNLOCKED"
-                transfer_status = ""
-                get_transfer_status = getattr(container_manager, "get_transfer_status", None)
-                if callable(get_transfer_status):
-                    try:
-                        transfer_status = str(get_transfer_status(path) or "")
-                    except Exception:
-                        transfer_status = ""
+                if not transfer_status:
+                    get_transfer_status = getattr(container_manager, "get_transfer_status", None)
+                    if callable(get_transfer_status):
+                        try:
+                            transfer_status = str(get_transfer_status(path) or "")
+                        except Exception:
+                            transfer_status = ""
                 if not transfer_status:
                     transfer_status = str(
                         cls.decode_attr(

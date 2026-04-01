@@ -3,12 +3,76 @@
 import logging
 from pathlib import Path
 
-from PyQt5.QtWidgets import QDialog, QMessageBox
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_schema
 from difra.gui.main_window_ext.new_session_dialog import NewSessionDialog
 
 logger = logging.getLogger(__name__)
+
+
+def prompt_and_attach_sample_image(owner) -> str | None:
+    """Offer loading an existing sample photo after a session is created."""
+    reply = QMessageBox.question(
+        owner,
+        "Load Sample Image",
+        "Session container created.\n\n"
+        "Would you like to load a sample image from disk now?",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.Yes,
+    )
+    if reply != QMessageBox.Yes:
+        return None
+
+    default_folder = ""
+    if hasattr(owner, "config") and isinstance(owner.config, dict):
+        default_folder = str(
+            owner.config.get("default_image_folder")
+            or owner.config.get("default_folder")
+            or ""
+        ).strip()
+    file_path, _ = QFileDialog.getOpenFileName(
+        owner,
+        "Load Sample Image For Session",
+        default_folder or str(Path.home()),
+        "Image Files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)",
+    )
+    if not file_path:
+        return None
+
+    image_array = None
+    if hasattr(owner, "_load_image_array_from_path"):
+        image_array = owner._load_image_array_from_path(file_path)
+    if image_array is None:
+        raise RuntimeError(f"Failed to load image data from {file_path}")
+
+    owner.session_manager.add_sample_image(
+        image_data=image_array,
+        image_index=1,
+        image_type="sample",
+    )
+
+    pixmap = QPixmap(file_path)
+    if (
+        hasattr(owner, "image_view")
+        and owner.image_view is not None
+        and not pixmap.isNull()
+    ):
+        owner.image_view.set_image(pixmap, image_path=file_path)
+
+    clear_shapes = getattr(owner, "delete_all_shapes_from_table", None)
+    if callable(clear_shapes):
+        clear_shapes()
+    clear_points = getattr(owner, "delete_all_points", None)
+    if callable(clear_points):
+        clear_points()
+
+    if hasattr(owner, "_append_session_log"):
+        owner._append_session_log(
+            f"Sample image loaded into session from disk: {Path(file_path).name}"
+        )
+    return file_path
 
 
 def handle_new_sample_image(owner, image_path: str):
@@ -107,6 +171,8 @@ def handle_new_sample_image(owner, image_path: str):
             f"Specimen ID: {params['sample_id']}\n"
             f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
             f"Project: {params.get('project_id', params.get('study_name', 'UNSPECIFIED'))}\n"
+            f"Matador Study ID: {params.get('matadorStudyId', 'UNSPECIFIED')}\n"
+            f"Matador Machine ID: {params.get('matadorMachineId', 'UNSPECIFIED')}\n"
             f"Container: {session_path.name}\n\n"
             f"Sample image added to container.",
         )

@@ -1,7 +1,11 @@
 """Technical metadata generation responsibilities for H5 generation."""
 
 from . import h5_generation_mixin as _module
-from .poni_center_validation import validate_poni_centers
+from .poni_center_validation import (
+    normalize_alias_mapping_to_rule_aliases,
+    resolve_poni_rule_alias,
+    validate_poni_centers,
+)
 
 json = _module.json
 logger = _module.logger
@@ -46,7 +50,8 @@ class H5GenerationMetaMixin:
 
     def _resolve_fake_demo_center_px(self, alias: str, detector_size):
         """Resolve fake demo PONI center from configured center validation rules."""
-        alias_key = str(alias or "").strip().upper()
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        alias_key = resolve_poni_rule_alias(alias, cfg.get("detectors", []))
         # Fixed demo targets requested by workflow for fake PRIMARY/SECONDARY.
         if alias_key == "PRIMARY":
             return 128.0, 8.0
@@ -59,7 +64,6 @@ class H5GenerationMetaMixin:
         except Exception:
             width, height = 256.0, 256.0
 
-        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
         validation_cfg = cfg.get("poni_center_validation", {})
         if not isinstance(validation_cfg, dict):
             validation_cfg = {}
@@ -72,7 +76,6 @@ class H5GenerationMetaMixin:
         if not isinstance(rules, dict):
             rules = {}
 
-        alias_key = str(alias or "").strip().upper()
         rule = dict(defaults) if defaults else {}
         for key, value in rules.items():
             if str(key or "").strip().upper() == alias_key and isinstance(value, dict):
@@ -223,7 +226,8 @@ Wavelength: {wavelength}
                 sizes[alias] = (int(width), int(height))
             except Exception:
                 sizes[alias] = (256, 256)
-        return sizes
+        detector_cfgs = self.config.get("detectors", []) if hasattr(self, "config") else []
+        return normalize_alias_mapping_to_rule_aliases(sizes, detector_cfgs)
 
     def _validate_poni_center_rules_for_data(self, poni_data):
         cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
@@ -236,12 +240,18 @@ Wavelength: {wavelength}
         ):
             return [], []
 
+        detector_cfgs = cfg.get("detectors", [])
         poni_text_by_alias = {}
         for alias, value in (poni_data or {}).items():
             if isinstance(value, (list, tuple)) and value:
                 poni_text_by_alias[str(alias)] = str(value[0] or "")
             else:
                 poni_text_by_alias[str(alias)] = str(value or "")
+
+        poni_text_by_alias = normalize_alias_mapping_to_rule_aliases(
+            poni_text_by_alias,
+            detector_cfgs,
+        )
 
         return validate_poni_centers(
             poni_text_by_alias=poni_text_by_alias,

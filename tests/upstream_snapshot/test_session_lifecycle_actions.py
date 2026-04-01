@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import h5py
+import numpy as np
 from container.v0_2 import container_manager, writer as session_writer
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 
@@ -20,6 +21,28 @@ def _create_session_file(folder: Path, sample_id: str):
         acquisition_date="2026-02-16",
     )
     return session_id, Path(session_path)
+
+
+def _add_complete_session_payload(session_path: Path):
+    session_writer.add_image(
+        session_path,
+        image_index=1,
+        image_data=np.ones((8, 8), dtype=np.float32),
+        image_type="sample",
+    )
+    session_writer.add_point(
+        session_path,
+        point_index=1,
+        pixel_coordinates=[10.0, 12.0],
+        physical_coordinates_mm=[1.0, 2.0],
+    )
+    session_writer.add_measurement(
+        session_path,
+        point_index=1,
+        measurement_data={"PRIMARY": np.ones((4, 4), dtype=np.float32)},
+        detector_metadata={"PRIMARY": {"integration_time_ms": 100.0}},
+        poni_alias_map={"PRIMARY": "PRIMARY"},
+    )
 
 
 def test_finalize_session_container_locks_once(tmp_path):
@@ -91,6 +114,9 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
             assert str(h5f.attrs.get("upload_timestamp", "")).strip()
             assert str(h5f.attrs.get("upload_session_id", "")).startswith("upload_sad_")
             assert h5f.attrs.get("upload_status") == "success"
+            assert h5f.attrs.get("matador_send_status") == "successful"
+            assert str(h5f.attrs.get("matador_send_reason", "")) == ""
+            assert str(h5f.attrs.get("matador_send_timestamp", "")).strip()
             assert h5f.attrs.get("session_state") == "archived"
             local_checksum = str(h5f.attrs.get("upload_local_checksum_sha256", ""))
             response_checksum = str(
@@ -217,6 +243,9 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
     assert container_manager.get_transfer_status(archived) == "unsent"
     with h5py.File(archived, "r") as h5f:
         assert h5f.attrs.get("upload_status") == "failed"
+        assert h5f.attrs.get("matador_send_status") == "unsuccessful"
+        assert "failed" in str(h5f.attrs.get("matador_send_reason", "")).lower()
+        assert str(h5f.attrs.get("matador_send_timestamp", "")).strip()
         assert str(h5f.attrs.get("upload_result_message", "")).lower().find("failed") >= 0
         assert str(h5f.attrs.get("upload_response_checksum_sha256", "")) == ""
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
@@ -316,3 +345,73 @@ def test_send_and_archive_metadata_write_failure_marks_unsent(tmp_path):
     assert any("metadata write failed" in msg for msg in result.failed)
     archived = result.archived_paths[0]
     assert container_manager.get_transfer_status(archived) == "unsent"
+
+
+def test_send_and_archive_emits_progress_updates(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    progress_events = []
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={"upload_stub_failure_probability": 0.0},
+        progress_callback=progress_events.append,
+    )
+
+    assert result.moved == 1
+    messages = [str(event.get("message") or "") for event in progress_events if isinstance(event, dict)]
+    assert any("Starting send+archive workflow" in message for message in messages)
+    assert any("Archiving H5 container" in message for message in messages)
+    assert any("Now uploading ZIP" in message for message in messages)
+    assert any("Now uploading H5 container" in message for message in messages)
+    assert any("SUCCESS - ZIP and H5 container uploaded and verified" in message for message in messages)
+
+
+def test_archive_session_containers_marks_complete_vs_not_complete(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid_complete, complete_path = _create_session_file(measurements, "COMPLETE_SAMPLE")
+    sid_incomplete, incomplete_path = _create_session_file(measurements, "INCOMPLETE_SAMPLE")
+
+    _add_complete_session_payload(complete_path)
+
+    result = SessionLifecycleActions.archive_session_containers(
+        container_paths=[complete_path, incomplete_path],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={
+            str(complete_path): sid_complete,
+            str(incomplete_path): sid_incomplete,
+        },
+    )
+
+    assert result.failed == []
+    assert result.moved == 2
+    assert result.archived_complete == 1
+    assert result.archived_not_complete == 1
+
+    archived_by_sample = {}
+    for archived_path in result.archived_paths:
+        with h5py.File(archived_path, "r") as h5f:
+            archived_by_sample[str(h5f.attrs.get("sample_id"))] = {
+                "transfer_status": str(h5f.attrs.get("transfer_status")),
+                "completion_status": str(h5f.attrs.get("session_completion_status")),
+                "upload_status": str(h5f.attrs.get("upload_status")),
+                "message": str(h5f.attrs.get("upload_result_message", "")),
+            }
+
+    assert archived_by_sample["COMPLETE_SAMPLE"]["transfer_status"] == "unsent"
+    assert archived_by_sample["COMPLETE_SAMPLE"]["completion_status"] == "complete"
+    assert archived_by_sample["COMPLETE_SAMPLE"]["upload_status"] == "unsent"
+    assert "without Matador send" in archived_by_sample["COMPLETE_SAMPLE"]["message"]
+
+    assert archived_by_sample["INCOMPLETE_SAMPLE"]["transfer_status"] == "not_complete"
+    assert archived_by_sample["INCOMPLETE_SAMPLE"]["completion_status"] == "not_complete"
+    assert archived_by_sample["INCOMPLETE_SAMPLE"]["upload_status"] == "not_complete"
+    assert "missing sample image" in archived_by_sample["INCOMPLETE_SAMPLE"]["message"]

@@ -165,6 +165,7 @@ def test_read_session_container_metadata_includes_uploaded_by(tmp_path):
     session_path = _create_session_file(archived_dir, "SAMPLE_Z", "STUDY_Z")
 
     with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["matadorProjectName"] = "PROJECT_Z"
         h5f.attrs["uploaded_by"] = "matador_user"
         h5f.attrs["upload_timestamp"] = "2026-03-09 12:00:00"
         h5f.attrs["upload_session_id"] = "upload_matador_user_20260309_120000"
@@ -177,12 +178,28 @@ def test_read_session_container_metadata_includes_uploaded_by(tmp_path):
         container_manager=_ContainerManagerStub(),
     )
 
-    assert row["project_id"] == "STUDY_Z"
+    assert row["project_id"] == "PROJECT_Z"
     assert row["uploaded_by"] == "matador_user"
     assert row["upload_timestamp"] == "2026-03-09 12:00:00"
     assert row["upload_session_id"] == "upload_matador_user_20260309_120000"
     assert row["upload_status"] == "success"
     assert row["upload_response_checksum_sha256"] == "abc123"
+
+
+def test_read_session_container_metadata_prefers_explicit_not_complete_status(tmp_path):
+    session_path = _create_session_file(tmp_path, "SAMPLE_Z", "STUDY_Z")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["transfer_status"] = "not_complete"
+
+    row = SessionTabPresenter.read_session_container_metadata(
+        session_path,
+        schema=schema,
+        container_manager=_ContainerManagerStub(),
+    )
+
+    assert row["transfer_status"] == "NOT_COMPLETE"
+    assert row["status"].endswith("NOT_COMPLETE")
 
 
 def test_build_active_session_view_state():
