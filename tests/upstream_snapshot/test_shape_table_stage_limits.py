@@ -4,11 +4,12 @@ import os
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QGraphicsRectItem, QMainWindow, QMessageBox
 
 from difra.gui.extra.resizable_zone import (
@@ -309,6 +310,101 @@ def test_crop_creates_editable_preview_and_applies(qapp):
     assert view.crop_rect is None
 
 
+def _pixmap_from_rgb_array(array):
+    image = QImage(
+        array.data,
+        array.shape[1],
+        array.shape[0],
+        array.strides[0],
+        QImage.Format_RGB888,
+    ).copy()
+    return QPixmap.fromImage(image)
+
+
+def test_catch_auto_blends_outer_shape_with_inner_hole_center(qapp, monkeypatch):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
+        staticmethod(lambda *args, **kwargs: (15.18, True)),
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
+    )
+
+    height, width = 240, 240
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[:, :] = np.array([50, 110, 50], dtype=np.uint8)  # green background
+    yy, xx = np.indices((height, width))
+    outer_center = (120.0, 110.0)
+    inner_center = (126.0, 116.0)
+    outer_mask = (((xx - outer_center[0]) / 70.0) ** 2 + ((yy - outer_center[1]) / 52.0) ** 2) <= 1.0
+    image[outer_mask] = np.array([190, 165, 70], dtype=np.uint8)  # golden holder
+    inner_mask = ((xx - inner_center[0]) ** 2 + (yy - inner_center[1]) ** 2) <= 12.0 ** 2
+    image[inner_mask] = np.array([20, 20, 20], dtype=np.uint8)  # dark inner hole
+
+    pixmap = _pixmap_from_rgb_array(image)
+    harness.image_view.scene.clear()
+    harness.image_view.current_pixmap = pixmap
+    harness.image_view.image_item = harness.image_view.scene.addPixmap(pixmap)
+
+    ellipse_item = ResizableEllipseItem(35.0, 35.0, 150.0, 120.0)  # manual center = (110, 95)
+    harness.image_view.scene.addItem(ellipse_item)
+    circle_info = {
+        "id": 1,
+        "uid": "holder_auto",
+        "type": "Circle",
+        "item": ellipse_item,
+        "role": "include",
+    }
+    harness.image_view.shapes.append(circle_info)
+
+    harness.define_shape_as_calibration_role(circle_info, harness.ROLE_HOLDER_CIRCLE)
+    before_center = circle_info["center_px"]
+
+    changed = harness.catch_auto_for_shape(circle_info)
+
+    after_center = circle_info["center_px"]
+    after_rect = circle_info["item"].mapRectToScene(circle_info["item"].rect())
+    assert changed is True
+    assert after_center[0] > before_center[0]
+    assert after_center[1] > before_center[1]
+    assert after_center[0] == pytest.approx(0.8 * outer_center[0] + 0.2 * inner_center[0], abs=3.0)
+    assert after_center[1] == pytest.approx(0.8 * outer_center[1] + 0.2 * inner_center[1], abs=3.0)
+    assert after_rect.width() == pytest.approx(140.0, abs=10.0)
+    assert after_rect.height() == pytest.approx(104.0, abs=15.0)
+    assert circle_info["item"].isSelected() is True
+    assert all(handle.isVisible() for handle in circle_info["item"]._handles.values())
+
+
+def test_define_calibration_shape_keeps_shape_selected_and_editable(qapp, monkeypatch):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
+        staticmethod(lambda *args, **kwargs: (15.18, True)),
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
+    )
+
+    ellipse_item = ResizableEllipseItem(80.0, 90.0, 140.0, 100.0)
+    harness.image_view.scene.addItem(ellipse_item)
+    circle_info = {
+        "id": 11,
+        "uid": "editable_holder",
+        "type": "Circle",
+        "item": ellipse_item,
+        "role": "include",
+    }
+    harness.image_view.shapes.append(circle_info)
+
+    harness.define_shape_as_calibration_role(circle_info, harness.ROLE_HOLDER_CIRCLE)
+
+    assert ellipse_item.isSelected() is True
+    assert all(handle.isVisible() for handle in ellipse_item._handles.values())
+
+
 def test_calibration_geometry_change_clears_points_profiles_and_non_calibration_shapes(qapp, monkeypatch):
     harness = _ShapeHarness()
     monkeypatch.setattr(
@@ -523,6 +619,61 @@ def test_measured_shapes_cannot_be_deleted_but_new_shapes_can(qapp, monkeypatch)
     assert locked_info in harness.image_view.shapes
     assert new_info not in harness.image_view.shapes
     assert any("cannot be deleted" in text for text in harness._messagebox_warnings)
+
+
+def test_shape_table_role_colors_override_is_new_gray(qapp):
+    harness = _ShapeHarness()
+
+    include_item = ResizableRectangleItem(10.0, 10.0, 20.0, 20.0)
+    exclude_item = ResizableRectangleItem(40.0, 10.0, 20.0, 20.0)
+    circle_item = ResizableEllipseItem(70.0, 10.0, 30.0, 20.0)
+    square_item = ResizableRectangleItem(110.0, 10.0, 30.0, 24.0)
+    for item in (include_item, exclude_item, circle_item, square_item):
+        harness.image_view.scene.addItem(item)
+
+    harness.image_view.shapes = [
+        {
+            "id": 1,
+            "uid": "include_new",
+            "type": "Rectangle",
+            "item": include_item,
+            "role": "include",
+            "isNew": True,
+        },
+        {
+            "id": 2,
+            "uid": "exclude_new",
+            "type": "Rectangle",
+            "item": exclude_item,
+            "role": "exclude",
+            "isNew": True,
+        },
+        {
+            "id": 3,
+            "uid": "holder_new",
+            "type": "Circle",
+            "item": circle_item,
+            "role": harness.ROLE_HOLDER_CIRCLE,
+            "physical_size_mm": 15.18,
+            "isNew": True,
+        },
+        {
+            "id": 4,
+            "uid": "square_new",
+            "type": "Rectangle",
+            "item": square_item,
+            "role": harness.ROLE_CALIBRATION_SQUARE,
+            "physical_size_mm": 18.35,
+            "isNew": True,
+        },
+    ]
+
+    harness.update_shape_table()
+
+    assert harness.shapeTable.item(0, 0).background().color() == QColor("lightgreen")
+    assert harness.shapeTable.item(1, 0).background().color() == QColor("lightcoral")
+    assert harness.shapeTable.item(2, 0).background().color() == QColor("#BBDEFB")
+    assert harness.shapeTable.item(3, 0).background().color() == QColor("#E1BEE7")
 
 
 def test_stage_limit_outline_uses_holder_center_and_beam_center_mm(qapp):

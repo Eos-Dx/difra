@@ -1,6 +1,7 @@
 import logging
+from math import ceil, floor, sqrt
 
-from PyQt5.QtCore import QRectF, Qt
+from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QBrush, QColor, QPen
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
@@ -25,8 +26,482 @@ class ShapeCalibrationMixin:
     DEFAULT_SAMPLE_HOLDER_LENGTH_MM = 65.45
     DEFAULT_LOAD_POSITION_MM = (-13.9, -6.0)
     DEFAULT_BEAM_CENTER_MM = (6.15, -9.15)
+    AUTO_CENTER_OUTER_WEIGHT = 0.8
+    AUTO_CENTER_INNER_WEIGHT = 0.2
     ROLE_CALIBRATION_SQUARE = "calibration square"
     ROLE_HOLDER_CIRCLE = "holder circle"
+
+    def _get_selected_calibration_shape_info(self):
+        image_view = getattr(self, "image_view", None)
+        scene = getattr(image_view, "scene", None)
+        if scene is None:
+            return None
+        selected_items = [item for item in scene.selectedItems() if item is not getattr(image_view, "image_item", None)]
+        for shape_info in getattr(image_view, "shapes", []) or []:
+            role = str(shape_info.get("role", "") or "").lower()
+            if role not in (self.ROLE_HOLDER_CIRCLE, self.ROLE_CALIBRATION_SQUARE):
+                continue
+            item = shape_info.get("item")
+            extras = list(shape_info.get("diagonals") or [])
+            center_marker = shape_info.get("center_marker")
+            if center_marker is not None:
+                extras.append(center_marker)
+            if any(sel is item or sel in extras for sel in selected_items):
+                return shape_info
+        for shape_info in getattr(image_view, "shapes", []) or []:
+            role = str(shape_info.get("role", "") or "").lower()
+            if role in (self.ROLE_HOLDER_CIRCLE, self.ROLE_CALIBRATION_SQUARE):
+                return shape_info
+        return None
+
+    def _select_calibration_shape_for_editing(self, shape_info):
+        if not shape_info:
+            return
+        image_view = getattr(self, "image_view", None)
+        scene = getattr(image_view, "scene", None)
+        item = shape_info.get("item")
+        if scene is None or item is None:
+            return
+        try:
+            scene.clearSelection()
+        except Exception:
+            logger.debug("Failed to clear scene selection before selecting shape", exc_info=True)
+        try:
+            item.setSelected(True)
+        except Exception:
+            logger.debug("Failed to select calibration shape for editing", exc_info=True)
+        handles_visible = getattr(item, "_set_handles_visible", None)
+        if callable(handles_visible):
+            try:
+                handles_visible(True)
+            except Exception:
+                logger.debug("Failed to show calibration shape handles", exc_info=True)
+        set_mode = getattr(image_view, "set_drawing_mode", None)
+        if callable(set_mode):
+            try:
+                set_mode(None)
+            except Exception:
+                logger.debug("Failed to switch image view back to select mode", exc_info=True)
+
+    def catch_auto_selected_calibration_shape(self):
+        shape_info = self._get_selected_calibration_shape_info()
+        if not shape_info:
+            QMessageBox.information(
+                self,
+                "Catch Auto",
+                "Select a holder circle or calibration square first.",
+            )
+            return False
+        return self.catch_auto_for_shape(shape_info)
+
+    def _extract_workspace_rgba_array(self):
+        image_view = getattr(self, "image_view", None)
+        current_pixmap = getattr(image_view, "current_pixmap", None)
+        if current_pixmap is None:
+            return None
+        try:
+            import numpy as np
+            from PyQt5.QtGui import QImage
+
+            image = current_pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+            width = image.width()
+            height = image.height()
+            ptr = image.bits()
+            ptr.setsize(image.byteCount())
+            array = np.frombuffer(ptr, dtype=np.uint8).reshape((height, width, 4))
+            return array.copy()
+        except Exception:
+            logger.debug("Failed to extract workspace image for catch auto", exc_info=True)
+            return None
+
+    def _scene_rect_to_image_rect(self, scene_rect: QRectF):
+        image_item = getattr(getattr(self, "image_view", None), "image_item", None)
+        if image_item is None:
+            return None
+        try:
+            return image_item.mapRectFromScene(scene_rect).normalized()
+        except Exception:
+            logger.debug("Failed to map scene rect to image rect", exc_info=True)
+            return None
+
+    def _scene_point_to_image_point(self, scene_x: float, scene_y: float):
+        image_item = getattr(getattr(self, "image_view", None), "image_item", None)
+        if image_item is None:
+            return None
+        try:
+            point = image_item.mapFromScene(QPointF(float(scene_x), float(scene_y)))
+            return (float(point.x()), float(point.y()))
+        except Exception:
+            logger.debug("Failed to map scene point to image point", exc_info=True)
+            return None
+
+    def _image_point_to_scene_point(self, image_x: float, image_y: float):
+        image_item = getattr(getattr(self, "image_view", None), "image_item", None)
+        if image_item is None:
+            return None
+        try:
+            point = image_item.mapToScene(QPointF(float(image_x), float(image_y)))
+            return (float(point.x()), float(point.y()))
+        except Exception:
+            logger.debug("Failed to map image point to scene point", exc_info=True)
+            return None
+
+    def _detect_inner_hole_center_in_shape(self, shape_info):
+        payload = self._shape_center_and_extent(shape_info)
+        if payload is None:
+            return None
+        rect, scene_cx, scene_cy = payload
+        image_rect = self._scene_rect_to_image_rect(rect)
+        center_image = self._scene_point_to_image_point(scene_cx, scene_cy)
+        rgba = self._extract_workspace_rgba_array()
+        if image_rect is None or center_image is None or rgba is None:
+            return None
+
+        try:
+            import numpy as np
+        except Exception:
+            logger.debug("Catch auto requires numpy", exc_info=True)
+            return None
+        try:
+            import cv2  # type: ignore
+        except Exception:
+            cv2 = None
+
+        image_h, image_w = rgba.shape[:2]
+        left = max(0, int(floor(image_rect.left())))
+        top = max(0, int(floor(image_rect.top())))
+        right = min(image_w, int(ceil(image_rect.right())))
+        bottom = min(image_h, int(ceil(image_rect.bottom())))
+        if right - left < 8 or bottom - top < 8:
+            return None
+
+        rgb = rgba[:, :, :3].astype(np.float32)
+        if cv2 is not None and hasattr(cv2, "cvtColor") and hasattr(cv2, "COLOR_RGB2GRAY"):
+            gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        else:
+            gray = np.clip(
+                0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2],
+                0,
+                255,
+            ).astype(np.uint8)
+        roi = gray[top:bottom, left:right]
+        if roi.size == 0:
+            return None
+
+        approx_x = int(round(center_image[0])) - left
+        approx_y = int(round(center_image[1])) - top
+        approx_x = int(max(0, min(roi.shape[1] - 1, approx_x)))
+        approx_y = int(max(0, min(roi.shape[0] - 1, approx_y)))
+
+        search_half = max(8, int(min(roi.shape[0], roi.shape[1]) * 0.22))
+        sx0 = max(0, approx_x - search_half)
+        sx1 = min(roi.shape[1], approx_x + search_half + 1)
+        sy0 = max(0, approx_y - search_half)
+        sy1 = min(roi.shape[0], approx_y + search_half + 1)
+        search = roi[sy0:sy1, sx0:sx1]
+        if search.size == 0:
+            return None
+
+        if cv2 is not None and hasattr(cv2, "GaussianBlur"):
+            blurred = cv2.GaussianBlur(search, (7, 7), 0)
+        else:
+            kernel = np.ones((5, 5), dtype=np.float32) / 25.0
+            padded = np.pad(search.astype(np.float32), 2, mode="edge")
+            blurred = np.empty_like(search, dtype=np.float32)
+            for row in range(search.shape[0]):
+                for col in range(search.shape[1]):
+                    window = padded[row:row + 5, col:col + 5]
+                    blurred[row, col] = float((window * kernel).sum())
+        threshold = float(np.percentile(blurred, 18))
+        dark_mask = blurred <= threshold
+        if int(dark_mask.sum()) < 12:
+            return None
+
+        ys, xs = np.nonzero(dark_mask)
+        weights = (threshold - blurred[dark_mask].astype(np.float32)) + 1.0
+        if float(weights.sum()) <= 0.0:
+            return None
+        center_x = float((xs * weights).sum() / weights.sum()) + sx0 + left
+        center_y = float((ys * weights).sum() / weights.sum()) + sy0 + top
+        return self._image_point_to_scene_point(center_x, center_y)
+
+    def _detect_outer_geometry_in_shape(self, shape_info):
+        payload = self._shape_center_and_extent(shape_info)
+        if payload is None:
+            return None
+        rect, scene_cx, scene_cy = payload
+        image_rect = self._scene_rect_to_image_rect(rect)
+        center_image = self._scene_point_to_image_point(scene_cx, scene_cy)
+        rgba = self._extract_workspace_rgba_array()
+        if image_rect is None or center_image is None or rgba is None:
+            return None
+
+        try:
+            import numpy as np
+        except Exception:
+            logger.debug("Catch auto requires numpy", exc_info=True)
+            return None
+        try:
+            import cv2  # type: ignore
+        except Exception:
+            cv2 = None
+
+        image_h, image_w = rgba.shape[:2]
+        left = max(0, int(floor(image_rect.left())))
+        top = max(0, int(floor(image_rect.top())))
+        right = min(image_w, int(ceil(image_rect.right())))
+        bottom = min(image_h, int(ceil(image_rect.bottom())))
+        if right - left < 12 or bottom - top < 12:
+            return None
+
+        rgb = rgba[top:bottom, left:right, :3].astype(np.float32)
+        roi_h, roi_w = rgb.shape[:2]
+        border = max(2, int(min(roi_h, roi_w) * 0.08))
+        bg_samples = np.concatenate(
+            [
+                rgb[:border, :, :].reshape(-1, 3),
+                rgb[-border:, :, :].reshape(-1, 3),
+                rgb[:, :border, :].reshape(-1, 3),
+                rgb[:, -border:, :].reshape(-1, 3),
+            ],
+            axis=0,
+        )
+        bg_color = np.median(bg_samples, axis=0)
+        dist = np.linalg.norm(rgb - bg_color.reshape(1, 1, 3), axis=2).astype(np.float32)
+
+        if cv2 is not None and hasattr(cv2, "GaussianBlur"):
+            dist_blurred = cv2.GaussianBlur(dist, (7, 7), 0)
+        else:
+            kernel = np.ones((5, 5), dtype=np.float32) / 25.0
+            padded = np.pad(dist, 2, mode="edge")
+            dist_blurred = np.empty_like(dist, dtype=np.float32)
+            for row in range(dist.shape[0]):
+                for col in range(dist.shape[1]):
+                    window = padded[row:row + 5, col:col + 5]
+                    dist_blurred[row, col] = float((window * kernel).sum())
+
+        threshold = max(12.0, float(np.percentile(dist_blurred, 60)))
+        foreground = dist_blurred >= threshold
+        if int(foreground.sum()) < 20:
+            return None
+
+        if cv2 is not None and hasattr(cv2, "morphologyEx") and hasattr(cv2, "MORPH_CLOSE"):
+            mask_u8 = (foreground.astype(np.uint8) * 255)
+            kernel = np.ones((5, 5), dtype=np.uint8)
+            mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
+            mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
+            foreground = mask_u8 > 0
+
+        if cv2 is not None and hasattr(cv2, "connectedComponentsWithStats"):
+            mask_u8 = foreground.astype(np.uint8)
+            count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, 8)
+            best_idx = None
+            best_score = None
+            approx_x = float(center_image[0] - left)
+            approx_y = float(center_image[1] - top)
+            for idx in range(1, int(count)):
+                area = float(stats[idx, cv2.CC_STAT_AREA])
+                if area < 20:
+                    continue
+                cx = float(centroids[idx][0])
+                cy = float(centroids[idx][1])
+                distance = ((cx - approx_x) ** 2 + (cy - approx_y) ** 2) ** 0.5
+                score = area - 4.0 * distance
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx is not None:
+                foreground = labels == best_idx
+
+        ys, xs = np.nonzero(foreground)
+        if xs.size < 20 or ys.size < 20:
+            return None
+
+        weights = dist_blurred[foreground] + 1.0
+        role = str((shape_info or {}).get("role", "") or "").lower()
+
+        bbox_left = float(xs.min())
+        bbox_right = float(xs.max())
+        bbox_top = float(ys.min())
+        bbox_bottom = float(ys.max())
+        bbox_width = max(10.0, bbox_right - bbox_left + 1.0)
+        bbox_height = max(10.0, bbox_bottom - bbox_top + 1.0)
+
+        if role == self.ROLE_HOLDER_CIRCLE:
+            center_x_local = float((xs * weights).sum() / weights.sum())
+            center_y_local = float((ys * weights).sum() / weights.sum())
+            var_x = float((((xs - center_x_local) ** 2) * weights).sum() / weights.sum())
+            var_y = float((((ys - center_y_local) ** 2) * weights).sum() / weights.sum())
+            fitted_width = max(10.0, min(float(roi_w), 4.0 * sqrt(max(var_x, 1.0))))
+            fitted_height = max(10.0, min(float(roi_h), 4.0 * sqrt(max(var_y, 1.0))))
+            outer_width = 0.7 * fitted_width + 0.3 * bbox_width
+            outer_height = 0.7 * fitted_height + 0.3 * bbox_height
+            outer_left = center_x_local - outer_width / 2.0
+            outer_right = center_x_local + outer_width / 2.0
+            outer_top = center_y_local - outer_height / 2.0
+            outer_bottom = center_y_local + outer_height / 2.0
+        else:
+            profile_x = foreground.astype(np.float32).mean(axis=0)
+            profile_y = foreground.astype(np.float32).mean(axis=1)
+            kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float32)
+            kernel /= float(kernel.sum())
+            profile_x = np.convolve(profile_x, kernel, mode="same")
+            profile_y = np.convolve(profile_y, kernel, mode="same")
+            mask_x = profile_x >= max(0.08, float(profile_x.max()) * 0.35)
+            mask_y = profile_y >= max(0.08, float(profile_y.max()) * 0.35)
+            if mask_x.any():
+                x_idx = np.nonzero(mask_x)[0]
+                outer_left = float(x_idx[0])
+                outer_right = float(x_idx[-1])
+            else:
+                outer_left = bbox_left
+                outer_right = bbox_right
+            if mask_y.any():
+                y_idx = np.nonzero(mask_y)[0]
+                outer_top = float(y_idx[0])
+                outer_bottom = float(y_idx[-1])
+            else:
+                outer_top = bbox_top
+                outer_bottom = bbox_bottom
+            center_x_local = (outer_left + outer_right) / 2.0
+            center_y_local = (outer_top + outer_bottom) / 2.0
+
+        center_x = center_x_local + left
+        center_y = center_y_local + top
+        outer_left += left
+        outer_right += left
+        outer_top += top
+        outer_bottom += top
+        scene_center = self._image_point_to_scene_point(center_x, center_y)
+        scene_top_left = self._image_point_to_scene_point(outer_left, outer_top)
+        scene_bottom_right = self._image_point_to_scene_point(outer_right, outer_bottom)
+        if scene_center is None or scene_top_left is None or scene_bottom_right is None:
+            return None
+        scene_rect = QRectF(
+            float(scene_top_left[0]),
+            float(scene_top_left[1]),
+            float(scene_bottom_right[0]) - float(scene_top_left[0]),
+            float(scene_bottom_right[1]) - float(scene_top_left[1]),
+        ).normalized()
+        return {
+            "rect": scene_rect,
+            "center": scene_center,
+        }
+
+    def _apply_scene_rect_to_shape(self, shape_info, scene_rect: QRectF):
+        if not shape_info or scene_rect is None:
+            return False
+        item = shape_info.get("item")
+        if item is None or not hasattr(item, "setRect") or not hasattr(item, "rect"):
+            return False
+        current_rect = item.mapRectToScene(item.rect()) if hasattr(item, "mapRectToScene") else item.sceneBoundingRect()
+        if (
+            abs(current_rect.x() - scene_rect.x()) < 0.01
+            and abs(current_rect.y() - scene_rect.y()) < 0.01
+            and abs(current_rect.width() - scene_rect.width()) < 0.01
+            and abs(current_rect.height() - scene_rect.height()) < 0.01
+        ):
+            return False
+        callback = getattr(item, "geometry_changed_callback", None)
+        if hasattr(item, "geometry_changed_callback"):
+            item.geometry_changed_callback = None
+        try:
+            item.setRect(scene_rect)
+            updater = getattr(item, "_update_handle_positions", None)
+            if callable(updater):
+                updater()
+        finally:
+            if hasattr(item, "geometry_changed_callback"):
+                item.geometry_changed_callback = callback
+        if callable(callback):
+            callback()
+        return True
+
+    def _recenter_shape_to_scene_point(self, shape_info, new_scene_center):
+        if not shape_info or not new_scene_center:
+            return False
+        payload = self._shape_center_and_extent(shape_info)
+        if payload is None:
+            return False
+        rect, cx, cy = payload
+        dx = float(new_scene_center[0]) - float(cx)
+        dy = float(new_scene_center[1]) - float(cy)
+        if abs(dx) < 0.01 and abs(dy) < 0.01:
+            return False
+
+        item = shape_info.get("item")
+        callback = getattr(item, "geometry_changed_callback", None)
+        if hasattr(item, "geometry_changed_callback"):
+            item.geometry_changed_callback = None
+        try:
+            if hasattr(item, "setRect") and hasattr(item, "rect"):
+                new_rect = QRectF(item.rect())
+                new_rect.translate(dx, dy)
+                item.setRect(new_rect)
+                updater = getattr(item, "_update_handle_positions", None)
+                if callable(updater):
+                    updater()
+            elif hasattr(item, "moveBy"):
+                item.moveBy(dx, dy)
+        finally:
+            if hasattr(item, "geometry_changed_callback"):
+                item.geometry_changed_callback = callback
+
+        if callable(callback):
+            callback()
+        else:
+            self._refresh_sample_photo_calibration()
+            try:
+                self.update_shape_table()
+            except Exception:
+                logger.debug("Failed to refresh shape table after catch auto", exc_info=True)
+        return True
+
+    def catch_auto_for_shape(self, shape_info):
+        role = str((shape_info or {}).get("role", "") or "").lower()
+        if role not in (self.ROLE_HOLDER_CIRCLE, self.ROLE_CALIBRATION_SQUARE):
+            QMessageBox.information(
+                self,
+                "Catch Auto",
+                "Catch Auto works only for holder circle or calibration square.",
+            )
+            return False
+
+        outer_geometry = self._detect_outer_geometry_in_shape(shape_info)
+        if outer_geometry is None:
+            QMessageBox.warning(
+                self,
+                "Catch Auto Failed",
+                "Could not detect the outer shape boundary by contrast.\n\n"
+                "Keep the manual shape or adjust it slightly and try again.",
+            )
+            return False
+
+        changed = self._apply_scene_rect_to_shape(shape_info, outer_geometry["rect"])
+        current_center = outer_geometry["center"]
+
+        detected_center = self._detect_inner_hole_center_in_shape(shape_info)
+        if detected_center is not None:
+            outer_weight = float(self.AUTO_CENTER_OUTER_WEIGHT)
+            inner_weight = float(self.AUTO_CENTER_INNER_WEIGHT)
+            target_center = (
+                outer_weight * float(current_center[0]) + inner_weight * float(detected_center[0]),
+                outer_weight * float(current_center[1]) + inner_weight * float(detected_center[1]),
+            )
+        else:
+            target_center = current_center
+
+        changed = self._recenter_shape_to_scene_point(shape_info, target_center) or changed
+        if not changed:
+            self._select_calibration_shape_for_editing(shape_info)
+            QMessageBox.information(
+                self,
+                "Catch Auto",
+                "The detected center is already aligned closely enough.",
+            )
+            return False
+        self._select_calibration_shape_for_editing(shape_info)
+        return True
 
     def _ensure_shape_calibration_defaults(self):
         if not hasattr(self, "sample_photo_calibration_square_mm_default"):

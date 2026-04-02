@@ -169,11 +169,13 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
                     selected_shape_infos.append(shape_info)
         calibration_square_action = None
         holder_circle_action = None
+        catch_auto_action = None
         edit_physical_size_action = None
         clear_profile_action = None
         if len(selected_shape_infos) == 1 and main_window is not None:
             calibration_square_action = menu.addAction("Define As Calibration Square...")
             holder_circle_action = menu.addAction("Define As Holder Circle...")
+            catch_auto_action = menu.addAction("Catch Auto")
             edit_physical_size_action = menu.addAction("Edit Physical Size...")
             menu.addSeparator()
         selected_profile_info = None
@@ -200,6 +202,9 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
                     selected_shape_infos[0],
                     "holder circle",
                 )
+        elif chosen == catch_auto_action and selected_shape_infos:
+            if hasattr(main_window, "catch_auto_for_shape"):
+                main_window.catch_auto_for_shape(selected_shape_infos[0])
         elif chosen == edit_physical_size_action and selected_shape_infos:
             if hasattr(main_window, "edit_shape_physical_size_by_info"):
                 main_window.edit_shape_physical_size_by_info(selected_shape_infos[0])

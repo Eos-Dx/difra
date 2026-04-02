@@ -192,6 +192,7 @@ class ShapeTableMixin(ShapeCalibrationMixin):
         excludeAct = menu.addAction("Exclude")
         calibSquareAct = menu.addAction("Define As Calibration Square...")
         holderCircleAct = menu.addAction("Define As Holder Circle...")
+        catchAutoAct = menu.addAction("Catch Auto")
         editPhysicalSizeAct = menu.addAction("Edit Physical Size...")
         menu.addSeparator()
         deleteAct = menu.addAction("Delete")
@@ -204,6 +205,18 @@ class ShapeTableMixin(ShapeCalibrationMixin):
             self.update_shape_role(row, self.ROLE_CALIBRATION_SQUARE)
         elif action == holderCircleAct:
             self.update_shape_role(row, self.ROLE_HOLDER_CIRCLE)
+        elif action == catchAutoAct:
+            item = self.shapeTable.item(row, 0)
+            shape_uid = (
+                str(item.data(Qt.UserRole)).strip()
+                if item is not None and item.data(Qt.UserRole) is not None
+                else ""
+            )
+            if shape_uid:
+                for shape_info in self.image_view.shapes:
+                    if str(shape_info.get("uid", "")).strip() == shape_uid:
+                        self.catch_auto_for_shape(shape_info)
+                        break
         elif action == editPhysicalSizeAct:
             self.edit_shape_physical_size(row)
         elif action == deleteAct:
@@ -271,6 +284,7 @@ class ShapeTableMixin(ShapeCalibrationMixin):
         if role == self.ROLE_HOLDER_CIRCLE:
             self._prioritize_holder_circle_shape(shape_info)
         self.apply_shape_role(shape_info)
+        self._select_calibration_shape_for_editing(shape_info)
         self.update_shape_table()
 
     def apply_shape_role(self, shape_info):
@@ -424,6 +438,7 @@ class ShapeTableMixin(ShapeCalibrationMixin):
                     if role == self.ROLE_HOLDER_CIRCLE:
                         self._prioritize_holder_circle_shape(shape_info)
                     self.apply_shape_role(shape_info)
+                    self._select_calibration_shape_for_editing(shape_info)
                     self._refresh_sample_photo_calibration()
                     break
             self.update_shape_table()
@@ -456,9 +471,7 @@ class ShapeTableMixin(ShapeCalibrationMixin):
             self.shapeTable.setItem(row, 5, QTableWidgetItem(f"{rect.height():.2f}"))
             self.shapeTable.setItem(row, 6, QTableWidgetItem(role))
 
-            if shape_info.get("isNew", False):
-                color = QColor("gray")
-            elif role == "include":
+            if role == "include":
                 color = QColor("lightgreen")
             elif role == "exclude":
                 color = QColor("lightcoral")
@@ -468,6 +481,8 @@ class ShapeTableMixin(ShapeCalibrationMixin):
                 color = QColor("#E1BEE7")
             elif role == self.ROLE_HOLDER_CIRCLE:
                 color = QColor("#BBDEFB")
+            elif shape_info.get("isNew", False):
+                color = QColor("gray")
             else:
                 color = QColor("white")
 
