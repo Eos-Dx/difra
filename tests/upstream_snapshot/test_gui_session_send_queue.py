@@ -261,14 +261,19 @@ def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monke
     assert len(archived_files) == 1
     archived = archived_files[0]
     with h5py.File(archived, "r") as h5f:
-        assert h5f.attrs.get("upload_status") == "failed"
+        assert h5f.attrs.get("upload_status") == "success"
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326169
 
-    monkeypatch.setattr(harness, "_request_matador_specimen_override", lambda **kwargs: 326111)
+    monkeypatch.setattr(
+        harness,
+        "_request_matador_specimen_override",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("override should not be requested")),
+    )
     harness._send_archived_sessions([archived])
     qapp.processEvents()
 
     with h5py.File(archived, "r") as h5f:
-        assert int(h5f.attrs.get("matadorSpecimenId")) == 326111
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326169
         assert h5f.attrs.get("upload_status") == "success"
         assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
 

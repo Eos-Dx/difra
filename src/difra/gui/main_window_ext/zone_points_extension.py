@@ -41,7 +41,7 @@ class ZonePointsMixin:
     Host class must define/initialize:
         - self.config
         - self.image_view (with .scene, .shapes, .points_dict)
-        - self.measurement_widgets (list)
+        - self.measurement_widgets (dict)
         - self.include_center (tuple)
         - self.pixel_to_mm_ratio (float)
     """
@@ -131,7 +131,9 @@ class ZonePointsMixin:
         """Initialize required state attributes."""
         if not hasattr(self, "next_point_id"):
             self.next_point_id = 1
-        if not hasattr(self, "measurement_widgets"):
+        if not hasattr(self, "measurement_widgets") or not isinstance(
+            getattr(self, "measurement_widgets", None), dict
+        ):
             self.measurement_widgets = {}
         # Hidden parking parent to keep widgets alive when detaching from table
         if not hasattr(self, "_widgets_parking") or self._widgets_parking is None:

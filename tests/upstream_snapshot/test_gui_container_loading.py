@@ -229,9 +229,13 @@ class _SessionRestoreHarness(
 class _MeasurementHistoryWidget:
     def __init__(self):
         self.measurements = []
+        self.profiles = []
 
     def add_measurement(self, results, timestamp):
         self.measurements.append((results, timestamp))
+
+    def set_detector_profile(self, alias: str, profile_values):
+        self.profiles.append((alias, profile_values))
 
 
 class _SessionRestoreHistoryHarness(_SessionRestoreHarness):
@@ -244,6 +248,14 @@ class _SessionRestoreHistoryHarness(_SessionRestoreHarness):
 
     def _get_point_identity_from_row(self, row: int):
         return f"{row + 1}_row_uid", row + 1
+
+    def _update_profile_previews_from_result_files(self, result_files: dict, point_uid=None):
+        point_uid = str(point_uid or "").strip()
+        widget = self.measurement_widgets.get(point_uid)
+        if widget is None:
+            return
+        for alias, _payload in (result_files or {}).items():
+            widget.set_detector_profile(alias, [1.0, 2.0, 3.0])
 
 
 class _SessionAwareTechnicalLoadHarness(
@@ -780,6 +792,7 @@ def test_restore_session_recovers_image_zones_and_points(qapp, tmp_path, monkeyp
     manager.close_session()
 
     harness = _SessionRestoreHistoryHarness(config=config)
+    harness.measurement_widgets = []
     harness.show()
     qapp.processEvents()
 
@@ -1122,8 +1135,13 @@ def test_restore_session_recovers_incomplete_point_from_files(qapp, tmp_path, mo
         assert point_group.attrs[schema.ATTR_POINT_STATUS] == schema.POINT_STATUS_MEASURED
 
     widget = harness.measurement_widgets.get("1_row_uid")
+    assert isinstance(harness.measurement_widgets, dict)
     assert widget is not None
     assert len(widget.measurements) == 1
+    assert len(widget.profiles) == 1
+    restored_alias, restored_profile = widget.profiles[0]
+    assert restored_alias == "PRIMARY"
+    assert restored_profile == [1.0, 2.0, 3.0]
     _results, restored_timestamp = widget.measurements[0]
     assert restored_timestamp
     assert restored_timestamp != "from container"

@@ -67,6 +67,24 @@ def test_finalize_session_container_locks_once(tmp_path):
     assert changed_again is False
 
 
+def test_matador_specimen_parser_uses_trailing_db_specimen_id():
+    assert SessionLifecycleActions._coerce_optional_int("326111__326169") == 326169
+    assert SessionLifecycleActions._coerce_optional_int("326169") == 326169
+    assert SessionLifecycleActions._coerce_optional_int("patient__not-a-number") is None
+
+
+def test_read_matador_metadata_uses_trailing_specimen_id_from_container(tmp_path):
+    _sid, session_path = _create_session_file(tmp_path / "measurements", "326111__326169")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["specimenId"] = "326111__326169"
+
+    metadata = SessionLifecycleActions._read_matador_session_metadata(session_path)
+
+    assert metadata["specimen_text"] == "326111__326169"
+    assert metadata["specimen_id"] == 326169
+
+
 def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
@@ -251,7 +269,7 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
 
 
-def test_send_and_archive_non_integer_specimen_fails_explicitly(tmp_path):
+def test_send_and_archive_composite_specimen_uses_trailing_db_id(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
@@ -271,17 +289,16 @@ def test_send_and_archive_non_integer_specimen_fails_explicitly(tmp_path):
     )
 
     assert result.moved == 1
-    assert result.upload_success == 0
-    assert result.upload_failed == 1
+    assert result.upload_success == 1
+    assert result.upload_failed == 0
     archived = result.archived_paths[0]
-    assert container_manager.get_transfer_status(archived) == "unsent"
+    assert container_manager.get_transfer_status(archived) == "sent"
     with h5py.File(archived, "r") as h5f:
-        assert h5f.attrs.get("upload_status") == "failed"
-        assert "must be an integer" in str(h5f.attrs.get("upload_result_message", ""))
-        assert "326111__326169" in str(h5f.attrs.get("upload_result_message", ""))
+        assert h5f.attrs.get("upload_status") == "success"
+        assert str(h5f.attrs.get("upload_result_message", "")).strip()
 
 
-def test_reupload_archived_container_allows_specimen_override(tmp_path):
+def test_reupload_archived_container_can_override_composite_specimen_mapping(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     old_format_folder = tmp_path / "Data" / "difra" / "Old_format"

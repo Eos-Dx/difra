@@ -341,7 +341,6 @@ class TechnicalPanelMixin:
             self.movementRadiusSpin,
             self.folderLE,
             self.auxNameLE,
-            self.auxTable,
             self.framesSpin,
             self.rtBtn,
         ]
@@ -360,6 +359,11 @@ class TechnicalPanelMixin:
 
         for w in widgets:
             w.setEnabled(enable)
+
+        if hasattr(self, "auxTable"):
+            # Viewing and reopening already-loaded technical data should stay
+            # available even when capture hardware is offline.
+            self.auxTable.setEnabled(True)
 
         self._update_distance_dependent_controls()
 
