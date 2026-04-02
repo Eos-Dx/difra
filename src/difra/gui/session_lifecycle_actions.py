@@ -982,7 +982,7 @@ class SessionLifecycleActions:
             return None
         candidate = text
         if "__" in candidate:
-            candidate = candidate.rsplit("__", 1)[-1].strip()
+            candidate = candidate.split("__", 1)[0].strip()
         if candidate.startswith(("+", "-")):
             digits = candidate[1:]
             if digits.isdigit():
