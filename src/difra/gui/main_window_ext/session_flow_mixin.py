@@ -189,6 +189,7 @@ class SessionFlowMixin(SessionRestoreMixin):
             SessionLifecycleService.copy_archive_item_to_mirror(
                 destination.parent,
                 config=self.config if hasattr(self, "config") else None,
+                archive_kind="measurements",
             )
             logger.info(
                 "Archived session container: %s -> %s/%s",

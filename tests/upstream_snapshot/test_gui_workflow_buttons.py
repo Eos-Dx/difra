@@ -13,6 +13,7 @@ This test exercises a full user path:
 
 import os
 from pathlib import Path
+import re
 
 import h5py
 import numpy as np
@@ -289,6 +290,7 @@ def test_gui_button_driven_technical_workflow(qapp, tmp_path, monkeypatch):
 
     work_dir = tmp_path / "technical_workflow"
     archive_dir = tmp_path / "archive" / "technical"
+    mirror_root = tmp_path / "onedrive_archive"
     temp_dir = tmp_path / "temp"
 
     config = {
@@ -316,6 +318,7 @@ def test_gui_button_driven_technical_workflow(qapp, tmp_path, monkeypatch):
         "technical_temp_folder": str(temp_dir),
         "technical_archive_folder": str(archive_dir),
         "technical_archive_patterns": ["*.npy"],
+        "measurements_archive_mirror_folder": str(mirror_root),
     }
 
     window = _TechnicalWorkflowHarness(config=config, work_dir=work_dir)
@@ -404,6 +407,19 @@ def test_gui_button_driven_technical_workflow(qapp, tmp_path, monkeypatch):
     assert archive_subdirs, f"No archive subfolder created in {archive_dir}"
     archived_npy = sorted(archive_dir.rglob("*.npy"))
     assert archived_npy, "Expected archived raw .npy files in technical archive folder"
+    populated_archive_dirs = [path for path in archive_subdirs if sorted(path.rglob("*.npy"))]
+    assert populated_archive_dirs, "Expected at least one populated technical archive subfolder"
+    mirrored_populated_dirs = []
+    for archive_subdir in populated_archive_dirs:
+        mirrored_technical_dir = (
+            mirror_root
+            / "Archive"
+            / "technical"
+            / archive_subdir.name
+        )
+        if mirrored_technical_dir.exists() and sorted(mirrored_technical_dir.rglob("*.npy")):
+            mirrored_populated_dirs.append(mirrored_technical_dir)
+    assert mirrored_populated_dirs, "Expected mirrored technical archive folder with raw files"
 
     # No critical dialog should have been shown
     assert not dialogs["critical"], f"Unexpected critical dialogs: {dialogs['critical']}"

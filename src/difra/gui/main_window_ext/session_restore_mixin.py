@@ -1,6 +1,6 @@
 """Session restore and recovery helpers for SessionMixin."""
 
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from . import session_mixin as _session_module
 
@@ -580,12 +580,6 @@ class SessionRestoreMixin:
 
     def on_import_workspace_from_session(self):
         """Import image/zones/points from a session container into current workspace."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import Workspace From Session Container",
-            str(Path.home()),
-            "NeXus HDF5 Files (*.nxs.h5 *.h5);;All Files (*)",
-        )
-        if not file_path:
-            return
-        self.import_workspace_from_session_path(Path(file_path))
+        from difra.gui.main_window_ext import session_flow_actions
+
+        session_flow_actions._import_workspace_from_previous_session(self)

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Sequence
 
 import h5py
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QCheckBox, QHBoxLayout, QTableWidget, QTableWidgetItem, QWidget
+from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
 
 
 @dataclass(frozen=True)
@@ -261,15 +261,6 @@ class SessionTabPresenter:
         table.setRowCount(0)
         for row_index, row_data in enumerate(rows):
             table.insertRow(row_index)
-
-            checkbox = QCheckBox()
-            checkbox_widget = QWidget()
-            checkbox_layout = QHBoxLayout(checkbox_widget)
-            checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            checkbox_layout.setAlignment(Qt.AlignCenter)
-            checkbox_layout.addWidget(checkbox)
-            table.setCellWidget(row_index, 0, checkbox_widget)
-
             for col, key in enumerate(
                 [
                     "file_name",
@@ -280,11 +271,11 @@ class SessionTabPresenter:
                     "created",
                     "status",
                 ],
-                start=1,
+                start=0,
             ):
                 table.setItem(row_index, col, cls._readonly_item(row_data.get(key, "")))
 
-            table.setItem(row_index, 8, cls._readonly_item(row_data.get("path", "")))
+            table.setItem(row_index, 7, cls._readonly_item(row_data.get("path", "")))
 
     @classmethod
     def populate_archive_table(

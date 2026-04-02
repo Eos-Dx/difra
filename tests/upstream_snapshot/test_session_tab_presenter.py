@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QCheckBox, QTableWidget
+from PyQt5.QtWidgets import QApplication, QTableWidget
 
 from container.v0_2 import schema, writer as session_writer
 from container.v0_2.container_manager import is_container_locked, lock_container
@@ -103,7 +103,7 @@ def test_build_archived_rows_extracts_stamp_with_numeric_suffix(tmp_path):
 
 def test_presenter_populates_pending_and_archive_tables(qapp):
     pending_table = QTableWidget()
-    pending_table.setColumnCount(9)
+    pending_table.setColumnCount(8)
 
     archive_table = QTableWidget()
     archive_table.setColumnCount(10)
@@ -141,14 +141,10 @@ def test_presenter_populates_pending_and_archive_tables(qapp):
     assert pending_table.rowCount() == 1
     assert archive_table.rowCount() == 1
 
-    pending_checkbox_widget = pending_table.cellWidget(0, 0)
-    assert pending_checkbox_widget is not None
-    assert pending_checkbox_widget.findChild(QCheckBox) is not None
-
-    pending_file_item = pending_table.item(0, 1)
+    pending_file_item = pending_table.item(0, 0)
     assert pending_file_item.text() == "session_a.nxs.h5"
     assert pending_file_item.flags() == (Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-    assert pending_table.item(0, 8).text() == "/tmp/session_a.nxs.h5"
+    assert pending_table.item(0, 7).text() == "/tmp/session_a.nxs.h5"
 
     assert archive_table.item(0, 0).text() == "session_b.nxs.h5"
     assert archive_table.item(0, 2).text() == "PROJ_B"

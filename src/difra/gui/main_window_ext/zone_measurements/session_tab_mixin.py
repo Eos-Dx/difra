@@ -10,7 +10,6 @@ from typing import List, Optional
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -212,78 +211,32 @@ class SessionTabMixin:
         queue_group = QGroupBox("Session Containers Ready To Close/Send")
         queue_layout = QVBoxLayout(queue_group)
 
-        queue_btn_layout = QVBoxLayout()
+        queue_btn_layout = QHBoxLayout()
         queue_btn_layout.setSpacing(4)
-        queue_btn_row_1 = QHBoxLayout()
-        queue_btn_row_1.setSpacing(4)
         self.refresh_sessions_btn = QPushButton("Refresh")
         self.refresh_sessions_btn.clicked.connect(self._refresh_session_container_lists)
-        queue_btn_row_1.addWidget(self.refresh_sessions_btn)
+        queue_btn_layout.addWidget(self.refresh_sessions_btn)
 
-        self.load_session_from_path_btn = QPushButton("Load Container…")
-        self.load_session_from_path_btn.clicked.connect(
-            self._on_load_session_container_from_dialog
-        )
-        queue_btn_row_1.addWidget(self.load_session_from_path_btn)
+        self.load_session_btn = QPushButton("Load Container")
+        self.load_session_btn.clicked.connect(self._on_load_selected_session_container)
+        queue_btn_layout.addWidget(self.load_session_btn)
 
-        self.select_all_sessions_btn = QPushButton("Select All")
-        self.select_all_sessions_btn.clicked.connect(
-            lambda: self._set_all_pending_selection(True)
-        )
-        queue_btn_row_1.addWidget(self.select_all_sessions_btn)
-        queue_btn_row_1.addStretch()
-        queue_btn_layout.addLayout(queue_btn_row_1)
+        self.close_session_btn = QPushButton("Close")
+        self.close_session_btn.clicked.connect(self._on_close_pending_session)
+        queue_btn_layout.addWidget(self.close_session_btn)
 
-        queue_btn_row_2 = QHBoxLayout()
-        queue_btn_row_2.setSpacing(4)
-        self.clear_sessions_selection_btn = QPushButton("Clear Selection")
-        self.clear_sessions_selection_btn.clicked.connect(
-            lambda: self._set_all_pending_selection(False)
-        )
-        queue_btn_row_2.addWidget(self.clear_sessions_selection_btn)
-
-        self.close_selected_sessions_btn = QPushButton("Close Selected")
-        self.close_selected_sessions_btn.clicked.connect(
-            self._on_close_selected_sessions
-        )
-        queue_btn_row_2.addWidget(self.close_selected_sessions_btn)
-
-        self.send_selected_sessions_btn = QPushButton("Close && Send Selected")
-        self.send_selected_sessions_btn.clicked.connect(self._on_send_selected_sessions)
-        queue_btn_row_2.addWidget(self.send_selected_sessions_btn)
-
-        self.close_all_sessions_btn = QPushButton("Close All")
-        self.close_all_sessions_btn.clicked.connect(self._on_close_all_sessions)
-        queue_btn_row_2.addWidget(self.close_all_sessions_btn)
-
-        self.send_all_sessions_btn = QPushButton("Close && Send All")
-        self.send_all_sessions_btn.clicked.connect(self._on_send_all_sessions)
-        queue_btn_row_2.addWidget(self.send_all_sessions_btn)
-        queue_btn_row_2.addStretch()
-        queue_btn_layout.addLayout(queue_btn_row_2)
+        self.send_session_btn = QPushButton("Close and Send")
+        self.send_session_btn.clicked.connect(self._on_send_pending_session)
+        queue_btn_layout.addWidget(self.send_session_btn)
+        queue_btn_layout.addStretch()
         queue_layout.addLayout(queue_btn_layout)
 
-        self.pending_sessions_table = QTableWidget()
-        self.pending_sessions_table.setColumnCount(9)
-        self.pending_sessions_table.setHorizontalHeaderLabels(
-            [
-                "Select",
-                "File",
-                "Specimen",
-                "Study",
-                "Operator",
-                "Uploaded By",
-                "Created",
-                "Status",
-                "Path",
-            ]
+        self.pending_session_summary_label = QLabel("No session container in measurements folder.")
+        self.pending_session_summary_label.setWordWrap(True)
+        self.pending_session_summary_label.setStyleSheet(
+            "padding: 10px; border: 1px solid #d0d0d0; border-radius: 4px;"
         )
-        self.pending_sessions_table.setColumnHidden(8, True)
-        self.pending_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.pending_sessions_table.customContextMenuRequested.connect(
-            self._show_pending_sessions_context_menu
-        )
-        queue_layout.addWidget(self.pending_sessions_table)
+        queue_layout.addWidget(self.pending_session_summary_label)
 
         layout.addWidget(queue_group)
 
@@ -409,7 +362,7 @@ class SessionTabMixin:
         )
 
     def _refresh_session_container_lists(self):
-        if not hasattr(self, "pending_sessions_table"):
+        if not hasattr(self, "pending_session_summary_label"):
             return
 
         schema = self._container_schema()
@@ -424,7 +377,8 @@ class SessionTabMixin:
             schema=schema,
             container_manager=container_manager,
         )
-        SessionTabPresenter.populate_pending_table(self.pending_sessions_table, pending_rows)
+        self._pending_rows = list(pending_rows)
+        self._update_pending_session_summary(self._pending_rows)
         self._archived_rows_all = list(archived_rows)
         if hasattr(self, "archived_sessions_table"):
             self._apply_archive_filters()
@@ -432,6 +386,50 @@ class SessionTabMixin:
         if hasattr(self, "archive_path_label"):
             archive_folder = self._get_session_archive_folder()
             self.archive_path_label.setText(f"Archive folder: {archive_folder}")
+
+    def _set_pending_session_actions_enabled(self, enabled: bool) -> None:
+        for attr_name in ("load_session_btn", "close_session_btn", "send_session_btn"):
+            button = getattr(self, attr_name, None)
+            if button is not None:
+                button.setEnabled(bool(enabled))
+
+    def _update_pending_session_summary(self, pending_rows: List[dict]) -> None:
+        rows = list(pending_rows or [])
+        self._current_pending_container_path = None
+
+        if not rows:
+            self.pending_session_summary_label.setText(
+                "No session container in measurements folder."
+            )
+            self._set_pending_session_actions_enabled(False)
+            return
+
+        if len(rows) > 1:
+            file_names = [str(row.get("file_name") or "") for row in rows[:3]]
+            summary = [
+                f"Multiple session containers found in measurements folder ({len(rows)}).",
+                "This screen expects exactly one active session container.",
+            ]
+            if file_names:
+                summary.append("")
+                summary.extend(file_names)
+            self.pending_session_summary_label.setText("\n".join(summary))
+            self._set_pending_session_actions_enabled(False)
+            return
+
+        row = rows[0]
+        raw_path = str(row.get("path") or "").strip()
+        self._current_pending_container_path = Path(raw_path) if raw_path else None
+        summary = [
+            f"File: {row.get('file_name', '')}",
+            f"Specimen: {row.get('sample_id', '')}",
+            f"Study: {row.get('study_name', '')}",
+            f"Operator: {row.get('operator_id', '')}",
+            f"Created: {row.get('created', '')}",
+            f"Status: {row.get('status', '')}",
+        ]
+        self.pending_session_summary_label.setText("\n".join(summary))
+        self._set_pending_session_actions_enabled(self._current_pending_container_path is not None)
 
     @staticmethod
     def _parse_archive_datetime(value: str):
@@ -537,34 +535,15 @@ class SessionTabMixin:
 
         SessionTabPresenter.populate_archive_table(self.archived_sessions_table, filtered)
 
-    def _set_all_pending_selection(self, checked: bool):
-        for row in range(self.pending_sessions_table.rowCount()):
-            checkbox_widget = self.pending_sessions_table.cellWidget(row, 0)
-            if checkbox_widget:
-                checkbox = checkbox_widget.findChild(QCheckBox)
-                if checkbox:
-                    checkbox.setChecked(checked)
-
-    def _selected_pending_containers(self) -> List[Path]:
-        selected: List[Path] = []
-        for row in range(self.pending_sessions_table.rowCount()):
-            checkbox_widget = self.pending_sessions_table.cellWidget(row, 0)
-            checkbox = checkbox_widget.findChild(QCheckBox) if checkbox_widget else None
-            if checkbox is None or not checkbox.isChecked():
-                continue
-            path_item = self.pending_sessions_table.item(row, 8)
-            if path_item is None:
-                continue
-            selected.append(Path(path_item.text()))
-        return selected
+    def _selected_pending_container(self) -> Optional[Path]:
+        return getattr(self, "_current_pending_container_path", None)
 
     def _all_pending_containers(self) -> List[Path]:
-        containers: List[Path] = []
-        for row in range(self.pending_sessions_table.rowCount()):
-            path_item = self.pending_sessions_table.item(row, 8)
-            if path_item is not None:
-                containers.append(Path(path_item.text()))
-        return containers
+        return [
+            Path(str(row.get("path")))
+            for row in list(getattr(self, "_pending_rows", []) or [])
+            if str(row.get("path") or "").strip()
+        ]
 
     def _path_from_table_row(self, table: QTableWidget, row: int, path_col: int):
         if row < 0:
@@ -674,24 +653,6 @@ class SessionTabMixin:
             return None
         return int(text)
 
-    def _show_pending_sessions_context_menu(self, pos):
-        table = self.pending_sessions_table
-        row = table.rowAt(pos.y())
-        if row < 0:
-            return
-        container_path = self._path_from_table_row(table, row, 8)
-        if container_path is None:
-            return
-
-        menu = QMenu(table)
-        load_action = menu.addAction("Load Container")
-        close_action = menu.addAction("Close / Archive")
-        selected = menu.exec_(table.viewport().mapToGlobal(pos))
-        if selected == load_action:
-            self._open_session_container_path(container_path)
-        elif selected == close_action:
-            self._archive_sessions([container_path])
-
     def _show_archived_sessions_context_menu(self, pos):
         table = self.archived_sessions_table
         row = table.rowAt(pos.y())
@@ -733,6 +694,17 @@ class SessionTabMixin:
         if not file_path:
             return
         self._open_session_container_path(Path(file_path))
+
+    def _on_load_selected_session_container(self):
+        container_path = self._selected_pending_container()
+        if container_path is None:
+            QMessageBox.warning(
+                self,
+                "No Container Selected",
+                "Select a session container from the queue.",
+            )
+            return
+        self._open_session_container_path(container_path)
 
     def _send_and_archive_sessions(self, container_paths: List[Path]):
         if not container_paths:
@@ -1153,21 +1125,24 @@ class SessionTabMixin:
             self.update_session_status()
 
     def _on_send_selected_sessions(self):
-        selected = self._selected_pending_containers()
-        if not selected:
+        self._on_send_pending_session()
+
+    def _on_send_pending_session(self):
+        container_path = self._selected_pending_container()
+        if container_path is None:
             QMessageBox.warning(
                 self,
-                "No Selection",
-                "Select one or more session containers from the queue.",
+                "No Container Selected",
+                "Select a session container from the queue.",
             )
             return
 
         reply = QMessageBox.question(
             self,
-            "Close && Send Selected",
+            "Close and Send",
             (
-                f"Close, upload, and archive {len(selected)} selected session container(s)?\n\n"
-                "DIFRA will create one ZIP folder with old-format data and one H5 container per session."
+                f"Close, upload, and archive session container '{container_path.name}'?\n\n"
+                "DIFRA will create one ZIP folder with old-format data and one H5 container for this session."
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1175,23 +1150,26 @@ class SessionTabMixin:
         if reply != QMessageBox.Yes:
             return
 
-        self._send_and_archive_sessions(selected)
+        self._send_and_archive_sessions([container_path])
 
     def _on_close_selected_sessions(self):
-        selected = self._selected_pending_containers()
-        if not selected:
+        self._on_close_pending_session()
+
+    def _on_close_pending_session(self):
+        container_path = self._selected_pending_container()
+        if container_path is None:
             QMessageBox.warning(
                 self,
-                "No Selection",
-                "Select one or more session containers from the queue.",
+                "No Container Selected",
+                "Select a session container from the queue.",
             )
             return
 
         reply = QMessageBox.question(
             self,
-            "Close Selected",
+            "Close",
             (
-                f"Close and archive {len(selected)} selected session container(s)?\n\n"
+                f"Close and archive session container '{container_path.name}'?\n\n"
                 "Complete containers will be archived as UNSENT.\n"
                 "Incomplete containers will be archived as NOT_COMPLETE and blocked from Matador send."
             ),
@@ -1201,7 +1179,7 @@ class SessionTabMixin:
         if reply != QMessageBox.Yes:
             return
 
-        self._archive_sessions(selected)
+        self._archive_sessions([container_path])
 
     def _on_close_all_sessions(self):
         all_containers = self._all_pending_containers()
@@ -1353,6 +1331,6 @@ class SessionTabMixin:
             self,
             "Upload to Matador",
             f"Matador upload is executed from the Session send queue for '{info['sample_id']}'.\n\n"
-            f"Use 'Close && Send Selected/All' in the queue for archival transfer.",
+            f"Use 'Close and Send' in the queue for archival transfer.",
         )
         logger.info("Matador upload requested from session queue", sample_id=info["sample_id"])

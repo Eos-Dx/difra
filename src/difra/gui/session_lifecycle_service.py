@@ -4,6 +4,7 @@ This module centralizes lock/archive behavior so UI mixins can delegate
 domain actions instead of duplicating file-management logic.
 """
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -14,6 +15,8 @@ import h5py
 
 class SessionLifecycleService:
     """Utility methods for lock/archive workflow of session containers."""
+
+    _ARCHIVE_DAY_TOKEN_RE = re.compile(r"(20\d{6})")
 
     @staticmethod
     def _decode_attr(value: Any) -> str:
@@ -151,15 +154,83 @@ class SessionLifecycleService:
     @staticmethod
     def resolve_archive_mirror_folder(
         config: Optional[Dict[str, Any]] = None,
+        *,
+        archive_kind: str = "measurements",
     ) -> Optional[Path]:
         """Resolve optional secondary archive root used for mirrored copies."""
         cfg = config or {}
-        configured = cfg.get("measurements_archive_mirror_folder") or cfg.get(
-            "session_archive_mirror_folder"
-        )
+        kind = str(archive_kind or "").strip().lower()
+        if kind == "technical":
+            configured = (
+                cfg.get("technical_archive_mirror_folder")
+                or cfg.get("measurements_archive_mirror_folder")
+                or cfg.get("session_archive_mirror_folder")
+            )
+        else:
+            configured = (
+                cfg.get("measurements_archive_mirror_folder")
+                or cfg.get("session_archive_mirror_folder")
+            )
         if not configured:
             return None
         return Path(configured)
+
+    @classmethod
+    def _resolve_archive_mirror_day_token(cls, source_path: Path) -> str:
+        source = Path(source_path)
+        try:
+            from difra.gui.session_old_format_exporter import SessionOldFormatExporter
+
+            def _from_h5(file_path: Path) -> str:
+                with h5py.File(file_path, "r") as h5f:
+                    acquisition_date = SessionOldFormatExporter._as_text(
+                        h5f.attrs.get("acquisition_date"),
+                        "",
+                    )
+                    fallback_timestamps = SessionOldFormatExporter._collect_fallback_timestamps(
+                        h5f
+                    )
+                    creation_timestamp = SessionOldFormatExporter._as_text(
+                        h5f.attrs.get("creation_timestamp"),
+                        "",
+                    )
+                    if creation_timestamp:
+                        fallback_timestamps.append(creation_timestamp)
+                    return SessionOldFormatExporter._resolve_day_token(
+                        acquisition_date=acquisition_date,
+                        fallback_timestamps=fallback_timestamps,
+                    )
+
+            if source.is_file() and source.suffix.lower() in {".h5", ".nxs.h5", ".zip"}:
+                sibling_dir = source.with_suffix("")
+                if source.suffix.lower() == ".zip" and sibling_dir.exists() and sibling_dir.is_dir():
+                    return cls._resolve_archive_mirror_day_token(sibling_dir)
+                if source.suffix.lower() != ".zip":
+                    return _from_h5(source)
+
+            if source.is_dir():
+                raw_candidates = []
+                for pattern in ("*.npy", "*.txt", "*.dsc", "*.poni", "*.t3pa"):
+                    raw_candidates.extend(sorted(source.rglob(pattern)))
+                for candidate in raw_candidates:
+                    match = cls._ARCHIVE_DAY_TOKEN_RE.search(str(candidate.name or ""))
+                    if match:
+                        return match.group(1)
+
+                h5_candidates = sorted(source.rglob("*.nxs.h5")) + sorted(source.rglob("*.h5"))
+                for candidate in h5_candidates:
+                    try:
+                        return _from_h5(candidate)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        for candidate in (source.name, source.stem, source.parent.name):
+            match = cls._ARCHIVE_DAY_TOKEN_RE.search(str(candidate or ""))
+            if match:
+                return match.group(1)
+        return time.strftime("%Y%m%d")
 
     @classmethod
     def copy_archive_item_to_mirror(
@@ -167,18 +238,28 @@ class SessionLifecycleService:
         source_path: Path,
         *,
         config: Optional[Dict[str, Any]] = None,
+        archive_kind: str = "measurements",
+        day_token: Optional[str] = None,
     ) -> Optional[Path]:
         """Copy one archived file/folder into the optional secondary archive root."""
-        mirror_root = cls.resolve_archive_mirror_folder(config=config)
-        if mirror_root is None:
-            return None
-
         source = Path(source_path)
         if not source.exists():
             return None
 
-        mirror_root.mkdir(parents=True, exist_ok=True)
-        destination = mirror_root / source.name
+        mirror_root = cls.resolve_archive_mirror_folder(
+            config=config,
+            archive_kind=archive_kind,
+        )
+        if mirror_root is None:
+            return None
+
+        destination_root = (
+            mirror_root
+            / "Archive"
+            / str(archive_kind or "measurements").strip().lower()
+        )
+        destination_root.mkdir(parents=True, exist_ok=True)
+        destination = destination_root / source.name
 
         if source.is_dir():
             shutil.copytree(str(source), str(destination), dirs_exist_ok=True)

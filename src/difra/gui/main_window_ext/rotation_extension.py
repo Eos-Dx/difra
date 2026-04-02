@@ -10,6 +10,8 @@ class RotatorToolButton(QToolButton):
     Right-click will display a menu to select a different rotation angle.
     """
 
+    ANGLE_OPTIONS = [0.05, 0.1, 0.5, 1, 2, 5, 10]
+
     def __init__(self, text: str, default_angle: float, rotate_callback, parent=None):
         """
         Initialize the RotatorToolButton.
@@ -29,7 +31,7 @@ class RotatorToolButton(QToolButton):
 
         # Create a QMenu to allow the user to choose among different rotation angles.
         self.menu = QMenu(self)
-        for angle in [0.5, 1, 2, 5, 10]:
+        for angle in self.ANGLE_OPTIONS:
             action = QAction(f"{angle}°", self)
             action.setData(angle)  # Store the numerical angle in the action.
             self.menu.addAction(action)

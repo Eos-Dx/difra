@@ -1172,6 +1172,7 @@ class SessionLifecycleActions:
                 SessionLifecycleService.copy_archive_item_to_mirror(
                     Path(archived_path).parent,
                     config=config,
+                    archive_kind="measurements",
                 )
 
                 if was_active:
@@ -1498,6 +1499,7 @@ class SessionLifecycleActions:
                 SessionLifecycleService.copy_archive_item_to_mirror(
                     Path(archived_path).parent,
                     config=config,
+                    archive_kind="measurements",
                 )
                 try:
                     cleanup_folders.add(str(candidate.parent.resolve()))

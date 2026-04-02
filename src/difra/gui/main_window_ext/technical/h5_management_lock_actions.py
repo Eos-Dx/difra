@@ -382,6 +382,17 @@ def archive_existing_containers(owner, storage_folder: str) -> int:
             except Exception as exc:
                 logger.warning("Failed to archive data files: %s", exc)
 
+            try:
+                from difra.gui.session_lifecycle_service import SessionLifecycleService
+
+                SessionLifecycleService.copy_archive_item_to_mirror(
+                    archive_folder,
+                    config=owner.config if hasattr(owner, "config") else None,
+                    archive_kind="technical",
+                )
+            except Exception as exc:
+                logger.warning("Failed to mirror archived technical replacement folder: %s", exc)
+
             archived_count += 1
 
         except Exception as exc:
@@ -971,6 +982,16 @@ def lock_container(owner, container_path: str, container_id: str):
                 int(archived_count),
                 str(archive_subdir),
             )
+            try:
+                from difra.gui.session_lifecycle_service import SessionLifecycleService
+
+                SessionLifecycleService.copy_archive_item_to_mirror(
+                    archive_subdir,
+                    config=owner.config if hasattr(owner, "config") else None,
+                    archive_kind="technical",
+                )
+            except Exception as exc:
+                logger.warning("Failed to mirror technical archive folder: %s", exc)
         except Exception as exc:
             logger.warning("Failed to archive data files: %s", exc)
             owner._log_technical_event(f"Warning: Could not archive data files: {exc}")
