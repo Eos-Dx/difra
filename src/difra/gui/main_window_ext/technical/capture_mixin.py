@@ -21,6 +21,67 @@ def _tm():
 
 class TechnicalCaptureMixin:
     @staticmethod
+    def _normalize_technical_alias_candidates(alias: str | None):
+        token = str(alias or "").strip().upper()
+        if not token:
+            return set()
+        candidates = {token}
+        mapping = {
+            "PRIMARY": "SAXS",
+            "SAXS": "PRIMARY",
+            "SECONDARY": "WAXS",
+            "WAXS": "SECONDARY",
+        }
+        if token in mapping:
+            candidates.add(mapping[token])
+        if token.startswith("DET_"):
+            candidates.add(token.replace("DET_", "", 1))
+        else:
+            candidates.add(f"DET_{token}")
+        return {value for value in candidates if value}
+
+    def _resolve_technical_measurement_poni(
+        self,
+        *,
+        alias: str | None,
+        source_ref: str = "",
+        source_info: dict | None = None,
+    ) -> str | None:
+        container_path = ""
+        raw_source_ref = str(source_ref or "").strip()
+        source_payload = source_info if isinstance(source_info, dict) else {}
+        if raw_source_ref.startswith("h5ref://"):
+            payload = raw_source_ref[len("h5ref://") :]
+            container_path = payload.partition("#")[0]
+        if not container_path:
+            container_path = str(source_payload.get("container_path") or "").strip()
+        if not container_path:
+            active_getter = getattr(self, "_active_technical_container_path_obj", None)
+            if callable(active_getter):
+                active_path = active_getter()
+                if active_path is not None:
+                    container_path = str(active_path)
+        if not container_path:
+            container_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+        if not container_path:
+            return None
+
+        collect = getattr(self, "_collect_container_poni_text_by_alias", None)
+        if not callable(collect):
+            return None
+        try:
+            poni_by_alias = collect(Path(container_path)) or {}
+        except Exception:
+            logger.debug("Failed to collect PONI from technical container %s", container_path, exc_info=True)
+            return None
+        alias_candidates = self._normalize_technical_alias_candidates(alias)
+        for key, text in (poni_by_alias or {}).items():
+            key_candidates = self._normalize_technical_alias_candidates(key)
+            if alias_candidates & key_candidates and str(text or "").strip():
+                return str(text).strip()
+        return None
+
+    @staticmethod
     def _build_windows_pyfai_script(*, folder: str, env: str) -> str:
         target_folder = str(folder or "").strip()
         target_env = str(env or "").strip()
@@ -422,10 +483,24 @@ class TechnicalCaptureMixin:
             self._log_technical_event("Cannot open measurement window - technical imports not available")
             return
 
+        source_info = (
+            file_item.data(self._aux_source_info_role())
+            if file_item is not None and hasattr(self, "_aux_source_info_role")
+            else {}
+        )
+        source_ref = str(file_item.data(tm.Qt.UserRole) or "").strip() if file_item is not None else ""
         show_measurement_window = self._get_technical_module("show_measurement_window")
+        poni_text = self._resolve_technical_measurement_poni(
+            alias=alias,
+            source_ref=source_ref,
+            source_info=source_info if isinstance(source_info, dict) else {},
+        )
         try:
             show_measurement_window(
-                resolved_path, self.masks.get(alias), self.ponis.get(alias), self
+                resolved_path,
+                self.masks.get(alias),
+                poni_text,
+                self,
             )
         except Exception as exc:
             self._log_technical_event(f"Failed to open measurement window: {exc}")

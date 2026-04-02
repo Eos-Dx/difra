@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import h5py
+
 from difra.gui.main_window_ext.technical.capture_mixin import TechnicalCaptureMixin
 
 
@@ -116,6 +118,16 @@ class _Harness(TechnicalCaptureMixin):
     def _on_capture_done(self, *args, **kwargs):
         return None
 
+    def _collect_container_poni_text_by_alias(self, container_path: Path):
+        payload = {}
+        with h5py.File(container_path, "r") as h5f:
+            for name, ds in h5f["technical/poni"].items():
+                alias = ds.attrs.get("detector_alias", "")
+                if isinstance(alias, bytes):
+                    alias = alias.decode("utf-8")
+                payload[str(alias)] = ds[()].decode("utf-8")
+        return payload
+
 
 def _patch_tm(monkeypatch):
     fake_tm = SimpleNamespace(QThread=_FakeThread, QMessageBox=SimpleNamespace(warning=lambda *a, **k: None))
@@ -153,3 +165,19 @@ def test_start_capture_does_not_enable_continuous_movement_for_non_agbh(monkeypa
     assert len(_FakeWorker.instances) == 1
     worker = _FakeWorker.instances[0]
     assert worker.kwargs["enable_continuous_movement"] is False
+
+
+def test_resolve_technical_measurement_poni_reads_from_active_container(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical.h5"
+    with h5py.File(container_path, "w") as h5f:
+        technical = h5f.create_group("technical")
+        group = technical.create_group("poni")
+        ds = group.create_dataset("poni_waxs", data=b"Distance: 0.17\nPoni1: 0.007\nPoni2: 0.008\n")
+        ds.attrs["detector_alias"] = "WAXS"
+    harness._active_technical_container_path = str(container_path)
+
+    resolved = harness._resolve_technical_measurement_poni(alias="SECONDARY")
+
+    assert resolved is not None
+    assert "Distance:" in resolved

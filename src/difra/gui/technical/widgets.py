@@ -385,6 +385,50 @@ class MeasurementHistoryWidget(QWidget):
         except Exception as e:
             logging.getLogger(__name__).exception("Error updating summary: %s", e)
 
+    def _open_measurement_result(self, row: int, col: int, all_aliases, *, h5ref_only: bool = False):
+        if col == 0 or (col - 1) % 2 != 0:
+            return False
+        alias_idx = (col - 1) // 2
+        try:
+            alias = all_aliases[alias_idx]
+        except IndexError:
+            logging.getLogger(__name__).exception(
+                "Alias index out of range for col=%s",
+                col,
+            )
+            return False
+
+        try:
+            res_map = self.measurements[row].get("results") or {}
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Measurement row index out of range for row=%s",
+                row,
+            )
+            return False
+        res = res_map.get(alias, {})
+        filename = str(res.get("filename") or "").strip()
+        if not filename:
+            return False
+        if h5ref_only and not filename.startswith("h5ref://"):
+            return False
+        try:
+            from difra.gui.technical.capture import show_measurement_window
+
+            show_measurement_window(
+                filename,
+                (self.masks or {}).get(alias),
+                self._resolve_poni_text_for_result(alias, res),
+                self.parent_window,
+            )
+            return True
+        except Exception as e:
+            logging.getLogger(__name__).exception(
+                "Error opening measurement window: %s",
+                e,
+            )
+            return False
+
     def show_history_dialog(self):
         try:
             # make the dialog a child of the main window (or None), NOT the cell widget
@@ -435,40 +479,22 @@ class MeasurementHistoryWidget(QWidget):
 
             def cell_double_clicked(row, col):
                 try:
-                    if col == 0 or (col - 1) % 2 != 0:
-                        return
-                    alias_idx = (col - 1) // 2
-                    try:
-                        alias = all_aliases[alias_idx]
-                    except IndexError:
-                        logging.getLogger(__name__).exception(
-                            "Alias index out of range for col=%s", col
-                        )
-                        return
-                    res_map = self.measurements[row].get("results") or {}
-                    res = res_map.get(alias, {})
-                    filename = res.get("filename")
-                    if filename:
-                        try:
-                            from difra.gui.technical.capture import (
-                                show_measurement_window,
-                            )
-
-                            show_measurement_window(
-                                filename,
-                                (self.masks or {}).get(alias),
-                                self._resolve_poni_text_for_result(alias, res),
-                                self.parent_window,
-                            )
-                        except Exception as e:
-                            logging.getLogger(__name__).exception(
-                                "Error opening measurement window: %s", e
-                            )
+                    self._open_measurement_result(row, col, all_aliases, h5ref_only=False)
                 except Exception as e:
                     logging.getLogger(__name__).exception(
                         "Error handling cell double click: %s", e
                     )
 
+            def cell_clicked(row, col):
+                try:
+                    self._open_measurement_result(row, col, all_aliases, h5ref_only=True)
+                except Exception as e:
+                    logging.getLogger(__name__).exception(
+                        "Error handling cell click: %s",
+                        e,
+                    )
+
+            table.cellClicked.connect(cell_clicked)
             table.cellDoubleClicked.connect(cell_double_clicked)
             dlg.exec_()
         except Exception as e:

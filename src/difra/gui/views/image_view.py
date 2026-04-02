@@ -203,8 +203,8 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
                     "holder circle",
                 )
         elif chosen == catch_auto_action and selected_shape_infos:
-            if hasattr(main_window, "catch_auto_for_shape"):
-                main_window.catch_auto_for_shape(selected_shape_infos[0])
+            if hasattr(main_window, "open_catch_auto_assistant_for_shape"):
+                main_window.open_catch_auto_assistant_for_shape(selected_shape_infos[0])
         elif chosen == edit_physical_size_action and selected_shape_infos:
             if hasattr(main_window, "edit_shape_physical_size_by_info"):
                 main_window.edit_shape_physical_size_by_info(selected_shape_infos[0])

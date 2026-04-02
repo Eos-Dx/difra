@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import h5py
 import pytest
 from PyQt5.QtWidgets import QApplication
+
+if "seaborn" not in sys.modules:
+    sys.modules["seaborn"] = SimpleNamespace(
+        heatmap=lambda data, robust=True, square=True, ax=None, cbar=False: ax.imshow(data)
+    )
 
 from difra.gui.technical.widgets import MeasurementHistoryWidget
 
@@ -63,3 +70,38 @@ def test_measurement_history_widget_does_not_fallback_to_in_memory_ponis_for_pla
     )
 
     assert resolved is None
+
+
+def test_open_measurement_result_opens_h5ref_on_single_click(monkeypatch, qapp):
+    widget = MeasurementHistoryWidget(masks={}, ponis={}, parent=None, point_id=1)
+    widget.measurements = [
+        {
+            "timestamp": "2026-04-02 10:31:21",
+            "results": {
+                "PRIMARY": {
+                    "filename": "h5ref:///tmp/session.nxs.h5#/entry/measurements/pt_004/meas_000000001/det_primary/processed_signal",
+                    "goodness": None,
+                }
+            },
+        }
+    ]
+
+    opened = {}
+
+    def _fake_show_measurement_window(filename, mask, poni_text, parent):
+        opened["filename"] = filename
+        opened["mask"] = mask
+        opened["poni_text"] = poni_text
+        opened["parent"] = parent
+
+    monkeypatch.setattr(
+        "difra.gui.technical.capture.show_measurement_window",
+        _fake_show_measurement_window,
+    )
+    monkeypatch.setattr(widget, "_resolve_poni_text_for_result", lambda alias, res: "Distance: 0.17")
+
+    result = widget._open_measurement_result(0, 1, ["PRIMARY"], h5ref_only=True)
+
+    assert result is True
+    assert opened["filename"].startswith("h5ref://")
+    assert opened["poni_text"] == "Distance: 0.17"

@@ -436,45 +436,75 @@ def show_measurement_window(
 
     radial = intensity = std = sigma = cake = None
     integration_error = ""
+    integration_note = ""
+
+    def _run_integration(active_mask):
+        ai = initialize_azimuthal_integrator_poni_text(poni_text)
+        result = ai.integrate1d(
+            data, 200, unit="q_nm^-1", error_model="azimuthal", mask=active_mask
+        )
+        local_radial = np.asarray(result.radial, dtype=float).reshape(-1)
+        local_intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
+        local_std = np.asarray(result.std, dtype=float).reshape(-1)
+        local_sigma = np.asarray(result.sigma, dtype=float).reshape(-1)
+
+        min_len = min(
+            local_radial.size,
+            local_intensity.size,
+            local_std.size,
+            local_sigma.size,
+        )
+        if min_len <= 0:
+            raise ValueError("Integration produced empty radial/intensity arrays")
+        local_radial = local_radial[:min_len]
+        local_intensity = local_intensity[:min_len]
+        local_std = local_std[:min_len]
+        local_sigma = local_sigma[:min_len]
+
+        finite = np.isfinite(local_radial) & np.isfinite(local_intensity)
+        if not np.any(finite):
+            raise ValueError("Integration produced only NaN/Inf values")
+        local_radial = local_radial[finite]
+        local_intensity = local_intensity[finite]
+        local_std = local_std[finite]
+        local_sigma = local_sigma[finite]
+        local_cake, _, _ = ai.integrate2d(data, 200, npt_azim=180, mask=active_mask)
+        return local_radial, local_intensity, local_std, local_sigma, local_cake
+
     if poni_text:
         try:
-            ai = initialize_azimuthal_integrator_poni_text(poni_text)
-            result = ai.integrate1d(
-                data, 200, unit="q_nm^-1", error_model="azimuthal", mask=mask
-            )
-            radial = np.asarray(result.radial, dtype=float).reshape(-1)
-            intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
-            std = np.asarray(result.std, dtype=float).reshape(-1)
-            sigma = np.asarray(result.sigma, dtype=float).reshape(-1)
-
-            min_len = min(radial.size, intensity.size, std.size, sigma.size)
-            if min_len <= 0:
-                raise ValueError("Integration produced empty radial/intensity arrays")
-            radial = radial[:min_len]
-            intensity = intensity[:min_len]
-            std = std[:min_len]
-            sigma = sigma[:min_len]
-
-            finite = np.isfinite(radial) & np.isfinite(intensity)
-            if not np.any(finite):
-                raise ValueError("Integration produced only NaN/Inf values")
-            radial = radial[finite]
-            intensity = intensity[finite]
-            std = std[finite]
-            sigma = sigma[finite]
-
-            cake, _, _ = ai.integrate2d(data, 200, npt_azim=180, mask=mask)
+            radial, intensity, std, sigma, cake = _run_integration(mask)
         except Exception as exc:
-            integration_error = str(exc)
-            logger.warning(
-                "Falling back to raw-only technical view; integration failed for %s: %s",
-                measurement_filename,
-                exc,
-            )
+            first_error = str(exc)
+            if mask is not None:
+                try:
+                    radial, intensity, std, sigma, cake = _run_integration(None)
+                    integration_note = (
+                        "Masked integration failed; retried without mask.\n"
+                        f"Original reason: {first_error}"
+                    )
+                except Exception as second_exc:
+                    integration_error = str(second_exc)
+                    logger.warning(
+                        "Falling back to raw-only technical view; integration failed for %s "
+                        "with mask and without mask: %s | %s",
+                        measurement_filename,
+                        first_error,
+                        second_exc,
+                    )
+            else:
+                integration_error = first_error
+                logger.warning(
+                    "Falling back to raw-only technical view; integration failed for %s: %s",
+                    measurement_filename,
+                    exc,
+                )
 
     note = ""
     if not str(poni_text or "").strip():
         note = "No PONI is embedded for this measurement. Showing raw image only."
+    elif integration_note:
+        note = integration_note
     elif integration_error:
         note = (
             "Could not integrate this measurement with the current PONI. "

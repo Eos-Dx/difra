@@ -25,6 +25,7 @@ class DrawingMixin:
         self.crop_item = None
         self.crop_rect = None
         self.crop_state_changed_callback = None
+        self.image_click_sample_callback = None
         if not hasattr(self, "profile_paths"):
             self.profile_paths = []
 
@@ -145,6 +146,18 @@ class DrawingMixin:
         return True
 
     def mousePressEvent(self, event):
+        if (
+            callable(getattr(self, "image_click_sample_callback", None))
+            and event.button() == Qt.LeftButton
+            and self.current_pixmap is not None
+        ):
+            try:
+                scene_point = self.mapToScene(event.pos())
+                self.image_click_sample_callback(scene_point)
+                event.accept()
+                return
+            except Exception:
+                pass
         if self.drawing_mode in ["rect", "ellipse", "crop", "profile"]:
             # Do nothing if no image is loaded.
             if self.current_pixmap is None:
