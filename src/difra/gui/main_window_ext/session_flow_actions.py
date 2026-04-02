@@ -221,6 +221,13 @@ def load_session_container_from_path(owner, file_path: Path) -> bool:
         if hasattr(owner, "_populate_aux_table_from_h5"):
             try:
                 owner._populate_aux_table_from_h5(str(file_path), set_active=False)
+                enable_measurement_controls = getattr(
+                    owner, "enable_measurement_controls", None
+                )
+                if callable(enable_measurement_controls):
+                    enable_measurement_controls(
+                        bool(getattr(owner, "hardware_initialized", False))
+                    )
             except Exception as tech_restore_error:
                 logger.warning(
                     "Failed to restore technical table from session: %s",

@@ -309,7 +309,9 @@ def restore_session_workspace_from_container(owner, session_path: Path):
 
 def restore_measurement_history_from_session(owner, session_path: Path):
     """Populate per-point measurement widgets from session container payloads."""
-    if not hasattr(owner, "measurement_widgets"):
+    if not hasattr(owner, "measurement_widgets") or not isinstance(
+        getattr(owner, "measurement_widgets", None), dict
+    ):
         owner.measurement_widgets = {}
     if not hasattr(owner, "add_measurement_widget_to_panel"):
         return
@@ -442,6 +444,20 @@ def restore_measurement_history_from_session(owner, session_path: Path):
 
                     if results:
                         widget.add_measurement(results, timestamp or "from container")
+                        preview_updater = getattr(
+                            owner,
+                            "_update_profile_previews_from_result_files",
+                            None,
+                        )
+                        if callable(preview_updater):
+                            try:
+                                preview_updater(results, point_uid=point_uid)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to restore detector profile previews for point %s",
+                                    point_uid,
+                                    exc_info=True,
+                                )
     except Exception as exc:
         logger.warning(
             "Failed to restore measurement history from session container %s: %s",

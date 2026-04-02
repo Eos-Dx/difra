@@ -78,7 +78,7 @@ class MainWindow(
             self.setup_main_layout()
             logger.debug("Main layout created")
             
-            self.measurement_widgets = []
+            self.measurement_widgets = {}
             
             logger.debug("Creating shape table...")
             self.create_shape_table()

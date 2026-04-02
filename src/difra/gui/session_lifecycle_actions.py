@@ -769,39 +769,53 @@ class SessionLifecycleActions:
         cls,
         container_path: Path,
         upload_result: UploadStubResult,
+        *,
+        specimen_id: Optional[int] = None,
     ) -> bool:
         """Persist upload session/result payload in session container metadata."""
         send_status = "successful" if upload_result.success else "unsuccessful"
         send_reason = "" if upload_result.success else str(upload_result.message)
-        return cls._write_container_attrs(
-            container_path,
-            {
-                "upload_session_id": str(upload_result.upload_session_id),
-                "upload_status": "success" if upload_result.success else "failed",
-                "upload_result_message": str(upload_result.message),
-                "matador_send_status": send_status,
-                "matador_send_reason": send_reason,
-                "matador_send_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "upload_bytes": int(upload_result.bytes_uploaded),
-                "upload_local_checksum_sha256": str(
-                    upload_result.local_checksum_sha256
-                ),
-                "upload_response_checksum_sha256": str(
-                    upload_result.response_checksum_sha256
-                ),
-                "upload_remote_container_id": str(upload_result.remote_container_id),
-                "matador_zip_file_id": str(upload_result.zip_file_id),
-                "matador_zip_upload_status": str(upload_result.zip_upload_status),
-                "matador_zip_processing_status": str(upload_result.zip_processing_status),
-                "matador_zip_checksum_sha256": str(upload_result.zip_checksum_sha256),
-                "matador_zip_size_bytes": int(upload_result.zip_size_bytes),
-                "matador_zip_path": str(upload_result.zip_path),
-                "matador_h5_file_id": str(upload_result.h5_file_id),
-                "matador_h5_upload_status": str(upload_result.h5_upload_status),
-                "matador_h5_processing_status": str(upload_result.h5_processing_status),
-                "upload_finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        )
+        resolved_specimen_id = specimen_id
+        if resolved_specimen_id is None:
+            try:
+                metadata = cls._read_matador_session_metadata(Path(container_path))
+                if metadata.get("specimen_id") is not None:
+                    resolved_specimen_id = int(metadata["specimen_id"])
+            except Exception:
+                logger.debug(
+                    "Failed to derive Matador specimen id for upload metadata write",
+                    exc_info=True,
+                )
+
+        attrs = {
+            "upload_session_id": str(upload_result.upload_session_id),
+            "upload_status": "success" if upload_result.success else "failed",
+            "upload_result_message": str(upload_result.message),
+            "matador_send_status": send_status,
+            "matador_send_reason": send_reason,
+            "matador_send_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "upload_bytes": int(upload_result.bytes_uploaded),
+            "upload_local_checksum_sha256": str(
+                upload_result.local_checksum_sha256
+            ),
+            "upload_response_checksum_sha256": str(
+                upload_result.response_checksum_sha256
+            ),
+            "upload_remote_container_id": str(upload_result.remote_container_id),
+            "matador_zip_file_id": str(upload_result.zip_file_id),
+            "matador_zip_upload_status": str(upload_result.zip_upload_status),
+            "matador_zip_processing_status": str(upload_result.zip_processing_status),
+            "matador_zip_checksum_sha256": str(upload_result.zip_checksum_sha256),
+            "matador_zip_size_bytes": int(upload_result.zip_size_bytes),
+            "matador_zip_path": str(upload_result.zip_path),
+            "matador_h5_file_id": str(upload_result.h5_file_id),
+            "matador_h5_upload_status": str(upload_result.h5_upload_status),
+            "matador_h5_processing_status": str(upload_result.h5_processing_status),
+            "upload_finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if resolved_specimen_id is not None:
+            attrs["matadorSpecimenId"] = int(resolved_specimen_id)
+        return cls._write_container_attrs(container_path, attrs)
 
     @classmethod
     def _archive_measurement_artifacts(
@@ -956,7 +970,7 @@ class SessionLifecycleActions:
 
     @classmethod
     def _coerce_optional_int(cls, value: Any) -> Optional[int]:
-        """Return an integer when a value is cleanly numeric, otherwise None."""
+        """Return a Matador specimen integer from plain or composite specimen text."""
         if value in (None, ""):
             return None
         if isinstance(value, bool):
@@ -966,13 +980,16 @@ class SessionLifecycleActions:
         text = cls._decode_attr(value).strip()
         if not text:
             return None
-        if text.startswith(("+", "-")):
-            digits = text[1:]
+        candidate = text
+        if "__" in candidate:
+            candidate = candidate.rsplit("__", 1)[-1].strip()
+        if candidate.startswith(("+", "-")):
+            digits = candidate[1:]
             if digits.isdigit():
-                return int(text)
+                return int(candidate)
             return None
-        if text.isdigit():
-            return int(text)
+        if candidate.isdigit():
+            return int(candidate)
         return None
 
     @staticmethod
