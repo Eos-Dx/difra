@@ -4,26 +4,191 @@ import logging
 from pathlib import Path
 
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_schema
+from difra.gui.session_lifecycle_service import SessionLifecycleService
+from difra.utils.container_validation import validate_container
 
 logger = logging.getLogger(__name__)
 
 
-def prompt_and_attach_sample_image(owner) -> str | None:
-    """Offer loading an existing sample photo after a session is created."""
-    reply = QMessageBox.question(
-        owner,
-        "Load Sample Image",
-        "Session container created.\n\n"
-        "Would you like to load a sample image from disk now?",
-        QMessageBox.Yes | QMessageBox.No,
-        QMessageBox.Yes,
+def _as_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _current_session_specimen_id(owner) -> str:
+    session_manager = getattr(owner, "session_manager", None)
+    session_path = getattr(session_manager, "session_path", None)
+    if session_path:
+        try:
+            import h5py
+
+            schema = get_schema(owner.config if hasattr(owner, "config") else None)
+            with h5py.File(session_path, "r") as h5f:
+                specimen = _as_text(
+                    h5f.attrs.get(
+                        "specimenId",
+                        h5f.attrs.get(getattr(schema, "ATTR_SAMPLE_ID", "sample_id")),
+                    )
+                ).strip()
+                if specimen:
+                    return specimen
+        except Exception:
+            logger.debug("Failed to read specimenId from active session", exc_info=True)
+
+    return _as_text(getattr(session_manager, "sample_id", "")).strip()
+
+
+def _find_archived_session_candidates(owner, specimen_id: str) -> list[dict]:
+    specimen_text = _as_text(specimen_id).strip()
+    if not specimen_text:
+        return []
+
+    session_manager = getattr(owner, "session_manager", None)
+    session_path = getattr(session_manager, "session_path", None)
+    archive_root = SessionLifecycleService.resolve_archive_folder(
+        config=owner.config if hasattr(owner, "config") else None,
+        session_path=Path(session_path) if session_path else None,
     )
-    if reply != QMessageBox.Yes:
+    archive_root = Path(archive_root)
+    if not archive_root.exists():
+        return []
+    container_manager = get_container_manager(
+        owner.config if hasattr(owner, "config") else None
+    )
+
+    active_resolved = None
+    if session_path:
+        try:
+            active_resolved = Path(session_path).resolve()
+        except Exception:
+            active_resolved = Path(session_path)
+
+    schema = get_schema(owner.config if hasattr(owner, "config") else None)
+    candidates = []
+
+    try:
+        import h5py
+
+        for container_path in sorted(archive_root.rglob("*.nxs.h5")):
+            try:
+                resolved = container_path.resolve()
+            except Exception:
+                resolved = container_path
+            if active_resolved is not None and resolved == active_resolved:
+                continue
+
+            try:
+                if not bool(container_manager.is_container_locked(container_path)):
+                    continue
+                report = validate_container(container_path, container_kind="session")
+                if not report.is_valid:
+                    continue
+
+                with h5py.File(container_path, "r") as h5f:
+                    candidate_specimen = _as_text(
+                        h5f.attrs.get(
+                            "specimenId",
+                            h5f.attrs.get(getattr(schema, "ATTR_SAMPLE_ID", "sample_id")),
+                        )
+                    ).strip()
+                    if candidate_specimen != specimen_text:
+                        continue
+
+                    distance_cm = h5f.attrs.get(getattr(schema, "ATTR_DISTANCE_CM", "distance_cm"))
+                    acquisition_date = _as_text(h5f.attrs.get("acquisition_date")).strip()
+                    creation_ts = _as_text(h5f.attrs.get("creation_timestamp")).strip()
+                    candidates.append(
+                        {
+                            "path": Path(container_path),
+                            "specimen_id": candidate_specimen,
+                            "distance_cm": _as_text(distance_cm).strip(),
+                            "acquisition_date": acquisition_date or creation_ts,
+                            "session_name": Path(container_path).name,
+                        }
+                    )
+            except Exception:
+                logger.debug(
+                    "Skipping archived session candidate due to metadata read failure: %s",
+                    container_path,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.debug("Failed to scan archived sessions under %s", archive_root, exc_info=True)
+        return []
+
+    return sorted(
+        candidates,
+        key=lambda row: (
+            str(row.get("acquisition_date") or ""),
+            str(row.get("session_name") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _pick_archived_session_candidate(owner, candidates: list[dict]) -> Path | None:
+    if not candidates:
         return None
 
+    labels = []
+    path_by_label = {}
+    for candidate in candidates:
+        label = (
+            f"{candidate['session_name']} | "
+            f"specimenID={candidate['specimen_id']} | "
+            f"distance={candidate.get('distance_cm') or '?'} cm | "
+            f"date={candidate.get('acquisition_date') or '?'}"
+        )
+        labels.append(label)
+        path_by_label[label] = Path(candidate["path"])
+
+    selected_label, accepted = QInputDialog.getItem(
+        owner,
+        "Select Previous Session",
+        "Matching archived session containers:",
+        labels,
+        0,
+        False,
+    )
+    if not accepted or not selected_label:
+        return None
+    return path_by_label.get(str(selected_label))
+
+
+def _import_workspace_from_previous_session(owner) -> str | None:
+    specimen_id = _current_session_specimen_id(owner)
+    candidates = _find_archived_session_candidates(owner, specimen_id)
+    if not candidates:
+        QMessageBox.information(
+            owner,
+            "No Matching Archived Sessions",
+            "No archived session containers were found for this specimen ID.\n\n"
+            f"Specimen ID: {specimen_id or 'unknown'}",
+        )
+        return None
+
+    selected_path = _pick_archived_session_candidate(owner, candidates)
+    if selected_path is None:
+        return None
+
+    importer = getattr(owner, "import_workspace_from_session_path", None)
+    if not callable(importer):
+        raise RuntimeError("Workspace import from session container is not available.")
+
+    imported = importer(Path(selected_path))
+    if not imported:
+        return None
+    return f"Session: {Path(selected_path).name}"
+
+
+def _load_sample_image_from_disk(owner) -> str | None:
+    """Load sample image from disk into the active session and workspace."""
     default_folder = ""
     if hasattr(owner, "config") and isinstance(owner.config, dict):
         default_folder = str(
@@ -74,7 +239,31 @@ def prompt_and_attach_sample_image(owner) -> str | None:
         owner._append_session_log(
             f"Sample image loaded into session from disk: {Path(file_path).name}"
         )
-    return file_path
+    return f"Disk: {Path(file_path).name}"
+
+
+def prompt_and_attach_sample_image(owner) -> str | None:
+    """Offer loading an existing sample photo after a session is created."""
+    selected_source, accepted = QInputDialog.getItem(
+        owner,
+        "Load Sample Image",
+        "Session container created.\n\n"
+        "Choose where to load the specimen workspace from:",
+        [
+            "Load sample image from disk",
+            "Load image and points from previous session container",
+            "Skip for now",
+        ],
+        0,
+        False,
+    )
+    if not accepted or not selected_source:
+        return None
+    if selected_source == "Skip for now":
+        return None
+    if selected_source == "Load image and points from previous session container":
+        return _import_workspace_from_previous_session(owner)
+    return _load_sample_image_from_disk(owner)
 
 
 def handle_new_sample_image(owner, image_path: str):

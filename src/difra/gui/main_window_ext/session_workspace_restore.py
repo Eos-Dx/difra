@@ -9,7 +9,13 @@ from difra.gui.container_api import get_schema
 logger = logging.getLogger(__name__)
 
 
-def restore_session_workspace_from_container(owner, session_path: Path):
+def restore_session_workspace_from_container(
+    owner,
+    session_path: Path,
+    *,
+    restore_measurement_history: bool = True,
+    lock_shapes_if_measured: bool = True,
+):
     """Restore image/zones/points from an existing session container into GUI."""
     if not hasattr(owner, "state"):
         owner.state = {}
@@ -202,7 +208,7 @@ def restore_session_workspace_from_container(owner, session_path: Path):
 
         owner.state["shapes"] = restored_shapes
         owner.state["zone_points"] = restored_points
-        if restored_has_measurements:
+        if restored_has_measurements and lock_shapes_if_measured:
             for shape in owner.state["shapes"]:
                 shape["locked_after_measurements"] = True
                 shape["isNew"] = False
@@ -278,7 +284,8 @@ def restore_session_workspace_from_container(owner, session_path: Path):
         if hasattr(owner, "update_coordinates"):
             owner.update_coordinates()
 
-        owner._restore_measurement_history_from_session(session_path)
+        if restore_measurement_history:
+            owner._restore_measurement_history_from_session(session_path)
         refresh_point_visuals = getattr(owner, "refresh_point_visual_states", None)
         if callable(refresh_point_visuals):
             refresh_point_visuals()

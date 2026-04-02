@@ -1127,6 +1127,7 @@ class SessionTabMixin:
             container_paths=container_paths,
             container_manager=container_manager,
             archive_folder=archive_folder,
+            config=self.config if hasattr(self, "config") else None,
             active_session_path=active_session_path,
             lock_user=lock_user,
             uploader_id=operator_id,

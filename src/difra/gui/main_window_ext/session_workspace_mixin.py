@@ -281,10 +281,19 @@ class SessionWorkspaceMixin:
             logger.warning(f"Failed to set image from session array: {exc}")
             return False
 
-    def _restore_session_workspace_from_container(self, session_path: Path):
+    def _restore_session_workspace_from_container(
+        self,
+        session_path: Path,
+        *,
+        restore_measurement_history: bool = True,
+        lock_shapes_if_measured: bool = True,
+    ):
         """Restore image/zones/points from an existing session container into GUI."""
         return session_workspace_restore.restore_session_workspace_from_container(
-            self, session_path
+            self,
+            session_path,
+            restore_measurement_history=restore_measurement_history,
+            lock_shapes_if_measured=lock_shapes_if_measured,
         )
 
     def _restore_measurement_history_from_session(self, session_path: Path):

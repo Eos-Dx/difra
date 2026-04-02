@@ -9,9 +9,190 @@ get_container_manager = _session_module.get_container_manager
 logger = _session_module.logger
 
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
+from difra.utils.container_validation import validate_container
 
 
 class SessionRestoreMixin:
+    @staticmethod
+    def _read_session_specimen_id(file_path: Path) -> str:
+        try:
+            import h5py
+
+            with h5py.File(file_path, "r") as h5f:
+                specimen = h5f.attrs.get("specimenId", h5f.attrs.get("sample_id"))
+                if specimen is None:
+                    return ""
+                if isinstance(specimen, bytes):
+                    return specimen.decode("utf-8", errors="replace").strip()
+                return str(specimen).strip()
+        except Exception:
+            logger.debug(
+                "Failed to read specimenId from session container: %s",
+                file_path,
+                exc_info=True,
+            )
+            return ""
+
+    def import_workspace_from_session_path(self, file_path: Path) -> bool:
+        """Import sample image/zones/points from another session container."""
+        file_path = Path(file_path)
+        if not file_path.exists():
+            QMessageBox.critical(
+                self,
+                "File Not Found",
+                f"Container file not found:\n{file_path}",
+            )
+            return False
+
+        session_manager = getattr(self, "session_manager", None)
+        if session_manager is None or not session_manager.is_session_active():
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "Create and keep an active session container open before importing a previous workspace.",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: no active session container"
+                )
+            return False
+
+        if session_manager.is_locked():
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The active session container is locked.\n\n"
+                "Workspace import is only allowed immediately after session creation, before measurements.",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: active session is locked"
+                )
+            return False
+
+        active_session_path = getattr(session_manager, "session_path", None)
+        active_specimen = ""
+        if active_session_path:
+            active_specimen = self._read_session_specimen_id(Path(active_session_path))
+        if not active_specimen:
+            active_specimen = str(getattr(session_manager, "sample_id", "") or "").strip()
+        source_specimen = self._read_session_specimen_id(file_path)
+
+        container_manager = get_container_manager(
+            self.config if hasattr(self, "config") else None
+        )
+        if not bool(container_manager.is_container_locked(file_path)):
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The selected session container is not locked.\n\n"
+                "Only finalized, locked session containers can be reused as workspace sources.",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: selected session is not locked"
+                )
+            return False
+
+        try:
+            report = validate_container(file_path, container_kind="session")
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The selected session container could not be validated.\n\n"
+                f"{exc}",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    f"Workspace import blocked: validation failed ({type(exc).__name__})"
+                )
+            return False
+        if not report.is_valid:
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The selected session container contains validation errors and cannot be used as a workspace source.",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: selected session is invalid"
+                )
+            return False
+
+        if active_specimen and source_specimen and source_specimen != active_specimen:
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The selected session container belongs to a different specimen ID.\n\n"
+                f"Active session specimen ID: {active_specimen}\n"
+                f"Selected container specimen ID: {source_specimen}",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: selected session has different specimenId"
+                )
+            return False
+
+        if (
+            session_manager is not None
+            and session_manager.is_session_active()
+            and hasattr(session_manager, "has_point_measurements")
+            and session_manager.has_point_measurements()
+        ):
+            QMessageBox.warning(
+                self,
+                "Import Blocked",
+                "The active session already contains point measurements.\n\n"
+                "Import the workspace into a fresh session before measuring so the "
+                "saved points stay aligned with the container.",
+            )
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Workspace import blocked: active session already has measurements"
+                )
+            return False
+
+        self._restore_session_workspace_from_container(
+            file_path,
+            restore_measurement_history=False,
+            lock_shapes_if_measured=False,
+        )
+
+        synced_to_active_session = False
+        if (
+            session_manager is not None
+            and session_manager.is_session_active()
+            and not session_manager.is_locked()
+        ):
+            sync_workspace = getattr(self, "sync_workspace_to_session_container", None)
+            if callable(sync_workspace):
+                sync_workspace(state=getattr(self, "state", None) or {})
+                synced_to_active_session = True
+
+        if hasattr(self, "update_session_status"):
+            self.update_session_status()
+
+        shapes = len((getattr(self, "state", {}) or {}).get("shapes", []) or [])
+        points = len((getattr(self, "state", {}) or {}).get("zone_points", []) or [])
+        if hasattr(self, "_append_session_log"):
+            suffix = " and synced to active session" if synced_to_active_session else ""
+            self._append_session_log(
+                f"Imported workspace from {file_path.name}: shapes={shapes}, points={points}{suffix}"
+            )
+
+        QMessageBox.information(
+            self,
+            "Workspace Imported",
+            "Image, zones, and points were loaded from the selected session container.\n\n"
+            + (
+                "The imported workspace was also synced into the active session container."
+                if synced_to_active_session
+                else "The imported workspace is available in the current GUI."
+            ),
+        )
+        return True
+
     def _try_reform_active_session_for_new_image(self, image_path: str) -> bool:
         """Reuse active unlocked session by resetting workspace before first measurements."""
         if not hasattr(self, "session_manager") or self.session_manager is None:
@@ -396,3 +577,15 @@ class SessionRestoreMixin:
         if not file_path:
             return
         self.load_session_container_from_path(Path(file_path))
+
+    def on_import_workspace_from_session(self):
+        """Import image/zones/points from a session container into current workspace."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Workspace From Session Container",
+            str(Path.home()),
+            "NeXus HDF5 Files (*.nxs.h5 *.h5);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self.import_workspace_from_session_path(Path(file_path))

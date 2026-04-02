@@ -293,6 +293,13 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         restore_session_action.triggered.connect(self.on_restore_session)
         restore_session_action.setStatusTip("Open an existing session container for analysis")
         file_menu.addAction(restore_session_action)
+
+        import_workspace_action = QAction("Import Workspace From Session...", self)
+        import_workspace_action.triggered.connect(self.on_import_workspace_from_session)
+        import_workspace_action.setStatusTip(
+            "Load sample image, zones, and points from another session container into the current workspace"
+        )
+        file_menu.addAction(import_workspace_action)
         
         logger.debug("Session menu actions added")
     
@@ -359,9 +366,9 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     **{k: v for k, v in params.items() if k not in ['sample_id', 'operator_id', 'distance_cm']},
                 )
 
-                attached_image_path = None
+                attached_image_source = None
                 try:
-                    attached_image_path = session_flow_actions.prompt_and_attach_sample_image(
+                    attached_image_source = session_flow_actions.prompt_and_attach_sample_image(
                         self
                     )
                 except Exception as exc:
@@ -384,8 +391,8 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     f"Specimen ID: {params['sample_id']}\n"
                     f"Study: {params.get('study_name', 'UNSPECIFIED')}\n"
                     f"Container: {session_path.name}\n"
-                    f"Sample image: "
-                    f"{Path(attached_image_path).name if attached_image_path else 'not loaded'}",
+                    f"Workspace source: "
+                    f"{attached_image_source if attached_image_source else 'not loaded'}",
                 )
                 
                 logger.info(
