@@ -10,7 +10,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QGraphicsRectItem, QMainWindow, QMessageBox
+from PyQt5.QtWidgets import (
+    QApplication,
+    QGraphicsRectItem,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+)
 
 from difra.gui.extra.resizable_zone import (
     ResizableEllipseItem,
@@ -377,6 +383,88 @@ def test_catch_auto_refines_outer_shape_from_selected_contrast_colors(qapp, monk
     assert after_rect.height() == pytest.approx(104.0, abs=15.0)
     assert circle_info["item"].isSelected() is True
     assert all(handle.isVisible() for handle in circle_info["item"]._handles.values())
+
+
+def test_catch_auto_assistant_uses_image_samples_and_keeps_detection_on_source_image(
+    qapp, monkeypatch
+):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
+        staticmethod(lambda *args, **kwargs: (15.18, True)),
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
+    )
+
+    class _ViewportStub:
+        def setCursor(self, *_args, **_kwargs):
+            return None
+
+        def unsetCursor(self, *_args, **_kwargs):
+            return None
+
+    harness.image_view.viewport = lambda: _ViewportStub()
+    harness.image_view.set_drawing_mode = lambda mode: setattr(harness.image_view, "drawing_mode", mode)
+
+    height, width = 220, 240
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[:, :] = np.array([40, 120, 45], dtype=np.uint8)
+    yy, xx = np.indices((height, width))
+    outer_center = (122.0, 104.0)
+    outer_mask = (((xx - outer_center[0]) / 62.0) ** 2 + ((yy - outer_center[1]) / 50.0) ** 2) <= 1.0
+    image[outer_mask] = np.array([195, 168, 72], dtype=np.uint8)
+
+    pixmap = _pixmap_from_rgb_array(image)
+    harness.image_view.scene.clear()
+    harness.image_view.current_pixmap = pixmap
+    harness.image_view.image_item = harness.image_view.scene.addPixmap(pixmap)
+
+    ellipse_item = ResizableEllipseItem(48.0, 42.0, 142.0, 116.0)
+    harness.image_view.scene.addItem(ellipse_item)
+    circle_info = {
+        "id": 1,
+        "uid": "holder_assistant",
+        "type": "Circle",
+        "item": ellipse_item,
+        "role": "include",
+    }
+    harness.image_view.shapes.append(circle_info)
+    harness.define_shape_as_calibration_role(circle_info, harness.ROLE_HOLDER_CIRCLE)
+
+    opened = harness.open_catch_auto_assistant_for_shape(circle_info)
+    assert opened is True
+    dialog = harness._catch_auto_assistant_dialog
+    assert dialog is not None
+
+    buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+    buttons["Pick Holder From Image"].click()
+    assert callable(harness.image_view.image_click_sample_callback)
+    harness.image_view.image_click_sample_callback(QPointF(outer_center[0], outer_center[1]))
+
+    buttons["Pick Background From Image"].click()
+    assert callable(harness.image_view.image_click_sample_callback)
+    harness.image_view.image_click_sample_callback(QPointF(10.0, 10.0))
+
+    assert harness._catch_auto_preview_active is True
+    assert harness.catch_auto_holder_rgb == pytest.approx((195, 168, 72), abs=6)
+    assert harness.catch_auto_background_rgb == pytest.approx((40, 120, 45), abs=6)
+
+    changed = harness.catch_auto_for_shape(
+        circle_info,
+        color_payload={
+            "holder_rgb": tuple(harness.catch_auto_holder_rgb),
+            "background_rgb": tuple(harness.catch_auto_background_rgb),
+        },
+        prompt_for_colors=False,
+    )
+    assert changed is True
+    assert circle_info["center_px"][0] == pytest.approx(outer_center[0], abs=4.0)
+    assert circle_info["center_px"][1] == pytest.approx(outer_center[1], abs=4.0)
+
+    dialog.close()
+    qapp.processEvents()
 
 
 def test_define_calibration_shape_keeps_shape_selected_and_editable(qapp, monkeypatch):
