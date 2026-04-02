@@ -394,6 +394,69 @@ def test_populate_aux_table_from_session_container_normalizes_embedded_ponis(qap
     assert "Distance: 0.1702" in harness.ponis["PRIMARY"]
 
 
+def test_populate_aux_table_from_session_container_auto_detects_faulty_pixel_masks(
+    qapp, tmp_path, monkeypatch
+):
+    schema = get_schema(None)
+    session_path = tmp_path / "session_with_technical_snapshot.nxs.h5"
+    expected_mask = np.array([[True, False], [False, True]], dtype=bool)
+
+    with h5py.File(session_path, "w") as h5f:
+        entry = h5f.require_group("entry")
+        technical = entry.require_group("technical")
+        poni_group = technical.require_group("poni")
+        poni_ds = poni_group.create_dataset(
+            "poni_primary",
+            data=b"Distance: 0.1702\nPoni1: 0.00700\nPoni2: 0.00080\n",
+        )
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "PRIMARY"
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "det_primary"
+
+        event = technical.require_group("tech_evt_000001")
+        detector_group = event.require_group("det_primary")
+        detector_group.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "PRIMARY"
+        detector_group.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "det_primary"
+        detector_group.attrs[getattr(schema, "ATTR_PONI_REF", "poni_ref")] = (
+            f"{getattr(schema, 'GROUP_TECHNICAL_PONI', '/entry/technical/poni')}/poni_primary"
+        )
+        detector_group.create_dataset(
+            getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal"),
+            data=np.arange(4, dtype=np.float32).reshape(2, 2),
+        )
+
+    captured_records = {}
+
+    def _fake_detect_faulty_pixel_masks(records, **_kwargs):
+        captured_records["records"] = list(records)
+        return {"PRIMARY": expected_mask.copy()}, {"backend": "fake"}
+
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.technical.h5_management_loading_mixin.detect_faulty_pixel_masks",
+        _fake_detect_faulty_pixel_masks,
+    )
+
+    config = {
+        "DEV": True,
+        "detectors": [
+            {"id": "det_primary", "alias": "PRIMARY"},
+            {"id": "det_secondary", "alias": "SECONDARY"},
+        ],
+        "dev_active_detectors": ["det_primary", "det_secondary"],
+        "active_detectors": ["det_primary", "det_secondary"],
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_session_masks")
+    harness.measurement_widgets = {"pt_001": types.SimpleNamespace(masks={})}
+    harness.show()
+    qapp.processEvents()
+
+    harness._populate_aux_table_from_h5(str(session_path), set_active=False)
+
+    assert captured_records["records"]
+    assert captured_records["records"][0]["alias"] == "PRIMARY"
+    assert np.array_equal(harness.masks["PRIMARY"], expected_mask)
+    assert harness.measurement_widgets["pt_001"].masks is harness.masks
+
+
 def test_open_image_requires_manual_session_container(qapp, tmp_path, monkeypatch):
     harness = _MainWindowBasicHarness()
     harness.show()
@@ -848,9 +911,246 @@ def test_restore_session_recovers_image_zones_and_points(qapp, tmp_path, monkeyp
     assert harness.image_view.image_item is not None
     assert len(harness.image_view.shapes) == 2
     assert [int(shape.get("id")) for shape in harness.image_view.shapes] == [1, 2]
+    assert [shape.get("role") for shape in harness.image_view.shapes] == [
+        "holder circle",
+        "exclude",
+    ]
     assert len(harness.image_view.points_dict["generated"]["points"]) == 5
     assert len(harness.state.get("shapes", [])) == 2
     assert len(harness.state.get("zone_points", [])) == 5
+
+
+def test_import_workspace_from_session_reuses_image_and_points_for_new_session(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_import"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+    }
+
+    donor_manager = SessionManager(config=config)
+    _donor_id, donor_path = donor_manager.create_session(
+        folder=tmp_path / "sessions_donor",
+        distance_cm=17.0,
+        sample_id="REUSE_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+    donor_manager.add_sample_image(
+        image_data=np.full((24, 24), 9, dtype=np.uint8),
+        image_index=1,
+        image_type="sample",
+    )
+    donor_manager.add_zone(
+        zone_index=1,
+        zone_role="sample_holder",
+        geometry_px=[6, 6, 12, 12],
+        shape="circle",
+        holder_diameter_mm=6.0,
+    )
+    donor_manager.add_points(
+        [
+            {
+                "pixel_coordinates": [10 + i, 20 + i],
+                "physical_coordinates_mm": [0.5 * i, 1.0 * i],
+                "point_status": "pending",
+            }
+            for i in range(4)
+        ]
+    )
+    session_writer.add_measurement(
+        file_path=donor_path,
+        point_index=1,
+        measurement_data={"det_primary": np.full((8, 8), 5, dtype=np.float32)},
+        detector_metadata={"det_primary": {"integration_time_ms": 1000.0}},
+        poni_alias_map={"PRIMARY": "det_primary"},
+    )
+    donor_manager.close_session()
+    lock_container(Path(donor_path), user_id="sad")
+
+    harness = _SessionRestoreHistoryHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    _recipient_id, recipient_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_recipient",
+        distance_cm=17.0,
+        sample_id="REUSE_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-14",
+    )
+
+    imported = harness.import_workspace_from_session_path(Path(donor_path))
+    qapp.processEvents()
+
+    assert imported is True
+    assert harness.session_manager.session_path == Path(recipient_path)
+    assert harness.image_view.image_item is not None
+    assert len(harness.state.get("shapes", [])) == 1
+    assert harness.state["shapes"][0]["role"] == "holder circle"
+    assert len(harness.state.get("zone_points", [])) == 4
+    assert len(harness.image_view.points_dict["generated"]["points"]) == 4
+    assert harness.measurement_widgets == {}
+    assert not any(
+        bool(shape.get("locked_after_measurements", False))
+        for shape in harness.state.get("shapes", [])
+    )
+    assert tuple(round(v, 3) for v in harness.include_center) == (12.0, 12.0)
+
+    with h5py.File(recipient_path, "r") as h5f:
+        schema_for_config = get_schema(config)
+        assert schema_for_config.GROUP_IMAGES in h5f
+        assert schema_for_config.GROUP_IMAGES_ZONES in h5f
+        assert schema_for_config.GROUP_POINTS in h5f
+        assert len(h5f[schema_for_config.GROUP_POINTS].keys()) == 4
+
+
+def test_import_workspace_from_session_blocks_different_specimen_id(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_import_mismatch"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+    }
+
+    donor_manager = SessionManager(config=config)
+    _donor_id, donor_path = donor_manager.create_session(
+        folder=tmp_path / "sessions_donor_mismatch",
+        distance_cm=17.0,
+        sample_id="DONOR_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+    donor_manager.add_sample_image(
+        image_data=np.full((24, 24), 9, dtype=np.uint8),
+        image_index=1,
+        image_type="sample",
+    )
+    donor_manager.close_session()
+    lock_container(Path(donor_path), user_id="sad")
+
+    harness = _SessionRestoreHistoryHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    _recipient_id, recipient_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_recipient_mismatch",
+        distance_cm=17.0,
+        sample_id="RECIPIENT_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-14",
+    )
+
+    imported = harness.import_workspace_from_session_path(Path(donor_path))
+    qapp.processEvents()
+
+    assert imported is False
+    assert harness.session_manager.session_path == Path(recipient_path)
+    assert harness.image_view.image_item is None
+    assert not harness.state.get("shapes")
+    assert not harness.state.get("zone_points")
+
+
+def test_import_workspace_from_session_blocks_invalid_donor_container(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_import_invalid"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+    }
+
+    donor_manager = SessionManager(config=config)
+    _donor_id, donor_path = donor_manager.create_session(
+        folder=tmp_path / "sessions_donor_invalid",
+        distance_cm=17.0,
+        sample_id="SAME_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+    donor_manager.add_sample_image(
+        image_data=np.full((24, 24), 9, dtype=np.uint8),
+        image_index=1,
+        image_type="sample",
+    )
+    donor_manager.close_session()
+    lock_container(Path(donor_path), user_id="sad")
+
+    harness = _SessionRestoreHistoryHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    _recipient_id, recipient_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_recipient_invalid",
+        distance_cm=17.0,
+        sample_id="SAME_SAMPLE",
+        study_name="RESTORE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-14",
+    )
+
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.session_restore_mixin.validate_container",
+        lambda path, container_kind=None: types.SimpleNamespace(is_valid=False),
+    )
+
+    imported = harness.import_workspace_from_session_path(Path(donor_path))
+    qapp.processEvents()
+
+    assert imported is False
+    assert harness.session_manager.session_path == Path(recipient_path)
+    assert harness.image_view.image_item is None
+    assert not harness.state.get("shapes")
+    assert not harness.state.get("zone_points")
 
 
 def test_sync_workspace_snapshot_to_unlocked_session(qapp, tmp_path, monkeypatch):

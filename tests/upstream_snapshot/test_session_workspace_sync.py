@@ -154,6 +154,10 @@ def test_workspace_sync_writes_physical_coordinates_and_keeps_image_immutable(tm
     with h5py.File(session_path, "r") as h5f:
         image_data = h5f[f"{schema.GROUP_IMAGES}/img_001/data"][()]
         assert int(image_data[0, 0]) == 11
+        assert (
+            h5f[f"{schema.GROUP_IMAGES_ZONES}/zone_001"].attrs[schema.ATTR_ZONE_ROLE]
+            == "sample_holder"
+        )
 
         mapping_raw = h5f[f"{schema.GROUP_IMAGES_MAPPING}/mapping"][()]
         if isinstance(mapping_raw, bytes):
@@ -170,6 +174,73 @@ def test_workspace_sync_writes_physical_coordinates_and_keeps_image_immutable(tm
         assert float(mm[1]) == -2.0 - (220.0 - 200.0) / 2.0
 
     assert image_calls["count"] == 1
+
+
+def test_workspace_sync_preserves_sample_holder_include_and_exclude_roles(tmp_path):
+    technical_path = _make_locked_technical_container(tmp_path / "technical_roles")
+    config = {"technical_folder": str(Path(technical_path).parent), "operator_id": "sad"}
+    harness = _Harness(config=config)
+
+    _sid, session_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_roles",
+        distance_cm=17.0,
+        sample_id="ROLE_SAMPLE",
+        study_name="ROLE_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-25",
+    )
+
+    harness.pixel_to_mm_ratio = 10.0
+    harness.sample_holder_center_px = (50.0, 60.0)
+    harness.include_center = (50.0, 60.0)
+    harness._extract_current_image_array = lambda: np.full((16, 16), 5, dtype=np.uint8)
+    harness.state = {
+        "shapes": [
+            {
+                "id": 1,
+                "type": "circle",
+                "role": "holder circle",
+                "physical_size_mm": 15.0,
+                "geometry": {"x": 20, "y": 30, "width": 60, "height": 60},
+            },
+            {
+                "id": 2,
+                "type": "circle",
+                "role": "include",
+                "geometry": {"x": 24, "y": 34, "width": 40, "height": 40},
+            },
+            {
+                "id": 3,
+                "type": "circle",
+                "role": "exclude",
+                "geometry": {"x": 30, "y": 40, "width": 10, "height": 10},
+            },
+        ],
+        "zone_points": [],
+    }
+
+    harness.sync_workspace_to_session_container(state=harness.state)
+
+    with h5py.File(session_path, "r") as h5f:
+        zone_ids = sorted(h5f[schema.GROUP_IMAGES_ZONES].keys())
+        roles = [
+            h5f[f"{schema.GROUP_IMAGES_ZONES}/{zone_id}"].attrs[schema.ATTR_ZONE_ROLE]
+            for zone_id in zone_ids
+        ]
+        assert roles == ["sample_holder", "include", "exclude"]
+        assert (
+            h5f[f"{schema.GROUP_IMAGES_ZONES}/zone_001"].attrs["holder_diameter_mm"]
+            == 15.0
+        )
+
+        mapping_raw = h5f[f"{schema.GROUP_IMAGES_MAPPING}/mapping"][()]
+        if isinstance(mapping_raw, bytes):
+            mapping_raw = mapping_raw.decode("utf-8")
+        mapping = json.loads(mapping_raw)
+        assert mapping.get("sample_holder_zone_id") == "zone_001"
 
 
 def test_workspace_restore_reapplies_mapping_origin(tmp_path):

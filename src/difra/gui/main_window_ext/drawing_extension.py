@@ -89,6 +89,15 @@ class DrawingMixin:
         """
         Switch to rectangle drawing mode.
         """
+        ensure_ready = getattr(
+            self,
+            "_ensure_sample_photo_ready_for_workspace_editing",
+            None,
+        )
+        if callable(ensure_ready) and not ensure_ready(action_label="draw zones"):
+            self.select_act.setChecked(True)
+            self.image_view.set_drawing_mode(None)
+            return
         # Tell the image view to set its drawing mode to rectangle.
         self.image_view.set_drawing_mode("rect")
 
@@ -96,6 +105,15 @@ class DrawingMixin:
         """
         Switch to ellipse (circle) drawing mode.
         """
+        ensure_ready = getattr(
+            self,
+            "_ensure_sample_photo_ready_for_workspace_editing",
+            None,
+        )
+        if callable(ensure_ready) and not ensure_ready(action_label="draw zones"):
+            self.select_act.setChecked(True)
+            self.image_view.set_drawing_mode(None)
+            return
         # Tell the image view to set its drawing mode to ellipse.
         self.image_view.set_drawing_mode("ellipse")
 
@@ -103,6 +121,15 @@ class DrawingMixin:
         """
         Switch to freehand profile drawing mode.
         """
+        ensure_ready = getattr(
+            self,
+            "_ensure_sample_photo_ready_for_workspace_editing",
+            None,
+        )
+        if callable(ensure_ready) and not ensure_ready(action_label="draw on the image"):
+            self.select_act.setChecked(True)
+            self.image_view.set_drawing_mode(None)
+            return
         self.image_view.set_drawing_mode("profile")
 
     def catch_auto_selected_shape(self) -> None:
@@ -114,6 +141,16 @@ class DrawingMixin:
         """
         Switch to crop mode.
         """
+        ensure_ready = getattr(
+            self,
+            "_ensure_sample_photo_ready_for_workspace_editing",
+            None,
+        )
+        if callable(ensure_ready) and not ensure_ready(action_label="edit the sample image"):
+            self.select_act.setChecked(True)
+            self.image_view.set_drawing_mode(None)
+            self.update_crop_actions_state()
+            return
         # Tell the image view to set its drawing mode to crop.
         self.image_view.set_drawing_mode("crop")
         self.update_crop_actions_state()

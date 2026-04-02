@@ -228,8 +228,10 @@ class SessionFlowMixin(SessionRestoreMixin):
             return
 
         try:
+            zone_exports, _sample_holder_zone_id = self._plan_session_zone_exports(shapes_data)
             zone_index = 1
-            for shape in shapes_data:
+            for export in zone_exports:
+                shape = export["shape"]
                 role = shape.get("role", "include")
                 shape_type = shape.get("type", "Circle").lower()
                 geometry = shape.get("geometry", {})
@@ -239,19 +241,21 @@ class SessionFlowMixin(SessionRestoreMixin):
                     geometry.get("width", 0),
                     geometry.get("height", 0),
                 ]
-
-                zone_role_map = {
-                    "include": "sample_holder",
-                    "sample holder": "sample_holder",
-                    "exclude": "exclude",
-                }
-                zone_role = zone_role_map.get(role.lower(), "sample_holder")
+                zone_role = str(export["zone_role"])
 
                 holder_diameter_mm = None
-                if zone_role == "sample_holder" and hasattr(self, "pixel_to_mm_ratio"):
-                    if shape_type == "circle" and len(geometry_px) == 4:
-                        diameter_px = max(geometry_px[2], geometry_px[3])
-                        holder_diameter_mm = diameter_px / self.pixel_to_mm_ratio
+                if zone_role == "sample_holder":
+                    explicit_size_mm = shape.get("physical_size_mm")
+                    try:
+                        explicit_size_mm = float(explicit_size_mm)
+                    except Exception:
+                        explicit_size_mm = 0.0
+                    if explicit_size_mm > 0:
+                        holder_diameter_mm = explicit_size_mm
+                    elif hasattr(self, "pixel_to_mm_ratio"):
+                        if shape_type == "circle" and len(geometry_px) == 4:
+                            diameter_px = max(geometry_px[2], geometry_px[3])
+                            holder_diameter_mm = diameter_px / self.pixel_to_mm_ratio
 
                 self.session_manager.add_zone(
                     zone_index=zone_index,
@@ -295,7 +299,14 @@ class SessionFlowMixin(SessionRestoreMixin):
         try:
             writer = get_writer(self.config if hasattr(self, "config") else None)
             schema = get_schema(self.config if hasattr(self, "config") else None)
-            sample_holder_zone_id = "zone_001"
+            shapes_data = (getattr(self, "state", {}) or {}).get("shapes", [])
+            _zone_exports, sample_holder_zone_id = self._plan_session_zone_exports(shapes_data)
+            if not sample_holder_zone_id:
+                sample_holder_zone_id = "zone_001"
+                logger.warning(
+                    "No sample-holder zone available for mapping; falling back to %s",
+                    sample_holder_zone_id,
+                )
 
             if hasattr(self, "_build_mapping_conversion_payload"):
                 pixel_to_mm_conversion = self._build_mapping_conversion_payload()
