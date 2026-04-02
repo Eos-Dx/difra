@@ -17,6 +17,46 @@ class SessionWorkspaceMixin:
     SAMPLE_PHOTO_ROTATED_IMAGE_TYPE = "sample_rotated"
 
     @staticmethod
+    def _normalize_workspace_role(role) -> str:
+        return str(role or "include").strip().lower()
+
+    def _plan_session_zone_exports(self, shapes):
+        exports = []
+        first_include_export_idx = None
+        has_explicit_sample_holder = False
+        holder_circle_role = str(
+            getattr(self, "ROLE_HOLDER_CIRCLE", "holder circle")
+        ).strip().lower()
+        calibration_square_role = str(
+            getattr(self, "ROLE_CALIBRATION_SQUARE", "calibration square")
+        ).strip().lower()
+
+        for shape in list(shapes or []):
+            role = self._normalize_workspace_role(shape.get("role", "include"))
+            if role in ("sample holder", holder_circle_role, calibration_square_role):
+                zone_role = "sample_holder"
+                has_explicit_sample_holder = True
+            elif role == "exclude":
+                zone_role = "exclude"
+            else:
+                zone_role = "include"
+                if first_include_export_idx is None:
+                    first_include_export_idx = len(exports)
+
+            exports.append({"shape": shape, "zone_role": zone_role})
+
+        if not has_explicit_sample_holder and first_include_export_idx is not None:
+            exports[first_include_export_idx]["zone_role"] = "sample_holder"
+
+        sample_holder_zone_id = None
+        for zone_index, export in enumerate(exports, start=1):
+            export["zone_index"] = zone_index
+            if sample_holder_zone_id is None and export["zone_role"] == "sample_holder":
+                sample_holder_zone_id = f"zone_{zone_index:03d}"
+
+        return exports, sample_holder_zone_id
+
+    @staticmethod
     def _normalize_xy_pair(value):
         if isinstance(value, (list, tuple)) and len(value) >= 2:
             try:
@@ -491,9 +531,12 @@ class SessionWorkspaceMixin:
                     h5f.create_group(schema.GROUP_IMAGES_ZONES)
                 did_write = True
 
-                for zone_index, shape in enumerate(shapes, start=1):
+                zone_exports, _sample_holder_zone_id = self._plan_session_zone_exports(shapes)
+                for export in zone_exports:
+                    zone_index = int(export["zone_index"])
+                    shape = export["shape"]
                     role = str(shape.get("role", "include")).lower()
-                    zone_role = "exclude" if role == "exclude" else "sample_holder"
+                    zone_role = str(export["zone_role"])
                     shape_type = str(shape.get("type", "circle")).lower()
                     geometry = shape.get("geometry", {})
                     geometry_px = [
@@ -503,10 +546,18 @@ class SessionWorkspaceMixin:
                         float(geometry.get("height", 0)),
                     ]
                     holder_diameter_mm = None
-                    if zone_role == "sample_holder" and hasattr(self, "pixel_to_mm_ratio"):
-                        diameter_px = max(geometry_px[2], geometry_px[3])
-                        if getattr(self, "pixel_to_mm_ratio", 0):
-                            holder_diameter_mm = diameter_px / float(self.pixel_to_mm_ratio)
+                    if zone_role == "sample_holder":
+                        explicit_size_mm = shape.get("physical_size_mm")
+                        try:
+                            explicit_size_mm = float(explicit_size_mm)
+                        except Exception:
+                            explicit_size_mm = 0.0
+                        if explicit_size_mm > 0:
+                            holder_diameter_mm = explicit_size_mm
+                        elif hasattr(self, "pixel_to_mm_ratio"):
+                            diameter_px = max(geometry_px[2], geometry_px[3])
+                            if getattr(self, "pixel_to_mm_ratio", 0):
+                                holder_diameter_mm = diameter_px / float(self.pixel_to_mm_ratio)
 
                     writer.add_zone(
                         file_path=session_path,
@@ -518,9 +569,16 @@ class SessionWorkspaceMixin:
                     )
 
             if needs_mapping_sync and hasattr(self, "pixel_to_mm_ratio"):
+                _zone_exports, sample_holder_zone_id = self._plan_session_zone_exports(shapes)
+                if not sample_holder_zone_id:
+                    sample_holder_zone_id = "zone_001"
+                    logger.warning(
+                        "No sample-holder zone found during session sync; falling back to %s for mapping metadata",
+                        sample_holder_zone_id,
+                    )
                 writer.add_image_mapping(
                     file_path=session_path,
-                    sample_holder_zone_id="zone_001",
+                    sample_holder_zone_id=sample_holder_zone_id,
                     pixel_to_mm_conversion=mapping_conversion,
                     orientation="standard",
                     mapping_version=schema.SCHEMA_VERSION,

@@ -146,6 +146,20 @@ class DrawingMixin:
         return True
 
     def mousePressEvent(self, event):
+        if self.drawing_mode in ["rect", "ellipse", "crop", "profile"]:
+            main_window = self.window()
+            ensure_ready = getattr(
+                main_window,
+                "_ensure_sample_photo_ready_for_workspace_editing",
+                None,
+            )
+            if callable(ensure_ready) and not ensure_ready(show_message=True):
+                try:
+                    self.set_drawing_mode(None)
+                except Exception:
+                    pass
+                event.accept()
+                return
         if (
             callable(getattr(self, "image_click_sample_callback", None))
             and event.button() == Qt.LeftButton

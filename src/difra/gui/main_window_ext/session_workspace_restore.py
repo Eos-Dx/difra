@@ -109,13 +109,31 @@ def restore_session_workspace_from_container(
                         if len(values) >= 4:
                             x, y, width, height = [float(values[i]) for i in range(4)]
 
-                    ui_role = "include" if zone_role == "sample_holder" else zone_role
+                    holder_diameter_mm = zone_group.attrs.get("holder_diameter_mm")
+                    try:
+                        holder_diameter_mm = (
+                            float(holder_diameter_mm)
+                            if holder_diameter_mm is not None
+                            else None
+                        )
+                    except Exception:
+                        holder_diameter_mm = None
+
+                    if zone_role == "sample_holder":
+                        ui_role = (
+                            getattr(owner, "ROLE_HOLDER_CIRCLE", "holder circle")
+                            if shape_name == "circle"
+                            else "sample holder"
+                        )
+                    else:
+                        ui_role = zone_role
                     restored_shapes.append(
                         {
                             "id": index,
                             "uid": f"shape_{zone_id}",
                             "type": "circle" if shape_name == "circle" else "rectangle",
                             "role": ui_role,
+                            "physical_size_mm": holder_diameter_mm,
                             "geometry": {
                                 "x": x,
                                 "y": y,
@@ -208,6 +226,36 @@ def restore_session_workspace_from_container(
 
         owner.state["shapes"] = restored_shapes
         owner.state["zone_points"] = restored_points
+        if restored_include_center is None or restored_holder_center is None:
+            fallback_include_center = None
+            fallback_holder_center = None
+            for shape in restored_shapes:
+                role = str(shape.get("role", "") or "").lower()
+                geometry = shape.get("geometry", {}) or {}
+                try:
+                    center_x = float(geometry.get("x", 0.0)) + float(
+                        geometry.get("width", 0.0)
+                    ) / 2.0
+                    center_y = float(geometry.get("y", 0.0)) + float(
+                        geometry.get("height", 0.0)
+                    ) / 2.0
+                except Exception:
+                    continue
+                center = (center_x, center_y)
+                if role == "sample holder":
+                    fallback_include_center = center
+                    fallback_holder_center = center
+                    break
+                if role == "holder circle":
+                    fallback_include_center = center
+                    fallback_holder_center = center
+                elif role == "calibration square" and fallback_include_center is None:
+                    fallback_include_center = center
+                    fallback_holder_center = center
+            if restored_include_center is None:
+                restored_include_center = fallback_include_center
+            if restored_holder_center is None:
+                restored_holder_center = fallback_holder_center
         if restored_has_measurements and lock_shapes_if_measured:
             for shape in owner.state["shapes"]:
                 shape["locked_after_measurements"] = True

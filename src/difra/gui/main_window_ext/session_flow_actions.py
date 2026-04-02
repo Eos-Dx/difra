@@ -91,6 +91,12 @@ def _find_archived_session_candidates(owner, specimen_id: str) -> list[dict]:
                     continue
 
                 with h5py.File(container_path, "r") as h5f:
+                    completion_status = _as_text(
+                        h5f.attrs.get("session_completion_status")
+                    ).strip().lower()
+                    if completion_status == "not_complete":
+                        continue
+
                     candidate_specimen = _as_text(
                         h5f.attrs.get(
                             "specimenId",
@@ -227,6 +233,9 @@ def _load_sample_image_from_disk(owner) -> str | None:
     reset_rotation = getattr(owner, "_reset_sample_photo_rotation_state", None)
     if callable(reset_rotation):
         reset_rotation()
+    prompt_rotation = getattr(owner, "_maybe_prompt_sample_photo_rotation", None)
+    if callable(prompt_rotation):
+        prompt_rotation()
 
     clear_shapes = getattr(owner, "delete_all_shapes_from_table", None)
     if callable(clear_shapes):
@@ -248,9 +257,8 @@ def prompt_and_attach_sample_image(owner) -> str | None:
         owner,
         "Load Sample Image",
         "Session container created.\n\n"
-        "Choose where to load the specimen workspace from:",
+        "Choose whether to load the specimen workspace from a previous session container:",
         [
-            "Load sample image from disk",
             "Load image and points from previous session container",
             "Skip for now",
         ],
@@ -263,7 +271,7 @@ def prompt_and_attach_sample_image(owner) -> str | None:
         return None
     if selected_source == "Load image and points from previous session container":
         return _import_workspace_from_previous_session(owner)
-    return _load_sample_image_from_disk(owner)
+    return None
 
 
 def handle_new_sample_image(owner, image_path: str):
@@ -316,6 +324,9 @@ def handle_new_sample_image(owner, image_path: str):
     reset_rotation = getattr(owner, "_reset_sample_photo_rotation_state", None)
     if callable(reset_rotation):
         reset_rotation()
+    prompt_rotation = getattr(owner, "_maybe_prompt_sample_photo_rotation", None)
+    if callable(prompt_rotation):
+        prompt_rotation()
     if hasattr(owner, "update_session_status"):
         owner.update_session_status()
 

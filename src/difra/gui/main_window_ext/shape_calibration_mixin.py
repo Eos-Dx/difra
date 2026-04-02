@@ -995,6 +995,42 @@ class ShapeCalibrationMixin:
                 logger.debug("Failed to reset image_view rotation angle", exc_info=True)
         self._update_sample_photo_rotation_ui()
 
+    def _has_sample_photo_image_loaded(self) -> bool:
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return False
+        if getattr(image_view, "image_item", None) is not None:
+            return True
+        return getattr(image_view, "current_pixmap", None) is not None
+
+    def _sample_photo_rotation_required_for_workspace_editing(self) -> bool:
+        self._ensure_shape_calibration_defaults()
+        return self._has_sample_photo_image_loaded() and not bool(
+            getattr(self, "sample_photo_rotation_confirmed", False)
+        )
+
+    def _ensure_sample_photo_ready_for_workspace_editing(
+        self,
+        *,
+        show_message: bool = True,
+        action_label: str = "draw on the image",
+    ) -> bool:
+        blocked = self._sample_photo_rotation_required_for_workspace_editing()
+        if not blocked:
+            return True
+
+        if show_message:
+            QMessageBox.information(
+                self,
+                "Rotate Image First",
+                "Rotate the sample image by 180° before you can "
+                f"{action_label}.\n\n"
+                "Use the 'Rotate 180°' button in the top toolbar. "
+                "After rotation is confirmed once, DIFRA will remember that state.",
+            )
+        self._update_sample_photo_rotation_ui()
+        return False
+
     def _update_sample_photo_rotation_ui(self):
         self._ensure_shape_calibration_defaults()
         status_label = (
@@ -1006,9 +1042,8 @@ class ShapeCalibrationMixin:
             or getattr(self, "rotateSamplePhotoBtn", None)
         )
         is_rotated = bool(getattr(self, "sample_photo_rotation_confirmed", False))
-        can_rotate = bool(getattr(self, "_sample_photo_has_explicit_holder_circle", False)) and float(
-            getattr(self, "pixel_to_mm_ratio", 0.0) or 0.0
-        ) > 0.0
+        has_image = self._has_sample_photo_image_loaded()
+        can_rotate = bool(has_image and not is_rotated)
 
         if status_label is not None:
             if is_rotated:
@@ -1021,8 +1056,10 @@ class ShapeCalibrationMixin:
                     )
                 except Exception:
                     pass
-            elif can_rotate:
-                status_label.setText("Image not rotated yet. Confirm 180° before generating points.")
+            elif has_image:
+                status_label.setText(
+                    "Image not rotated yet. Rotate 180° before drawing zones or points."
+                )
                 try:
                     status_label.setStyleSheet(
                         "color: #8D6E63; font-size: 9px; margin: 1px;"
@@ -1030,7 +1067,7 @@ class ShapeCalibrationMixin:
                 except Exception:
                     pass
             else:
-                status_label.setText("Set calibration square or holder circle to enable rotation.")
+                status_label.setText("Load sample image first.")
                 try:
                     status_label.setStyleSheet(
                         "color: #666; font-size: 9px; margin: 1px;"
@@ -1054,11 +1091,11 @@ class ShapeCalibrationMixin:
             self._update_sample_photo_rotation_ui()
             return
 
-        if not bool(getattr(self, "_sample_photo_has_explicit_holder_circle", False)):
+        if not self._has_sample_photo_image_loaded():
             QMessageBox.information(
                 self,
-                "Set Calibration First",
-                "Define a calibration square or holder circle first to determine the beam center and enable rotation.",
+                "Load Image First",
+                "Load or capture a sample image first, then rotate it by 180°.",
             )
             self._update_sample_photo_rotation_ui()
             return
@@ -1566,12 +1603,7 @@ class ShapeCalibrationMixin:
         self._ensure_shape_calibration_defaults()
         if self._sample_photo_rotation_prompted and not force_prompt:
             return
-        if not bool(getattr(self, "_sample_photo_has_explicit_holder_circle", False)):
-            return
-        if getattr(self, "pixel_to_mm_ratio", 0.0) in (0, 0.0):
-            return
-        holder_center = getattr(self, "sample_holder_center_px", None)
-        if holder_center is None:
+        if not self._has_sample_photo_image_loaded():
             return
         if bool(getattr(self, "sample_photo_rotation_confirmed", False)):
             self.sample_photo_workspace_image_type = "sample_rotated"
@@ -1580,9 +1612,10 @@ class ShapeCalibrationMixin:
         reply = QMessageBox.question(
             self,
             "Rotate Sample Holder",
-            "Pixel-to-mm calibration is now available.\n\n"
-            "Rotate sample holder physically by 180° before measurement and use the same 180° mapping in DIFRA?\n\n"
-            "DIFRA will keep the raw photo and also store a rotated working image in the session container for point placement.",
+            "The sample photo has been loaded.\n\n"
+            "Rotate the physical sample holder by 180° and use the same 180° working image in DIFRA now?\n\n"
+            "You can answer 'No' and do it later with the 'Rotate 180°' toolbar button, "
+            "but drawing zones and points will stay blocked until the image is rotated.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
