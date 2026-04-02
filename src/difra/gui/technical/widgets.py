@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -177,6 +178,110 @@ class MeasurementHistoryWidget(QWidget):
             return "SECONDARY"
         return key
 
+    @staticmethod
+    def _as_text(value):
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8")
+            except Exception:
+                return value.decode("latin-1", errors="replace")
+        return str(value or "")
+
+    @classmethod
+    def _read_poni_dataset_text(cls, dataset) -> str | None:
+        try:
+            value = dataset[()]
+        except Exception:
+            return None
+        text = cls._as_text(value).strip()
+        return text or None
+
+    @classmethod
+    def _resolve_poni_text_from_h5ref(cls, measurement_filename: str, alias: str | None = None) -> str | None:
+        value = str(measurement_filename or "").strip()
+        if not value.startswith("h5ref://"):
+            return None
+
+        try:
+            import h5py
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "h5py unavailable while resolving PONI from H5 ref",
+                exc_info=True,
+            )
+            return None
+
+        payload = value[len("h5ref://") :]
+        container_path, sep, dataset_path = payload.partition("#")
+        if not sep or not container_path or not dataset_path:
+            return None
+
+        container = Path(container_path)
+        if not container.exists():
+            return None
+
+        try:
+            with h5py.File(container, "r") as h5f:
+                if dataset_path not in h5f:
+                    return None
+                dataset = h5f[dataset_path]
+                detector_group = dataset.parent
+
+                for attr_name in ("poni_ref", "poni_path"):
+                    ref_path = cls._as_text(detector_group.attrs.get(attr_name, "")).strip()
+                    if ref_path and ref_path in h5f:
+                        text = cls._read_poni_dataset_text(h5f[ref_path])
+                        if text:
+                            return text
+
+                alias_candidates = set()
+                for candidate in (
+                    alias,
+                    detector_group.attrs.get("detector_alias"),
+                    detector_group.attrs.get("detector_id"),
+                    detector_group.name.rsplit("/", 1)[-1],
+                ):
+                    text = cls._as_text(candidate).strip().upper()
+                    if text:
+                        alias_candidates.add(text)
+                        if text.startswith("DET_"):
+                            alias_candidates.add(text.replace("DET_", "", 1))
+
+                poni_group = h5f.get("/technical/poni")
+                if poni_group is not None:
+                    for _, poni_dataset in poni_group.items():
+                        detector_alias = cls._as_text(
+                            getattr(poni_dataset, "attrs", {}).get("detector_alias", "")
+                        ).strip().upper()
+                        detector_id = cls._as_text(
+                            getattr(poni_dataset, "attrs", {}).get("detector_id", "")
+                        ).strip().upper()
+                        if (
+                            detector_alias and detector_alias in alias_candidates
+                        ) or (
+                            detector_id and detector_id in alias_candidates
+                        ):
+                            text = cls._read_poni_dataset_text(poni_dataset)
+                            if text:
+                                return text
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to resolve PONI text from measurement H5 ref '%s'",
+                value,
+                exc_info=True,
+            )
+            return None
+        return None
+
+    def _resolve_poni_text_for_result(self, alias: str, result: dict) -> str | None:
+        result_map = result or {}
+        explicit = str(result_map.get("poni_text") or "").strip()
+        if explicit:
+            return explicit
+
+        filename = str(result_map.get("filename") or "").strip()
+        return self._resolve_poni_text_from_h5ref(filename, alias=alias)
+
     def set_detector_profile(self, alias: str, profile_values):
         preview_map = getattr(self, "detector_profile_previews", {}) or {}
         key = self._normalize_profile_alias(alias)
@@ -352,7 +457,7 @@ class MeasurementHistoryWidget(QWidget):
                             show_measurement_window(
                                 filename,
                                 (self.masks or {}).get(alias),
-                                (self.ponis or {}).get(alias),
+                                self._resolve_poni_text_for_result(alias, res),
                                 self.parent_window,
                             )
                         except Exception as e:

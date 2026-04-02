@@ -52,6 +52,112 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
 
 
 class ZoneMeasurementsProcessCaptureMixin:
+    def _start_capture_progress_logging(
+        self,
+        *,
+        label: str,
+        expected_seconds: float,
+    ) -> None:
+        pm = _pm()
+        ZoneMeasurementsProcessCaptureMixin._stop_capture_progress_logging(self)
+
+        self._capture_progress_label = str(label or "Capture")
+        self._capture_progress_expected_seconds = max(float(expected_seconds or 0.0), 0.0)
+        self._capture_progress_started_at = time.time()
+        self._capture_progress_last_logged_second = -1
+
+        timer_cls = getattr(pm, "QTimer", None)
+        if timer_cls is None:
+            return
+
+        try:
+            timer = timer_cls(self)
+        except TypeError:
+            timer = timer_cls()
+        except Exception:
+            logger.debug(
+                "Suppressed exception in process_capture_mixin.py",
+                exc_info=True,
+            )
+            return
+
+        timeout_signal = getattr(timer, "timeout", None)
+        if timeout_signal is None or not hasattr(timeout_signal, "connect"):
+            return
+
+        timeout_signal.connect(
+            lambda: ZoneMeasurementsProcessCaptureMixin._update_capture_progress_logging(self)
+        )
+        start_fn = getattr(timer, "start", None)
+        if callable(start_fn):
+            try:
+                start_fn(1000)
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
+                return
+        self._capture_progress_timer = timer
+        ZoneMeasurementsProcessCaptureMixin._update_capture_progress_logging(self)
+
+    def _stop_capture_progress_logging(self) -> None:
+        timer = getattr(self, "_capture_progress_timer", None)
+        if timer is not None:
+            stop_fn = getattr(timer, "stop", None)
+            if callable(stop_fn):
+                try:
+                    stop_fn()
+                except Exception:
+                    logger.debug(
+                        "Suppressed exception in process_capture_mixin.py",
+                        exc_info=True,
+                    )
+            delete_later = getattr(timer, "deleteLater", None)
+            if callable(delete_later):
+                try:
+                    delete_later()
+                except Exception:
+                    logger.debug(
+                        "Suppressed exception in process_capture_mixin.py",
+                        exc_info=True,
+                    )
+        self._capture_progress_timer = None
+
+    def _update_capture_progress_logging(self) -> None:
+        label = str(getattr(self, "_capture_progress_label", "") or "Capture")
+        started_at = float(getattr(self, "_capture_progress_started_at", 0.0) or 0.0)
+        expected = float(getattr(self, "_capture_progress_expected_seconds", 0.0) or 0.0)
+        if started_at <= 0.0:
+            return
+
+        elapsed = max(0, int(time.time() - started_at))
+        expected_display = max(1, int(round(expected))) if expected > 0.0 else None
+        time_label = getattr(self, "timeRemainingLabel", None)
+        if time_label is not None and hasattr(time_label, "setText"):
+            try:
+                if expected_display is not None:
+                    time_label.setText(
+                        f"{label}: {elapsed}/{expected_display} sec elapsed"
+                    )
+                else:
+                    time_label.setText(f"{label}: {elapsed} sec elapsed")
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in process_capture_mixin.py",
+                    exc_info=True,
+                )
+
+        last_logged = int(getattr(self, "_capture_progress_last_logged_second", -1))
+        if elapsed > 0 and elapsed % 5 == 0 and elapsed != last_logged:
+            if expected_display is not None:
+                self._append_capture_log(
+                    f"{label} in progress: {elapsed}/{expected_display} sec elapsed"
+                )
+            else:
+                self._append_capture_log(f"{label} in progress: {elapsed} sec elapsed")
+            self._capture_progress_last_logged_second = elapsed
+
     def _append_capture_log(self, message: str):
         payload = f"[CAPTURE] {message}"
         try:
@@ -385,6 +491,11 @@ class ZoneMeasurementsProcessCaptureMixin:
         self.capture_worker.finished.connect(self.capture_worker.deleteLater)
         self.capture_thread.finished.connect(self.capture_thread.deleteLater)
         self.capture_thread.start()
+        ZoneMeasurementsProcessCaptureMixin._start_capture_progress_logging(
+            self,
+            label=f"Point {point_index_1based}/{self.total_points} capture",
+            expected_seconds=float(self.integration_time),
+        )
         self._append_capture_log("Normal capture worker started")
 
     def _get_loading_position(self):
@@ -730,3 +841,8 @@ class ZoneMeasurementsProcessCaptureMixin:
         self._attn2_worker.finished.connect(self._attn2_worker.deleteLater)
         self._attn2_thread.finished.connect(self._attn2_thread.deleteLater)
         self._attn2_thread.start()
+        ZoneMeasurementsProcessCaptureMixin._start_capture_progress_logging(
+            self,
+            label="Attenuation capture",
+            expected_seconds=float(short_t) * max(int(frames), 1),
+        )

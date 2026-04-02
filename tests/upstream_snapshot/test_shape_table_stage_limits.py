@@ -321,7 +321,7 @@ def _pixmap_from_rgb_array(array):
     return QPixmap.fromImage(image)
 
 
-def test_catch_auto_blends_outer_shape_with_inner_hole_center(qapp, monkeypatch):
+def test_catch_auto_refines_outer_shape_from_selected_contrast_colors(qapp, monkeypatch):
     harness = _ShapeHarness()
     monkeypatch.setattr(
         "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
@@ -331,17 +331,19 @@ def test_catch_auto_blends_outer_shape_with_inner_hole_center(qapp, monkeypatch)
         "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
         staticmethod(lambda *args, **kwargs: QMessageBox.No),
     )
+    monkeypatch.setattr(
+        harness,
+        "_prompt_catch_auto_colors",
+        lambda: {"holder_rgb": (190, 165, 70), "background_rgb": (50, 110, 50)},
+    )
 
     height, width = 240, 240
     image = np.zeros((height, width, 3), dtype=np.uint8)
     image[:, :] = np.array([50, 110, 50], dtype=np.uint8)  # green background
     yy, xx = np.indices((height, width))
     outer_center = (120.0, 110.0)
-    inner_center = (126.0, 116.0)
     outer_mask = (((xx - outer_center[0]) / 70.0) ** 2 + ((yy - outer_center[1]) / 52.0) ** 2) <= 1.0
     image[outer_mask] = np.array([190, 165, 70], dtype=np.uint8)  # golden holder
-    inner_mask = ((xx - inner_center[0]) ** 2 + (yy - inner_center[1]) ** 2) <= 12.0 ** 2
-    image[inner_mask] = np.array([20, 20, 20], dtype=np.uint8)  # dark inner hole
 
     pixmap = _pixmap_from_rgb_array(image)
     harness.image_view.scene.clear()
@@ -369,8 +371,8 @@ def test_catch_auto_blends_outer_shape_with_inner_hole_center(qapp, monkeypatch)
     assert changed is True
     assert after_center[0] > before_center[0]
     assert after_center[1] > before_center[1]
-    assert after_center[0] == pytest.approx(0.8 * outer_center[0] + 0.2 * inner_center[0], abs=3.0)
-    assert after_center[1] == pytest.approx(0.8 * outer_center[1] + 0.2 * inner_center[1], abs=3.0)
+    assert after_center[0] == pytest.approx(outer_center[0], abs=3.0)
+    assert after_center[1] == pytest.approx(outer_center[1], abs=3.0)
     assert after_rect.width() == pytest.approx(140.0, abs=10.0)
     assert after_rect.height() == pytest.approx(104.0, abs=15.0)
     assert circle_info["item"].isSelected() is True
