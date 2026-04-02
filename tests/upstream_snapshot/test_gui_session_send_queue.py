@@ -262,7 +262,7 @@ def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monke
     archived = archived_files[0]
     with h5py.File(archived, "r") as h5f:
         assert h5f.attrs.get("upload_status") == "success"
-        assert int(h5f.attrs.get("matadorSpecimenId")) == 326169
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326111
 
     monkeypatch.setattr(
         harness,
@@ -273,7 +273,7 @@ def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monke
     qapp.processEvents()
 
     with h5py.File(archived, "r") as h5f:
-        assert int(h5f.attrs.get("matadorSpecimenId")) == 326169
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326111
         assert h5f.attrs.get("upload_status") == "success"
         assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
 
