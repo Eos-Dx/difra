@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import h5py
 import numpy as np
 import pytest
 from PyQt5.QtWidgets import QApplication
@@ -115,5 +116,67 @@ def test_show_measurement_window_retries_without_mask_when_masked_integration_re
         labels = [label.text() for label in dialog.findChildren(capture_module.QLabel)]
         assert any("retried without mask" in text for text in labels)
         assert not any("Could not integrate this measurement" in text for text in labels)
+    finally:
+        dialog.close()
+
+
+def test_show_measurement_window_prefers_embedded_h5ref_poni_and_shows_diagnostics(
+    qapp, tmp_path: Path, monkeypatch
+):
+    container_path = tmp_path / "technical_test.h5"
+    embedded_poni_text = "embedded poni text\nDistance: 0.02"
+    caller_poni_text = "caller poni text"
+
+    with h5py.File(container_path, "w") as h5f:
+        det_group = h5f.create_group("/entry/technical/tech_evt_000004/det_primary")
+        det_group.attrs["detector_alias"] = "PRIMARY"
+        det_group.attrs["detector_id"] = "DET-PRIMARY"
+        det_group.attrs["source_file"] = "AgBH_primary.npy"
+        det_group.attrs["poni_path"] = "/entry/technical/poni/poni_primary"
+        det_group.create_dataset("processed_signal", data=np.ones((8, 8), dtype=np.float32))
+
+        poni_ds = h5f.create_dataset(
+            "/entry/technical/poni/poni_primary",
+            data=np.bytes_(embedded_poni_text),
+        )
+        poni_ds.attrs["poni_filename"] = "embedded_primary.poni"
+
+    captured = {}
+
+    class _BadIntegrator:
+        def integrate1d(self, *args, **kwargs):
+            raise ValueError("synthetic h5 integration failure")
+
+    def _fake_initializer(poni_text):
+        captured["poni_text"] = poni_text
+        return _BadIntegrator()
+
+    monkeypatch.setattr(
+        capture_module,
+        "initialize_azimuthal_integrator_poni_text",
+        _fake_initializer,
+    )
+
+    dialog = capture_module.show_measurement_window(
+        f"h5ref://{container_path}#/entry/technical/tech_evt_000004/det_primary/processed_signal",
+        None,
+        caller_poni_text,
+        None,
+    )
+    try:
+        assert dialog is not None
+        assert captured["poni_text"] == embedded_poni_text
+
+        labels = [label.text() for label in dialog.findChildren(capture_module.QLabel)]
+        assert any("Could not integrate this measurement" in text for text in labels)
+
+        diagnostics = [
+            widget.toPlainText()
+            for widget in dialog.findChildren(capture_module.QPlainTextEdit)
+        ]
+        assert any("/entry/technical/poni/poni_primary" in text for text in diagnostics)
+        assert any("embedded_primary.poni" in text for text in diagnostics)
+        assert any("embedded poni text" in text for text in diagnostics)
+        assert any("synthetic h5 integration failure" in text for text in diagnostics)
     finally:
         dialog.close()

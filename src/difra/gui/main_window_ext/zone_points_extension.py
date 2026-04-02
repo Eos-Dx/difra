@@ -1401,7 +1401,11 @@ class ZonePointsMixin:
 
     def add_measurement_widget_to_panel(self, point_uid: str, point_display_id: Optional[int] = None):
         """Add a measurement widget for a point to the right tree (if not exists)."""
-        if getattr(self, "_restoring_state", False):
+        if getattr(self, "_restoring_state", False) and not getattr(
+            self,
+            "_restoring_measurement_history_widgets",
+            False,
+        ):
             return
         point_uid = str(point_uid or "").strip()
         if not point_uid:

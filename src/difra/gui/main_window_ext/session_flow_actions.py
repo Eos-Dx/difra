@@ -415,25 +415,32 @@ def load_session_container_from_path(owner, file_path: Path) -> bool:
                 f"Opened session container {file_path.name} ({mode})"
             )
 
-        owner._handle_incomplete_measurements_after_restore(file_path)
-        owner._restore_session_workspace_from_container(file_path)
+        previous_prompt_suppression = bool(
+            getattr(owner, "_suppress_sample_photo_rotation_prompt", False)
+        )
+        owner._suppress_sample_photo_rotation_prompt = True
+        try:
+            owner._handle_incomplete_measurements_after_restore(file_path)
+            owner._restore_session_workspace_from_container(file_path)
 
-        if hasattr(owner, "_populate_aux_table_from_h5"):
-            try:
-                owner._populate_aux_table_from_h5(str(file_path), set_active=False)
-                enable_measurement_controls = getattr(
-                    owner, "enable_measurement_controls", None
-                )
-                if callable(enable_measurement_controls):
-                    enable_measurement_controls(
-                        bool(getattr(owner, "hardware_initialized", False))
+            if hasattr(owner, "_populate_aux_table_from_h5"):
+                try:
+                    owner._populate_aux_table_from_h5(str(file_path), set_active=False)
+                    enable_measurement_controls = getattr(
+                        owner, "enable_measurement_controls", None
                     )
-            except Exception as tech_restore_error:
-                logger.warning(
-                    "Failed to restore technical table from session: %s",
-                    tech_restore_error,
-                )
-        owner.update_session_status()
+                    if callable(enable_measurement_controls):
+                        enable_measurement_controls(
+                            bool(getattr(owner, "hardware_initialized", False))
+                        )
+                except Exception as tech_restore_error:
+                    logger.warning(
+                        "Failed to restore technical table from session: %s",
+                        tech_restore_error,
+                    )
+            owner.update_session_status()
+        finally:
+            owner._suppress_sample_photo_rotation_prompt = previous_prompt_suppression
 
         QMessageBox.information(
             owner,

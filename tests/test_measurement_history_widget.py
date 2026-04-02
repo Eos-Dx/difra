@@ -149,3 +149,68 @@ def test_open_measurement_result_opens_h5ref_on_single_click(monkeypatch, qapp):
     assert result is True
     assert opened["filename"].startswith("h5ref://")
     assert opened["poni_text"] == "Distance: 0.17"
+
+
+def test_open_measurement_result_uses_alias_candidate_mask(monkeypatch, qapp):
+    widget = MeasurementHistoryWidget(
+        masks={"DET_PRIMARY": "mask-from-role"},
+        ponis={},
+        parent=None,
+        point_id=1,
+    )
+    widget.measurements = [
+        {
+            "timestamp": "2026-04-02 10:31:21",
+            "results": {
+                "PRIMARY": {
+                    "filename": "h5ref:///tmp/session.nxs.h5#/entry/measurements/pt_001/meas_0001/det_primary/processed_signal",
+                    "goodness": None,
+                }
+            },
+        }
+    ]
+
+    opened = {}
+
+    def _fake_show_measurement_window(filename, mask, poni_text, parent):
+        opened["filename"] = filename
+        opened["mask"] = mask
+        opened["poni_text"] = poni_text
+        opened["parent"] = parent
+
+    monkeypatch.setattr(
+        "difra.gui.technical.capture.show_measurement_window",
+        _fake_show_measurement_window,
+    )
+    monkeypatch.setattr(widget, "_resolve_poni_text_for_result", lambda alias, res: None)
+
+    result = widget._open_measurement_result(0, 1, ["PRIMARY"], h5ref_only=True)
+
+    assert result is True
+    assert opened["mask"] == "mask-from-role"
+
+
+def test_set_detector_profile_accepts_q_payload_and_updates_q_range(qapp):
+    widget = MeasurementHistoryWidget(masks={}, ponis={}, parent=None, point_id=1)
+
+    widget.set_detector_profile(
+        "PRIMARY",
+        {
+            "q_values": [0.0, 5.0, 10.0, 15.0, 20.0],
+            "intensity": [10.0, 20.0, 40.0, 20.0, 10.0],
+        },
+    )
+
+    preview = widget.detector_profile_previews["PRIMARY"]
+    assert preview._has_profile is True
+    assert preview._q_min == pytest.approx(0.0)
+    assert preview._q_max == pytest.approx(20.0)
+
+
+def test_measurement_history_widget_uses_horizontal_profile_layout(qapp):
+    widget = MeasurementHistoryWidget(masks={}, ponis={}, parent=None, point_id=1)
+
+    assert widget.layout.count() >= 2
+    profiles_layout = widget.layout.itemAt(1).layout()
+    assert profiles_layout is not None
+    assert profiles_layout.count() == 2

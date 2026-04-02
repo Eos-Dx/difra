@@ -1,4 +1,5 @@
 import logging
+import ntpath
 import os
 import re
 from pathlib import Path
@@ -149,7 +150,22 @@ class TechnicalAuxTableMixin:
         if source_kind == "container" and source_container and source_dataset:
             source_ref = f"h5ref://{source_container}#{source_dataset}"
 
-        display_name = Path(str(npy_path or "")).name or source_row_id or "from_container"
+        raw_path = str(npy_path or "")
+        display_name = ""
+        if source_kind == "container":
+            display_name = (
+                ntpath.basename(raw_path)
+                or Path(str(source_dataset or "")).parent.name
+                or str(source_row_id or "").strip()
+                or "from_container"
+            )
+        else:
+            display_name = (
+                Path(raw_path).name
+                or ntpath.basename(raw_path)
+                or str(source_row_id or "").strip()
+                or "from_file"
+            )
         display = f"{alias}: {display_name}"
         file_item = tm.QTableWidgetItem(display)
         file_item.setFlags(tm.Qt.ItemIsSelectable | tm.Qt.ItemIsEnabled)
@@ -686,6 +702,8 @@ class TechnicalAuxTableMixin:
     def _on_aux_row_updated(self, *_args):
         """Notify container workflow that table state changed."""
         if getattr(self, "_restoring_aux_table", False):
+            return
+        if getattr(self, "_loading_technical_container", False):
             return
         sync_fn = getattr(self, "_sync_active_technical_container_from_table", None)
         if callable(sync_fn):

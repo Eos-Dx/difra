@@ -10,6 +10,7 @@ import numpy as np
 from container.v0_2 import schema, technical_container
 from container.v0_2.container_manager import lock_container
 from difra.gui.main_window_ext.session_mixin import SessionMixin
+from difra.gui.main_window_ext import session_workspace_restore
 from difra.gui.session_manager import SessionManager
 
 
@@ -409,3 +410,81 @@ def test_workspace_restore_prefers_rotated_image_dataset_when_rotation_confirmed
     assert displayed["image"].tolist() == [[23, 22, 21], [13, 12, 11]]
     assert harness.sample_photo_rotation_confirmed is True
     assert harness.sample_photo_workspace_image_type == "sample_rotated"
+
+
+def test_restore_measurement_history_creates_widgets_while_restoring_state(tmp_path):
+    technical_path = _make_locked_technical_container(tmp_path / "technical_restore_profiles")
+    config = {
+        "technical_folder": str(Path(technical_path).parent),
+        "operator_id": "sad",
+        "detectors": [{"id": "det_primary", "alias": "PRIMARY"}],
+    }
+    manager = SessionManager(config=config)
+    _sid, session_path = manager.create_session(
+        folder=tmp_path / "sessions_restore_profiles",
+        distance_cm=17.0,
+        sample_id="RESTORE_PROFILES_SAMPLE",
+        study_name="RESTORE_PROFILES_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-25",
+    )
+    manager.add_points(
+        [{"pixel_coordinates": [10.0, 12.0], "physical_coordinates_mm": [0.0, 0.0]}]
+    )
+    manager.add_measurement(
+        point_index=1,
+        measurement_data={"PRIMARY": np.ones((8, 8), dtype=np.float32)},
+        detector_metadata={"PRIMARY": {"integration_time_ms": 50.0}},
+        poni_alias_map={"PRIMARY": "PRIMARY"},
+    )
+
+    class _Widget:
+        def __init__(self):
+            self.measurements = []
+            self.profiles = []
+
+        def add_measurement(self, results, timestamp):
+            self.measurements.append((results, timestamp))
+
+        def set_detector_profile(self, alias, profile_values):
+            self.profiles.append((alias, profile_values))
+
+    class _Owner:
+        def __init__(self):
+            self.config = config
+            self.measurement_widgets = {}
+            self._restoring_state = True
+            self._restoring_measurement_history_widgets = False
+            self.pointsTable = None
+
+        def _decode_attr(self, value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value
+
+        def _get_point_identity_from_row(self, row):
+            return ("1_uid", row + 1)
+
+        def add_measurement_widget_to_panel(self, point_uid, point_display_id=None):
+            if self._restoring_state and not self._restoring_measurement_history_widgets:
+                return
+            self.measurement_widgets[str(point_uid)] = _Widget()
+
+        def _update_profile_previews_from_result_files(self, result_files, point_uid=None):
+            widget = self.measurement_widgets.get(str(point_uid or ""))
+            if widget is None:
+                return
+            for alias, measurement_ref in (result_files or {}).items():
+                widget.set_detector_profile(alias, measurement_ref)
+
+    owner = _Owner()
+
+    session_workspace_restore.restore_measurement_history_from_session(owner, Path(session_path))
+
+    assert "1_uid" in owner.measurement_widgets
+    widget = owner.measurement_widgets["1_uid"]
+    assert len(widget.measurements) == 1
+    assert len(widget.profiles) == 1

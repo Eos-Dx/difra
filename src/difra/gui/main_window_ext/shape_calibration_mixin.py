@@ -1601,6 +1601,8 @@ class ShapeCalibrationMixin:
 
     def _maybe_prompt_sample_photo_rotation(self, *, force_prompt: bool = False):
         self._ensure_shape_calibration_defaults()
+        if bool(getattr(self, "_suppress_sample_photo_rotation_prompt", False)) and not force_prompt:
+            return
         if self._sample_photo_rotation_prompted and not force_prompt:
             return
         if not self._has_sample_photo_image_loaded():

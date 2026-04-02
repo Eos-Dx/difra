@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import h5py
+import numpy as np
 
 from difra.gui.main_window_ext.technical.capture_mixin import TechnicalCaptureMixin
 
@@ -60,6 +61,22 @@ class _FakeSpin:
 
     def value(self):
         return self._value
+
+
+class _FakeTimer:
+    def __init__(self):
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class _FakeStatus:
+    def __init__(self):
+        self.text = ""
+
+    def setText(self, value):
+        self.text = str(value)
 
 
 class _FakeStageController:
@@ -144,6 +161,38 @@ class _Harness(TechnicalCaptureMixin):
                 for candidate in alias_candidates:
                     payload[str(candidate)] = str(value)
         return payload
+
+
+class _CaptureDoneHarness(_Harness):
+    def __init__(self):
+        super().__init__()
+        self._aux_timer = _FakeTimer()
+        self._aux_status = _FakeStatus()
+        self.append_calls = []
+        self.technical_module_requests = []
+
+    def _on_capture_done(self, *args, **kwargs):
+        return TechnicalCaptureMixin._on_capture_done(self, *args, **kwargs)
+
+    def _append_captured_result_files_to_active_container(
+        self,
+        result_files,
+        technical_type,
+        *,
+        show_errors=False,
+    ):
+        self.append_calls.append(
+            {
+                "result_files": dict(result_files),
+                "technical_type": technical_type,
+                "show_errors": bool(show_errors),
+            }
+        )
+        return True
+
+    def _get_technical_module(self, name):
+        self.technical_module_requests.append(name)
+        return super()._get_technical_module(name)
 
 
 def _patch_tm(monkeypatch):
@@ -250,6 +299,34 @@ def test_resolve_technical_measurement_mask_uses_detector_alias_from_container_c
     )
 
     assert resolved == "saxs-mask"
+
+
+def test_on_capture_done_appends_results_to_container_before_table_processing(tmp_path):
+    harness = _CaptureDoneHarness()
+    result_path = tmp_path / "agbh_001_20260213_120000_3.000000s_4frames_PRIMARY.npy"
+    np.save(result_path, np.ones((4, 4), dtype=np.float32))
+    harness._pending_aux_capture_metadata = {
+        "integration_time_ms": 3000.0,
+        "n_frames": 4,
+    }
+
+    harness._on_capture_done(
+        True,
+        {"PRIMARY": str(result_path)},
+        "AGBH",
+    )
+
+    assert harness._aux_timer.stop_calls == 1
+    assert harness._aux_status.text == ""
+    assert harness._pending_aux_capture_metadata is None
+    assert harness.append_calls == [
+        {
+            "result_files": {"PRIMARY": str(result_path)},
+            "technical_type": "AGBH",
+            "show_errors": True,
+        }
+    ]
+    assert "MeasurementWorker" not in harness.technical_module_requests
 
 
 def test_resolve_technical_measurement_poni_uses_container_canonical_technical_path(tmp_path):

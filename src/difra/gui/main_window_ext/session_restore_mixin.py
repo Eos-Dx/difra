@@ -1,6 +1,6 @@
 """Session restore and recovery helpers for SessionMixin."""
 
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from . import session_mixin as _session_module
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from container import loader
 from container.registry import load_version_module
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QDialog,
     QHeaderView,
@@ -26,7 +26,9 @@ class DetectorProfilePreview(QWidget):
         self._line_color = QColor(line_color)
         self._profile = []
         self._has_profile = False
-        self.setFixedSize(self._cm_to_px(2.0, axis="x"), self._cm_to_px(1.5, axis="y"))
+        self._q_min = 0.0
+        self._q_max = 20.0
+        self.setFixedSize(self._cm_to_px(2.4, axis="x"), self._cm_to_px(1.8, axis="y"))
 
     def _cm_to_px(self, cm: float, axis: str = "x") -> int:
         dpi = float(self.logicalDpiX() if axis == "x" else self.logicalDpiY())
@@ -37,6 +39,8 @@ class DetectorProfilePreview(QWidget):
     def clear_profile(self):
         self._profile = []
         self._has_profile = False
+        self._q_min = 0.0
+        self._q_max = 20.0
         self.update()
 
     @staticmethod
@@ -77,15 +81,40 @@ class DetectorProfilePreview(QWidget):
 
         return normalized.tolist()
 
+    @staticmethod
+    def _normalize_q_range(q_values):
+        import numpy as np
+
+        if q_values is None:
+            return 0.0, 20.0
+        arr = np.asarray(q_values, dtype=float).ravel()
+        arr = arr[np.isfinite(arr)]
+        if arr.size < 2:
+            return 0.0, 20.0
+        q_min = float(arr.min())
+        q_max = float(arr.max())
+        if q_max <= q_min:
+            return 0.0, 20.0
+        return q_min, q_max
+
+    @staticmethod
+    def _format_tick(value: float) -> str:
+        rounded = round(float(value))
+        if abs(float(value) - rounded) < 0.05:
+            return str(int(rounded))
+        return f"{float(value):.1f}"
+
     def set_profile(self, values):
         try:
-            normalized = self._normalize_profile_log(values)
+            payload = values if isinstance(values, dict) else {"intensity": values}
+            normalized = self._normalize_profile_log(payload.get("intensity"))
             if len(normalized) < 2:
                 self.clear_profile()
                 return
 
             self._profile = normalized
             self._has_profile = True
+            self._q_min, self._q_max = self._normalize_q_range(payload.get("q_values"))
             self.update()
         except Exception:
             self.clear_profile()
@@ -102,7 +131,7 @@ class DetectorProfilePreview(QWidget):
         left = rect.left() + 4
         right = rect.right() - 4
         top = rect.top() + 4
-        bottom = rect.bottom() - 4
+        bottom = rect.bottom() - 16
         mid_y = (top + bottom) / 2.0
 
         baseline_pen = QPen(QColor("#d4dae3"), 1.0, Qt.DashLine)
@@ -127,6 +156,28 @@ class DetectorProfilePreview(QWidget):
             else:
                 path.lineTo(x, y)
         painter.drawPath(path)
+
+        tick_font = QFont(painter.font())
+        tick_font.setPointSize(max(6, tick_font.pointSize() - 2))
+        painter.setFont(tick_font)
+        painter.setPen(QPen(QColor("#7d8794"), 1.0))
+
+        tick_values = (
+            self._q_min,
+            (self._q_min + self._q_max) / 2.0,
+            self._q_max,
+        )
+        tick_positions = (left, int(round((left + right) / 2.0)), right)
+        text_y = rect.bottom() - 2
+        for idx, (tick_x, tick_value) in enumerate(zip(tick_positions, tick_values)):
+            label = self._format_tick(tick_value)
+            if idx == 0:
+                anchor = tick_x
+            elif idx == 1:
+                anchor = tick_x - 8
+            else:
+                anchor = tick_x - 16
+            painter.drawText(int(anchor), int(text_y), label)
         painter.end()
 
 
@@ -166,18 +217,22 @@ class MeasurementHistoryWidget(QWidget):
 
     def _create_detector_profile_previews(self):
         self.detector_profile_previews = {}
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.setContentsMargins(0, 0, 0, 0)
         for alias, color in (("PRIMARY", "#2b7a78"), ("SECONDARY", "#cc5c3c")):
-            row = QHBoxLayout()
-            row.setSpacing(4)
-            label = QLabel(f"{alias} profile:")
-            label.setStyleSheet("color: #444; font-size: 10px;")
-            label.setFixedWidth(92)
+            column = QVBoxLayout()
+            column.setSpacing(2)
+            column.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(f"{alias.title()} Profile")
+            label.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
+            label.setStyleSheet("color: #3a3f45; font-size: 10px; font-weight: 600;")
             preview = DetectorProfilePreview(color, self)
-            row.addWidget(label)
-            row.addWidget(preview)
-            row.addStretch(1)
-            self.layout.addLayout(row)
+            column.addWidget(label)
+            column.addWidget(preview, alignment=Qt.AlignHCenter)
+            row.addLayout(column, 1)
             self.detector_profile_previews[alias] = preview
+        self.layout.addLayout(row)
 
     @staticmethod
     def _normalize_profile_alias(alias: str) -> str:
@@ -341,6 +396,13 @@ class MeasurementHistoryWidget(QWidget):
         filename = str(result_map.get("filename") or "").strip()
         return self._resolve_poni_text_from_h5ref(filename, alias=alias)
 
+    def _resolve_mask_for_result(self, alias: str):
+        masks = self.masks if isinstance(self.masks, dict) else {}
+        for candidate in self._expand_technical_alias_candidates(alias):
+            if candidate in masks:
+                return masks.get(candidate)
+        return masks.get(alias)
+
     def set_detector_profile(self, alias: str, profile_values):
         preview_map = getattr(self, "detector_profile_previews", {}) or {}
         key = self._normalize_profile_alias(alias)
@@ -476,7 +538,7 @@ class MeasurementHistoryWidget(QWidget):
 
             show_measurement_window(
                 filename,
-                (self.masks or {}).get(alias),
+                self._resolve_mask_for_result(alias),
                 self._resolve_poni_text_for_result(alias, res),
                 self.parent_window,
             )
