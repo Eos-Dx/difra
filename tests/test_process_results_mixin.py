@@ -725,9 +725,11 @@ def test_on_capture_finished_failure_marks_session_point(monkeypatch):
     _patch_pm(monkeypatch, with_ui=True)
     logs = []
     failed_calls = []
+    stopped = []
     owner = _ResultsHarness()
     owner.current_measurement_sorted_index = 0
     owner._current_session_point_index = lambda: 5
+    owner._stop_capture_progress_logging = lambda: stopped.append(True)
     owner.session_manager = SimpleNamespace(
         is_session_active=lambda: True,
         fail_point_measurement=lambda **kwargs: failed_calls.append(kwargs),
@@ -738,6 +740,7 @@ def test_on_capture_finished_failure_marks_session_point(monkeypatch):
 
     assert failed_calls and failed_calls[0]["point_index"] == 5
     assert failed_calls[0]["reason"] == "capture_failed"
+    assert stopped == [True]
     assert "[CAPTURE] Point 5: capture failed" in logs
     assert "[SESSION] Point 5: marked failed in session container" in logs
 

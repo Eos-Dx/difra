@@ -163,6 +163,15 @@ class ZoneMeasurementsProcessResultsMixin:
 
     def on_capture_finished(self, success: bool, result_files: dict):
         pm = _pm()
+        stop_progress = getattr(self, "_stop_capture_progress_logging", None)
+        if callable(stop_progress):
+            try:
+                stop_progress()
+            except Exception:
+                logger.debug(
+                    "Suppressed exception in process_results_mixin.py",
+                    exc_info=True,
+                )
         current_index = self.current_measurement_sorted_index
         point_index_1based = (
             self._current_session_point_index()

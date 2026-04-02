@@ -4,11 +4,18 @@ from math import ceil, floor, sqrt
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QBrush, QColor, QPen
 from PyQt5.QtWidgets import (
+    QColorDialog,
+    QDialog,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsRectItem,
+    QGridLayout,
     QInputDialog,
+    QLabel,
     QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from difra.gui.extra.resizable_zone import (
@@ -26,10 +33,10 @@ class ShapeCalibrationMixin:
     DEFAULT_SAMPLE_HOLDER_LENGTH_MM = 65.45
     DEFAULT_LOAD_POSITION_MM = (-13.9, -6.0)
     DEFAULT_BEAM_CENTER_MM = (6.15, -9.15)
-    AUTO_CENTER_OUTER_WEIGHT = 0.8
-    AUTO_CENTER_INNER_WEIGHT = 0.2
     ROLE_CALIBRATION_SQUARE = "calibration square"
     ROLE_HOLDER_CIRCLE = "holder circle"
+    DEFAULT_CATCH_AUTO_HOLDER_RGB = (190, 165, 70)
+    DEFAULT_CATCH_AUTO_BACKGROUND_RGB = (50, 110, 50)
 
     def _get_selected_calibration_shape_info(self):
         image_view = getattr(self, "image_view", None)
@@ -94,6 +101,117 @@ class ShapeCalibrationMixin:
             return False
         return self.catch_auto_for_shape(shape_info)
 
+    def _ensure_catch_auto_defaults(self):
+        if not hasattr(self, "catch_auto_holder_rgb"):
+            self.catch_auto_holder_rgb = tuple(self.DEFAULT_CATCH_AUTO_HOLDER_RGB)
+        if not hasattr(self, "catch_auto_background_rgb"):
+            self.catch_auto_background_rgb = tuple(self.DEFAULT_CATCH_AUTO_BACKGROUND_RGB)
+
+    @staticmethod
+    def _rgb_to_qcolor(rgb_value):
+        try:
+            red, green, blue = [int(max(0, min(255, channel))) for channel in rgb_value]
+        except Exception:
+            red, green, blue = 0, 0, 0
+        return QColor(red, green, blue)
+
+    def _prompt_catch_auto_colors(self):
+        self._ensure_catch_auto_defaults()
+
+        class _ColorSwatchButton(QPushButton):
+            def __init__(self, initial_rgb, label_text, parent=None):
+                super().__init__(label_text, parent)
+                self._rgb = tuple(int(max(0, min(255, value))) for value in initial_rgb)
+                self._sync_style()
+                self.clicked.connect(self._pick_color)
+
+            def _sync_style(self):
+                color = ShapeCalibrationMixin._rgb_to_qcolor(self._rgb)
+                text_color = "#000000" if color.lightness() > 140 else "#FFFFFF"
+                self.setText(f"{self.text().split(':')[0]}: {self._rgb[0]}, {self._rgb[1]}, {self._rgb[2]}")
+                self.setStyleSheet(
+                    "QPushButton {"
+                    f"background-color: {color.name()};"
+                    f"color: {text_color};"
+                    "padding: 6px 10px;"
+                    "font-weight: 600;"
+                    "text-align: left;"
+                    "}"
+                )
+
+            def _pick_color(self):
+                chosen = QColorDialog.getColor(
+                    ShapeCalibrationMixin._rgb_to_qcolor(self._rgb),
+                    self.window(),
+                    "Choose Catch Auto Color",
+                )
+                if chosen.isValid():
+                    self._rgb = (chosen.red(), chosen.green(), chosen.blue())
+                    self._sync_style()
+
+            @property
+            def rgb(self):
+                return tuple(self._rgb)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Catch Auto Colors")
+        layout = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Choose the two reference colors for contrast detection.\n\n"
+            "1. Holder color: the gold-like sample holder.\n"
+            "2. Background color: the green surrounding area.\n\n"
+            "Catch Auto will refine only the outer shape from this contrast."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        grid = QGridLayout()
+        holder_button = _ColorSwatchButton(self.catch_auto_holder_rgb, "Holder Color", dialog)
+        background_button = _ColorSwatchButton(
+            self.catch_auto_background_rgb, "Background Color", dialog
+        )
+        grid.addWidget(QLabel("Holder (gold-like):"), 0, 0)
+        grid.addWidget(holder_button, 0, 1)
+        grid.addWidget(QLabel("Background (green):"), 1, 0)
+        grid.addWidget(background_button, 1, 1)
+        layout.addLayout(grid)
+
+        defaults_row = QWidget(dialog)
+        defaults_layout = QGridLayout(defaults_row)
+        defaults_layout.setContentsMargins(0, 0, 0, 0)
+        use_defaults = QPushButton("Use Defaults", defaults_row)
+        use_defaults.clicked.connect(
+            lambda: (
+                setattr(holder_button, "_rgb", tuple(self.DEFAULT_CATCH_AUTO_HOLDER_RGB)),
+                holder_button._sync_style(),
+                setattr(background_button, "_rgb", tuple(self.DEFAULT_CATCH_AUTO_BACKGROUND_RGB)),
+                background_button._sync_style(),
+            )
+        )
+        defaults_layout.addWidget(use_defaults, 0, 0)
+        layout.addWidget(defaults_row)
+
+        buttons_row = QWidget(dialog)
+        buttons_layout = QGridLayout(buttons_row)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        ok_button = QPushButton("OK", buttons_row)
+        cancel_button = QPushButton("Cancel", buttons_row)
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        buttons_layout.addWidget(ok_button, 0, 0)
+        buttons_layout.addWidget(cancel_button, 0, 1)
+        layout.addWidget(buttons_row)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+
+        self.catch_auto_holder_rgb = tuple(holder_button.rgb)
+        self.catch_auto_background_rgb = tuple(background_button.rgb)
+        return {
+            "holder_rgb": tuple(holder_button.rgb),
+            "background_rgb": tuple(background_button.rgb),
+        }
+
     def _extract_workspace_rgba_array(self):
         image_view = getattr(self, "image_view", None)
         current_pixmap = getattr(image_view, "current_pixmap", None)
@@ -146,86 +264,7 @@ class ShapeCalibrationMixin:
             logger.debug("Failed to map image point to scene point", exc_info=True)
             return None
 
-    def _detect_inner_hole_center_in_shape(self, shape_info):
-        payload = self._shape_center_and_extent(shape_info)
-        if payload is None:
-            return None
-        rect, scene_cx, scene_cy = payload
-        image_rect = self._scene_rect_to_image_rect(rect)
-        center_image = self._scene_point_to_image_point(scene_cx, scene_cy)
-        rgba = self._extract_workspace_rgba_array()
-        if image_rect is None or center_image is None or rgba is None:
-            return None
-
-        try:
-            import numpy as np
-        except Exception:
-            logger.debug("Catch auto requires numpy", exc_info=True)
-            return None
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            cv2 = None
-
-        image_h, image_w = rgba.shape[:2]
-        left = max(0, int(floor(image_rect.left())))
-        top = max(0, int(floor(image_rect.top())))
-        right = min(image_w, int(ceil(image_rect.right())))
-        bottom = min(image_h, int(ceil(image_rect.bottom())))
-        if right - left < 8 or bottom - top < 8:
-            return None
-
-        rgb = rgba[:, :, :3].astype(np.float32)
-        if cv2 is not None and hasattr(cv2, "cvtColor") and hasattr(cv2, "COLOR_RGB2GRAY"):
-            gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY)
-        else:
-            gray = np.clip(
-                0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2],
-                0,
-                255,
-            ).astype(np.uint8)
-        roi = gray[top:bottom, left:right]
-        if roi.size == 0:
-            return None
-
-        approx_x = int(round(center_image[0])) - left
-        approx_y = int(round(center_image[1])) - top
-        approx_x = int(max(0, min(roi.shape[1] - 1, approx_x)))
-        approx_y = int(max(0, min(roi.shape[0] - 1, approx_y)))
-
-        search_half = max(8, int(min(roi.shape[0], roi.shape[1]) * 0.22))
-        sx0 = max(0, approx_x - search_half)
-        sx1 = min(roi.shape[1], approx_x + search_half + 1)
-        sy0 = max(0, approx_y - search_half)
-        sy1 = min(roi.shape[0], approx_y + search_half + 1)
-        search = roi[sy0:sy1, sx0:sx1]
-        if search.size == 0:
-            return None
-
-        if cv2 is not None and hasattr(cv2, "GaussianBlur"):
-            blurred = cv2.GaussianBlur(search, (7, 7), 0)
-        else:
-            kernel = np.ones((5, 5), dtype=np.float32) / 25.0
-            padded = np.pad(search.astype(np.float32), 2, mode="edge")
-            blurred = np.empty_like(search, dtype=np.float32)
-            for row in range(search.shape[0]):
-                for col in range(search.shape[1]):
-                    window = padded[row:row + 5, col:col + 5]
-                    blurred[row, col] = float((window * kernel).sum())
-        threshold = float(np.percentile(blurred, 18))
-        dark_mask = blurred <= threshold
-        if int(dark_mask.sum()) < 12:
-            return None
-
-        ys, xs = np.nonzero(dark_mask)
-        weights = (threshold - blurred[dark_mask].astype(np.float32)) + 1.0
-        if float(weights.sum()) <= 0.0:
-            return None
-        center_x = float((xs * weights).sum() / weights.sum()) + sx0 + left
-        center_y = float((ys * weights).sum() / weights.sum()) + sy0 + top
-        return self._image_point_to_scene_point(center_x, center_y)
-
-    def _detect_outer_geometry_in_shape(self, shape_info):
+    def _detect_outer_geometry_in_shape(self, shape_info, holder_rgb, background_rgb):
         payload = self._shape_center_and_extent(shape_info)
         if payload is None:
             return None
@@ -256,32 +295,28 @@ class ShapeCalibrationMixin:
 
         rgb = rgba[top:bottom, left:right, :3].astype(np.float32)
         roi_h, roi_w = rgb.shape[:2]
-        border = max(2, int(min(roi_h, roi_w) * 0.08))
-        bg_samples = np.concatenate(
-            [
-                rgb[:border, :, :].reshape(-1, 3),
-                rgb[-border:, :, :].reshape(-1, 3),
-                rgb[:, :border, :].reshape(-1, 3),
-                rgb[:, -border:, :].reshape(-1, 3),
-            ],
-            axis=0,
-        )
-        bg_color = np.median(bg_samples, axis=0)
-        dist = np.linalg.norm(rgb - bg_color.reshape(1, 1, 3), axis=2).astype(np.float32)
+        holder_color = np.array(holder_rgb, dtype=np.float32).reshape(1, 1, 3)
+        background_color = np.array(background_rgb, dtype=np.float32).reshape(1, 1, 3)
+        holder_distance = np.linalg.norm(rgb - holder_color, axis=2).astype(np.float32)
+        background_distance = np.linalg.norm(rgb - background_color, axis=2).astype(np.float32)
+        contrast = (background_distance - holder_distance).astype(np.float32)
 
         if cv2 is not None and hasattr(cv2, "GaussianBlur"):
-            dist_blurred = cv2.GaussianBlur(dist, (7, 7), 0)
+            contrast_blurred = cv2.GaussianBlur(contrast, (7, 7), 0)
         else:
             kernel = np.ones((5, 5), dtype=np.float32) / 25.0
-            padded = np.pad(dist, 2, mode="edge")
-            dist_blurred = np.empty_like(dist, dtype=np.float32)
-            for row in range(dist.shape[0]):
-                for col in range(dist.shape[1]):
+            padded = np.pad(contrast, 2, mode="edge")
+            contrast_blurred = np.empty_like(contrast, dtype=np.float32)
+            for row in range(contrast.shape[0]):
+                for col in range(contrast.shape[1]):
                     window = padded[row:row + 5, col:col + 5]
-                    dist_blurred[row, col] = float((window * kernel).sum())
+                    contrast_blurred[row, col] = float((window * kernel).sum())
 
-        threshold = max(12.0, float(np.percentile(dist_blurred, 60)))
-        foreground = dist_blurred >= threshold
+        positive_values = contrast_blurred[contrast_blurred > 0.0]
+        if positive_values.size == 0:
+            return None
+        threshold = max(3.0, float(np.percentile(positive_values, 45)))
+        foreground = contrast_blurred >= threshold
         if int(foreground.sum()) < 20:
             return None
 
@@ -317,7 +352,7 @@ class ShapeCalibrationMixin:
         if xs.size < 20 or ys.size < 20:
             return None
 
-        weights = dist_blurred[foreground] + 1.0
+        weights = contrast_blurred[foreground] + 1.0
         role = str((shape_info or {}).get("role", "") or "").lower()
 
         bbox_left = float(xs.min())
@@ -467,31 +502,27 @@ class ShapeCalibrationMixin:
             )
             return False
 
-        outer_geometry = self._detect_outer_geometry_in_shape(shape_info)
+        color_payload = self._prompt_catch_auto_colors()
+        if color_payload is None:
+            return False
+
+        outer_geometry = self._detect_outer_geometry_in_shape(
+            shape_info,
+            color_payload["holder_rgb"],
+            color_payload["background_rgb"],
+        )
         if outer_geometry is None:
             QMessageBox.warning(
                 self,
                 "Catch Auto Failed",
-                "Could not detect the outer shape boundary by contrast.\n\n"
-                "Keep the manual shape or adjust it slightly and try again.",
+                "Could not detect the outer holder boundary from the selected holder/background colors.\n\n"
+                "Adjust the manual shape or choose clearer gold-like and green colors, then try again.",
             )
             return False
 
         changed = self._apply_scene_rect_to_shape(shape_info, outer_geometry["rect"])
         current_center = outer_geometry["center"]
-
-        detected_center = self._detect_inner_hole_center_in_shape(shape_info)
-        if detected_center is not None:
-            outer_weight = float(self.AUTO_CENTER_OUTER_WEIGHT)
-            inner_weight = float(self.AUTO_CENTER_INNER_WEIGHT)
-            target_center = (
-                outer_weight * float(current_center[0]) + inner_weight * float(detected_center[0]),
-                outer_weight * float(current_center[1]) + inner_weight * float(detected_center[1]),
-            )
-        else:
-            target_center = current_center
-
-        changed = self._recenter_shape_to_scene_point(shape_info, target_center) or changed
+        changed = self._recenter_shape_to_scene_point(shape_info, current_center) or changed
         if not changed:
             self._select_calibration_shape_for_editing(shape_info)
             QMessageBox.information(

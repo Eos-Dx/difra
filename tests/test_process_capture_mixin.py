@@ -68,6 +68,26 @@ class _FakeThread:
         self.deleted += 1
 
 
+class _FakeTimer:
+    instances = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.timeout = _FakeSignal()
+        self.started_with = []
+        self.stop_called = 0
+        self.deleted = 0
+        type(self).instances.append(self)
+
+    def start(self, interval_ms: int) -> None:
+        self.started_with.append(int(interval_ms))
+
+    def stop(self) -> None:
+        self.stop_called += 1
+
+    def deleteLater(self) -> None:
+        self.deleted += 1
+
+
 class _FakeCaptureWorker:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -100,6 +120,14 @@ class _StubButton:
 
     def setEnabled(self, value):
         self.values.append(value)
+
+
+class _StubStatusLabel:
+    def __init__(self) -> None:
+        self.text = None
+
+    def setText(self, value):
+        self.text = value
 
 
 class _StubProgressBar:
@@ -161,6 +189,7 @@ class _StubPointItem:
 def _patch_pm(monkeypatch):
     logger_calls = []
     warnings = []
+    _FakeTimer.instances.clear()
 
     logger = SimpleNamespace(
         info=lambda *args, **kwargs: logger_calls.append(("info", args, kwargs)),
@@ -171,6 +200,7 @@ def _patch_pm(monkeypatch):
     pm = SimpleNamespace(
         logger=logger,
         QThread=_FakeThread,
+        QTimer=_FakeTimer,
         QMessageBox=SimpleNamespace(
             warning=lambda *args: warnings.append(args[1:3]),
         ),
@@ -448,6 +478,7 @@ def test_start_normal_capture_creates_worker_thread_and_marks_session_start(monk
         _current_session_point_index=lambda: 7,
         session_manager=session_manager,
         on_capture_finished=lambda success, files: None,
+        timeRemainingLabel=_StubButton(),
     )
 
     ZoneMeasurementsProcessCaptureMixin._start_normal_capture(owner, "/tmp/sample")
@@ -459,8 +490,34 @@ def test_start_normal_capture_creates_worker_thread_and_marks_session_start(monk
     assert owner.capture_thread.started_called == 1
     assert owner.capture_worker.run_called == 1
     assert session_calls and session_calls[0][0] == "begin"
+    assert _FakeTimer.instances and _FakeTimer.instances[-1].started_with == [1000]
     assert "Normal capture worker started" in capture_logs
     assert session_logs and "opened in session container" in session_logs[0]
+
+
+def test_capture_progress_logging_updates_label_and_logs_every_five_seconds(monkeypatch):
+    _patch_pm(monkeypatch)
+    logs = []
+    label = _StubStatusLabel()
+    owner = SimpleNamespace(
+        _append_capture_log=lambda message: logs.append(message),
+        timeRemainingLabel=label,
+    )
+    owner._stop_capture_progress_logging = lambda: ZoneMeasurementsProcessCaptureMixin._stop_capture_progress_logging(owner)
+    owner._update_capture_progress_logging = lambda: ZoneMeasurementsProcessCaptureMixin._update_capture_progress_logging(owner)
+
+    ZoneMeasurementsProcessCaptureMixin._start_capture_progress_logging(
+        owner,
+        label="Point 1/2 capture",
+        expected_seconds=20.0,
+    )
+    owner._capture_progress_started_at = 100.0
+    monkeypatch.setattr(capture_module.time, "time", lambda: 105.0)
+
+    owner._capture_progress_timer.timeout.emit()
+
+    assert label.text == "Point 1/2 capture: 5/20 sec elapsed"
+    assert logs[-1] == "Point 1/2 capture in progress: 5/20 sec elapsed"
 
 
 def test_start_normal_capture_continues_when_session_begin_fails(monkeypatch):
