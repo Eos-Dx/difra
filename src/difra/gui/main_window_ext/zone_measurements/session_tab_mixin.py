@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import List
+from typing import List, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -639,6 +640,40 @@ class SessionTabMixin:
                 f"Failed to generate old-format folder for:\n{container_path}\n\n{exc}",
             )
 
+    def _request_matador_specimen_override(
+        self,
+        *,
+        container_path: Path,
+        specimen_text: str,
+    ) -> Optional[int]:
+        raw_specimen = str(specimen_text or "").strip()
+        if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+            return None
+        value, accepted = QInputDialog.getText(
+            self,
+            "Matador Specimen ID Required",
+            "\n".join(
+                [
+                    f"Container: {container_path.name}",
+                    "",
+                    f"The stored specimen '{raw_specimen}' is not a valid Matador integer specimen ID.",
+                    "Enter the numeric Matador specimen ID to use for this upload:",
+                ]
+            ),
+            text="",
+        )
+        if not accepted:
+            return None
+        text = str(value or "").strip()
+        if not text or not text.isdigit():
+            QMessageBox.warning(
+                self,
+                "Invalid Specimen ID",
+                "Matador specimen ID must be a whole number.",
+            )
+            return None
+        return int(text)
+
     def _show_pending_sessions_context_menu(self, pos):
         table = self.pending_sessions_table
         row = table.rowAt(pos.y())
@@ -666,12 +701,25 @@ class SessionTabMixin:
         if container_path is None:
             return
 
+        info = SessionTabPresenter.read_session_container_metadata(
+            Path(container_path),
+            schema=self._container_schema(),
+            container_manager=self._container_manager(),
+        )
+        transfer_status = str(info.get("transfer_status") or "").strip().upper()
         menu = QMenu(table)
         load_action = menu.addAction("Load Container")
+        send_action = menu.addAction(
+            "Send To Matador Again" if transfer_status == "SENT" else "Send To Matador"
+        )
+        if transfer_status == "NOT_COMPLETE":
+            send_action.setEnabled(False)
         old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
             self._open_session_container_path(container_path)
+        elif selected == send_action:
+            self._send_archived_sessions([container_path])
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
 
@@ -867,6 +915,173 @@ class SessionTabMixin:
             "Matador send finished with failures."
             if workflow_result.upload_failed > 0
             else "Matador send finished successfully."
+        )
+        close_button.setEnabled(True)
+        QApplication.processEvents()
+
+        self._refresh_session_container_lists()
+        if hasattr(self, "update_session_status"):
+            self.update_session_status()
+
+    def _send_archived_sessions(self, container_paths: List[Path]):
+        if not container_paths:
+            QMessageBox.information(self, "No Containers", "No archived session containers selected.")
+            return
+
+        container_manager = self._container_manager()
+        blocked = []
+        for container_path in container_paths:
+            transfer_status = SessionLifecycleActions._current_transfer_status(
+                Path(container_path),
+                container_manager=container_manager,
+            )
+            if transfer_status == SessionLifecycleActions.TRANSFER_STATUS_NOT_COMPLETE:
+                blocked.append(Path(container_path).name)
+        if blocked:
+            QMessageBox.warning(
+                self,
+                "Send Blocked",
+                "The following archived container(s) are marked NOT_COMPLETE and "
+                "cannot be sent to Matador:\n\n"
+                + "\n".join(blocked),
+            )
+            return
+
+        lock_user = None
+        if hasattr(self, "session_manager") and self.session_manager:
+            lock_user = getattr(self.session_manager, "operator_id", None)
+        uploader_id = None
+        if hasattr(self, "operator_manager") and self.operator_manager:
+            get_current_operator_id = getattr(
+                self.operator_manager, "get_current_operator_id", None
+            )
+            if callable(get_current_operator_id):
+                uploader_id = get_current_operator_id()
+        if not uploader_id and hasattr(self, "config") and isinstance(self.config, dict):
+            uploader_id = self.config.get("operator_id")
+
+        upload_context = self._request_upload_login_context(
+            fallback_operator=str(uploader_id or lock_user or "unknown")
+        )
+        if upload_context is None:
+            QMessageBox.information(self, "Upload Cancelled", "Upload was cancelled by operator.")
+            return
+
+        uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
+        runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
+        runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
+        simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
+
+        specimen_overrides = {}
+        for container_path in container_paths:
+            metadata = SessionLifecycleActions._read_matador_session_metadata(
+                Path(container_path),
+                config=runtime_config,
+                uploader_id=uploader_id,
+            )
+            specimen_text = str(metadata.get("specimen_text") or "").strip()
+            if (
+                specimen_text
+                and metadata.get("specimen_id") is None
+                and any(ch.isdigit() for ch in specimen_text)
+            ):
+                override = self._request_matador_specimen_override(
+                    container_path=Path(container_path),
+                    specimen_text=specimen_text,
+                )
+                if override is None:
+                    QMessageBox.information(
+                        self,
+                        "Upload Cancelled",
+                        f"Matador resend was cancelled for:\n{Path(container_path).name}",
+                    )
+                    return
+                specimen_overrides[str(Path(container_path))] = int(override)
+
+        progress_dialog, progress_label, progress_bar, progress_log, close_button = (
+            self._create_matador_send_progress_dialog(len(container_paths))
+        )
+        progress_dialog.show()
+
+        log_lines: List[str] = []
+        per_container_status = {}
+
+        def _progress_update(event):
+            if not isinstance(event, dict):
+                return
+            message = str(event.get("message") or "").strip()
+            current = int(event.get("current") or 0)
+            total = int(event.get("total") or max(len(container_paths), 1))
+            kind = str(event.get("kind") or "").strip()
+            container_name = Path(str(event.get("container_path") or "")).name
+
+            if message and hasattr(self, "_append_session_log"):
+                self._append_session_log(message)
+            if message:
+                log_lines.append(message)
+                progress_log.appendPlainText(message)
+
+            if kind in {"container_done", "container_failed"} and container_name:
+                per_container_status[container_name] = message
+
+            progress_bar.setMaximum(max(total, 1))
+            display_value = current
+            if kind not in {"container_done", "container_failed"} and current > 0:
+                display_value = current - 1
+            progress_bar.setValue(max(0, min(display_value, max(total, 1))))
+            progress_label.setText(message or "Sending archived session containers to Matador...")
+            QApplication.processEvents()
+
+        workflow_result = SessionLifecycleActions.reupload_archived_session_containers(
+            container_paths=container_paths,
+            container_manager=container_manager,
+            uploader_id=uploader_id,
+            lock_user=lock_user,
+            simulate_upload_failure=simulate_upload_failure,
+            config=runtime_config,
+            progress_callback=_progress_update,
+            specimen_overrides=specimen_overrides,
+        )
+
+        progress_bar.setValue(max(len(container_paths), 1))
+        summary = [
+            f"Processed {len(container_paths)} archived session container(s).",
+            "Upload result: "
+            f"{workflow_result.upload_success} success / "
+            f"{workflow_result.upload_failed} failed",
+        ]
+        if workflow_result.upload_session_id:
+            summary.append(f"Upload session: {workflow_result.upload_session_id}")
+        if workflow_result.old_format_paths:
+            summary.append(f"Old-format folder: {workflow_result.old_format_paths[-1]}")
+        if workflow_result.failed:
+            summary.append("")
+            summary.append("Failures:")
+            summary.extend(workflow_result.failed[:8])
+            if len(workflow_result.failed) > 8:
+                summary.append(f"... and {len(workflow_result.failed) - 8} more")
+        if per_container_status:
+            summary.append("")
+            summary.append("Per-container result:")
+            for container_name in sorted(per_container_status.keys()):
+                summary.append(per_container_status[container_name])
+
+        log_path = self._write_matador_send_log(
+            runtime_config=runtime_config,
+            log_lines=log_lines + summary,
+            workflow_result=workflow_result,
+        )
+        summary.append("")
+        summary.append(f"Matador log saved to: {log_path}")
+
+        progress_log.appendPlainText("")
+        for line in summary:
+            progress_log.appendPlainText(line)
+        progress_label.setText(
+            "Matador resend finished with failures."
+            if workflow_result.upload_failed > 0
+            else "Matador resend finished successfully."
         )
         close_button.setEnabled(True)
         QApplication.processEvents()

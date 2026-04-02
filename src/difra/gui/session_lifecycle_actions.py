@@ -333,6 +333,7 @@ class SessionLifecycleActions:
         cfg = config or {}
         metadata: Dict[str, Any] = {
             "specimen_id": None,
+            "specimen_text": "",
             "study_id": cfg.get("matador_study_id", 100),
             "machine_id": cfg.get("matador_machine_id", 100),
             "distance_mm": None,
@@ -349,12 +350,15 @@ class SessionLifecycleActions:
 
         try:
             with h5py.File(session_path, "r") as h5f:
-                specimen = h5f.attrs.get("specimenId", h5f.attrs.get("sample_id"))
-                if specimen not in (None, ""):
-                    try:
-                        metadata["specimen_id"] = int(specimen)
-                    except Exception:
-                        metadata["specimen_id"] = None
+                specimen = h5f.attrs.get(
+                    "matadorSpecimenId",
+                    h5f.attrs.get(
+                        "matador_specimen_id",
+                        h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                    ),
+                )
+                metadata["specimen_text"] = cls._decode_attr(specimen).strip()
+                metadata["specimen_id"] = cls._coerce_optional_int(specimen)
 
                 study = h5f.attrs.get("matadorStudyId", metadata["study_id"])
                 machine = h5f.attrs.get("matadorMachineId", metadata["machine_id"])
@@ -499,6 +503,36 @@ class SessionLifecycleActions:
             config=config,
             uploader_id=uploader_id,
         )
+        specimen_text = str(session_metadata.get("specimen_text") or "").strip()
+        if (
+            specimen_text
+            and session_metadata.get("specimen_id") is None
+            and any(ch.isdigit() for ch in specimen_text)
+        ):
+            message = (
+                "Matador specimen ID must be an integer, "
+                f"but container stores '{specimen_text}'."
+            )
+            cls._notify_progress(
+                progress_callback,
+                message=f"{Path(archived_path).name}: {message}",
+                current=current,
+                total=total,
+                kind="upload_blocked",
+                container_path=Path(archived_path),
+            )
+            return UploadStubResult(
+                success=False,
+                upload_session_id="",
+                message=message,
+                bytes_uploaded=int(Path(archived_path).stat().st_size),
+                local_checksum_sha256=sha256_file(Path(archived_path)),
+                response_checksum_sha256="",
+                remote_container_id="",
+                zip_checksum_sha256=sha256_file(Path(old_format_zip_path)),
+                zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
+                zip_path=str(old_format_zip_path),
+            )
 
         cls._notify_progress(
             progress_callback,
@@ -919,6 +953,41 @@ class SessionLifecycleActions:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         return str(value or "")
+
+    @classmethod
+    def _coerce_optional_int(cls, value: Any) -> Optional[int]:
+        """Return an integer when a value is cleanly numeric, otherwise None."""
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return int(value)
+        text = cls._decode_attr(value).strip()
+        if not text:
+            return None
+        if text.startswith(("+", "-")):
+            digits = text[1:]
+            if digits.isdigit():
+                return int(text)
+            return None
+        if text.isdigit():
+            return int(text)
+        return None
+
+    @staticmethod
+    def _current_transfer_status(container_path: Path, *, container_manager: Any) -> str:
+        get_transfer_status = getattr(container_manager, "get_transfer_status", None)
+        if callable(get_transfer_status):
+            try:
+                return str(get_transfer_status(Path(container_path)) or "").strip().lower()
+            except Exception:
+                return ""
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                return str(h5f.attrs.get("transfer_status", "") or "").strip().lower()
+        except Exception:
+            return ""
 
     @classmethod
     def inspect_session_completeness(cls, session_path: Path) -> Dict[str, Any]:
@@ -1426,5 +1495,226 @@ class SessionLifecycleActions:
                 )
             except Exception as exc:
                 result.failed.append(f"cleanup {folder_str}: {exc}")
+
+        return result
+
+    @classmethod
+    def reupload_archived_session_containers(
+        cls,
+        container_paths: Iterable[Path],
+        *,
+        container_manager: Any,
+        uploader_id: Optional[str] = None,
+        lock_user: Optional[str] = None,
+        simulate_upload_failure: bool = False,
+        config: Optional[Dict[str, Any]] = None,
+        export_old_format: Optional[bool] = None,
+        progress_callback: Optional[Any] = None,
+        specimen_overrides: Optional[Dict[str, int]] = None,
+    ) -> SendArchiveResult:
+        """Upload archived session containers again without moving them."""
+        result = SendArchiveResult()
+        if export_old_format is None:
+            export_old_format = bool(
+                (config or {}).get("enable_old_format_export", True)
+            )
+
+        resolved_uploader_id = cls._resolve_uploader_id(
+            explicit_uploader_id=uploader_id,
+            lock_user=lock_user,
+        )
+        upload_api = build_matador_upload_api(config=config)
+        use_stub_h5_only = (
+            not export_old_format
+            and upload_api.__class__.__name__ == "StubMatadorUploadApi"
+        )
+        overrides = {
+            str(Path(path)): int(value)
+            for path, value in (specimen_overrides or {}).items()
+            if value not in (None, "")
+        }
+        queued_paths = [Path(path) for path in container_paths]
+        total_containers = len(queued_paths)
+
+        for item_index, container_path in enumerate(queued_paths, start=1):
+            candidate = Path(container_path)
+            try:
+                if not candidate.exists():
+                    result.upload_failed += 1
+                    result.failed.append(f"{candidate.name}: container not found")
+                    continue
+
+                prior_transfer_status = cls._current_transfer_status(
+                    candidate,
+                    container_manager=container_manager,
+                )
+                if prior_transfer_status == cls.TRANSFER_STATUS_NOT_COMPLETE:
+                    message = (
+                        "Container is marked NOT_COMPLETE and cannot be sent to Matador."
+                    )
+                    result.upload_failed += 1
+                    result.failed.append(f"{candidate.name}: {message}")
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - {message}",
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_failed",
+                        container_path=candidate,
+                    )
+                    continue
+
+                override_value = overrides.get(str(candidate))
+                if override_value is not None:
+                    cls._write_container_attrs(
+                        candidate,
+                        {"matadorSpecimenId": int(override_value)},
+                    )
+
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{item_index}/{total_containers}] {candidate.name}: Starting Matador resend...",
+                    current=item_index,
+                    total=total_containers,
+                    kind="container_started",
+                    container_path=candidate,
+                )
+
+                old_format_zip_path = None
+                if not use_stub_h5_only:
+                    try:
+                        cls._notify_progress(
+                            progress_callback,
+                            message=f"[{item_index}/{total_containers}] {candidate.name}: Rebuilding old-format folder and ZIP...",
+                            current=item_index,
+                            total=total_containers,
+                            kind="prepare_old_format",
+                            container_path=candidate,
+                        )
+                        _summary, archived_old_format_dir, old_format_zip_path = (
+                            cls._prepare_old_format_payload(
+                                candidate,
+                                archive_folder=candidate.parent,
+                                config=config,
+                            )
+                        )
+                        result.old_format_paths.append(archived_old_format_dir)
+                    except Exception as exc:
+                        result.old_format_failed.append(f"{candidate.name}: {exc}")
+                        old_format_zip_path = None
+
+                if use_stub_h5_only:
+                    upload_result = cls.execute_upload_stub(
+                        candidate,
+                        uploader_id=resolved_uploader_id,
+                        upload_session_id=cls.create_upload_session_id(
+                            uploader_id=resolved_uploader_id
+                        ),
+                        upload_api=upload_api,
+                        simulate_failure=simulate_upload_failure,
+                        failure_message=(
+                            "Matador upload failed (simulated)"
+                            if simulate_upload_failure
+                            else None
+                        ),
+                    )
+                elif old_format_zip_path is None:
+                    upload_result = UploadStubResult(
+                        success=False,
+                        upload_session_id="",
+                        message="Old-format ZIP payload was not generated",
+                        bytes_uploaded=int(candidate.stat().st_size),
+                        local_checksum_sha256=sha256_file(candidate),
+                        response_checksum_sha256="",
+                        remote_container_id="",
+                    )
+                else:
+                    upload_result = cls._execute_matador_upload(
+                        candidate,
+                        old_format_zip_path=Path(old_format_zip_path),
+                        uploader_id=resolved_uploader_id,
+                        upload_api=upload_api,
+                        config=config,
+                        simulate_failure=simulate_upload_failure,
+                        failure_message=(
+                            "Matador upload failed (simulated)"
+                            if simulate_upload_failure
+                            else None
+                        ),
+                        progress_callback=progress_callback,
+                        current=item_index,
+                        total=total_containers,
+                    )
+
+                if upload_result.upload_session_id and not result.upload_session_id:
+                    result.upload_session_id = str(upload_result.upload_session_id)
+
+                wrote_upload_meta = cls.write_upload_metadata(
+                    candidate,
+                    uploader_id=resolved_uploader_id,
+                    lock_user=lock_user,
+                )
+                wrote_upload_result = cls.write_upload_result_metadata(
+                    candidate,
+                    upload_result=upload_result,
+                )
+                wrote_upload_log = cls.append_upload_attempt_log(
+                    candidate,
+                    operator_id=resolved_uploader_id,
+                    upload_result=upload_result,
+                )
+                metadata_write_ok = (
+                    bool(wrote_upload_meta)
+                    and bool(wrote_upload_result)
+                    and bool(wrote_upload_log)
+                )
+                effective_upload_success = bool(upload_result.success and metadata_write_ok)
+
+                mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+                if callable(mark_transferred):
+                    if effective_upload_success or prior_transfer_status == "sent":
+                        mark_transferred(candidate, sent=True)
+                    else:
+                        mark_transferred(candidate, sent=False)
+
+                if effective_upload_success:
+                    result.upload_success += 1
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: SUCCESS - archived container re-uploaded.",
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_done",
+                        container_path=candidate,
+                    )
+                else:
+                    result.upload_failed += 1
+                    failure_message = (
+                        "upload metadata write failed"
+                        if upload_result.success and not metadata_write_ok
+                        else str(upload_result.message)
+                    )
+                    result.failed.append(f"{candidate.name}: {failure_message}")
+                    cls._notify_progress(
+                        progress_callback,
+                        message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - {failure_message}",
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_failed",
+                        container_path=candidate,
+                    )
+
+                result.archived_paths.append(candidate)
+            except Exception as exc:
+                result.upload_failed += 1
+                result.failed.append(f"{candidate.name}: {exc}")
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - unexpected error ({exc})",
+                    current=item_index,
+                    total=total_containers,
+                    kind="container_failed",
+                    container_path=candidate,
+                )
 
         return result
