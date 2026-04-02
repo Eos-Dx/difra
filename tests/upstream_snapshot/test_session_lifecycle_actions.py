@@ -503,3 +503,35 @@ def test_archive_session_containers_marks_complete_vs_not_complete(tmp_path):
     assert archived_by_sample["INCOMPLETE_SAMPLE"]["completion_status"] == "not_complete"
     assert archived_by_sample["INCOMPLETE_SAMPLE"]["upload_status"] == "not_complete"
     assert "missing sample image" in archived_by_sample["INCOMPLETE_SAMPLE"]["message"]
+
+
+def test_archive_session_containers_mirrors_archived_folder(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    mirror_folder = tmp_path / "onedrive_archive"
+    sid_complete, complete_path = _create_session_file(measurements, "COMPLETE_SAMPLE")
+
+    _add_complete_session_payload(complete_path)
+    (measurements / "capture.txt").write_text("txt")
+
+    result = SessionLifecycleActions.archive_session_containers(
+        container_paths=[complete_path],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        config={"measurements_archive_mirror_folder": str(mirror_folder)},
+        lock_user="sad",
+        session_ids={str(complete_path): sid_complete},
+    )
+
+    assert result.failed == []
+    assert result.moved == 1
+    archived_folder = result.archived_paths[0].parent
+    mirrored_folder = (
+        mirror_folder
+        / "Archive"
+        / "measurements"
+        / archived_folder.name
+    )
+    assert mirrored_folder.exists() is True
+    assert (mirrored_folder / complete_path.name).exists() is True
+    assert (mirrored_folder / "capture.txt").exists() is True

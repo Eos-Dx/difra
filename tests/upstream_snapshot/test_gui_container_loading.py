@@ -2,6 +2,7 @@
 
 import os
 import json
+import re
 import shutil
 import sys
 import types
@@ -1752,6 +1753,7 @@ def test_on_new_technical_container_requests_empty_container(qapp, tmp_path, mon
 def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_path):
     technical_folder = tmp_path / "technical_replace"
     archive_folder = tmp_path / "archive" / "technical"
+    mirror_root = tmp_path / "onedrive_archive"
     tech_path = _make_technical_container(technical_folder)
     lock_container(tech_path, user_id="sad")
 
@@ -1759,6 +1761,7 @@ def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_pa
         config={
             "technical_folder": str(technical_folder),
             "technical_archive_folder": str(archive_folder),
+            "measurements_archive_mirror_folder": str(mirror_root),
         },
         work_dir=technical_folder,
     )
@@ -1770,6 +1773,11 @@ def test_replacement_archives_technical_container_to_archive_folder(qapp, tmp_pa
     assert not tech_path.exists()
     assert archived_path.exists()
     assert archived_path.parent.parent == archive_folder
+    mirrored_folder = (
+        mirror_root / "Archive" / "technical" / archived_path.parent.name
+    )
+    assert mirrored_folder.exists() is True
+    assert (mirrored_folder / archived_path.name).exists() is True
 
 
 def test_startup_reconcile_option_label_includes_time_distance_and_lock_status(qapp, tmp_path):

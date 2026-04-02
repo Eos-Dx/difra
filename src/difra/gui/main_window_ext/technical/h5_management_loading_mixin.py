@@ -9,6 +9,7 @@ import numpy as np
 from . import h5_management_mixin as _module
 from .poni_center_validation import resolve_poni_rule_alias
 from . import technical_startup_reconcile
+from difra.gui.technical.analysis_compat import detect_faulty_pixel_masks
 
 os = _module.os
 shutil = _module.shutil
@@ -89,6 +90,41 @@ class H5ManagementLoadingMixin:
             poni_name = info.get("name") or f"{alias}.poni"
             poni_data[str(alias)] = (str(poni_text), str(poni_name))
         return poni_data
+
+    def _canonical_faulty_pixel_alias(self, *values) -> str:
+        normalize = getattr(self, "_normalize_technical_alias_candidates", None)
+        candidates = set()
+        for value in values:
+            token = str(value or "").strip()
+            if not token:
+                continue
+            if callable(normalize):
+                candidates.update(normalize(token))
+            else:
+                upper = token.upper()
+                candidates.add(upper)
+                if upper.startswith("DET_"):
+                    candidates.add(upper[4:])
+                else:
+                    candidates.add(f"DET_{upper}")
+
+        primary_tokens = {"PRIMARY", "SAXS", "DET_PRIMARY", "DET_SAXS"}
+        secondary_tokens = {"SECONDARY", "WAXS", "DET_SECONDARY", "DET_WAXS"}
+        if candidates & primary_tokens:
+            return "PRIMARY"
+        if candidates & secondary_tokens:
+            return "SECONDARY"
+        return ""
+
+    def _apply_loaded_masks(self, loaded_masks: dict):
+        if not loaded_masks:
+            return
+        if not isinstance(getattr(self, "masks", None), dict):
+            self.masks = {}
+        self.masks.update(loaded_masks)
+        for widget in (getattr(self, "measurement_widgets", {}) or {}).values():
+            if hasattr(widget, "masks"):
+                widget.masks = self.masks
 
     @staticmethod
     def _poni_data_signature(poni_data) -> str:
@@ -489,6 +525,21 @@ class H5ManagementLoadingMixin:
         except (AttributeError, RuntimeError, TypeError) as exc:
             logger.warning(
                 "Failed to remap aux table references after technical archive: %s",
+                exc,
+                exc_info=True,
+            )
+        try:
+            from difra.gui.session_lifecycle_service import SessionLifecycleService
+
+            SessionLifecycleService.copy_archive_item_to_mirror(
+                archive_dir,
+                config=self.config if hasattr(self, "config") else None,
+                archive_kind="technical",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mirror archived technical container folder %s: %s",
+                archive_dir,
                 exc,
                 exc_info=True,
             )
@@ -1400,52 +1451,67 @@ class H5ManagementLoadingMixin:
         schema = get_schema(self.config if hasattr(self, "config") else None)
 
         extracted_distances = {}
+        detected_masks = {}
         loaded_poni = {}
         loaded_poni_files = {}
+        faulty_pixel_records = []
 
         with h5py.File(h5_path, "r") as h5f:
+            def _read_text_value(value) -> str:
+                if isinstance(value, bytes):
+                    return value.decode("utf-8", errors="replace")
+                return str(value or "")
+
+            def _read_poni_text_from_path(ref_path: str) -> str:
+                ref = str(ref_path or "").strip()
+                if not ref or ref not in h5f:
+                    return ""
+                try:
+                    return _read_text_value(h5f[ref][()]).strip()
+                except Exception:
+                    logger.debug(
+                        "Failed to read embedded PONI dataset '%s' from %s",
+                        ref,
+                        h5_path,
+                        exc_info=True,
+                    )
+                    return ""
+
+            def _read_detector_linked_poni_text(detector_group) -> str:
+                candidate_paths = []
+                attr_poni_ref = getattr(schema, "ATTR_PONI_REF", "poni_ref")
+                for attr_name in (attr_poni_ref, "poni_path"):
+                    ref_path = _read_text_value(detector_group.attrs.get(attr_name, "")).strip()
+                    if ref_path and ref_path not in candidate_paths:
+                        candidate_paths.append(ref_path)
+
+                role_name = str(detector_group.name.rsplit("/", 1)[-1] or "").strip()
+                technical_poni_group = getattr(
+                    schema,
+                    "GROUP_TECHNICAL_PONI",
+                    "/entry/technical/poni",
+                )
+                if role_name:
+                    suffixes = [role_name]
+                    if role_name.startswith("det_"):
+                        suffixes.insert(0, role_name[4:])
+                    for suffix in suffixes:
+                        canonical_path = f"{technical_poni_group}/poni_{suffix}"
+                        if canonical_path not in candidate_paths:
+                            candidate_paths.append(canonical_path)
+
+                for ref_path in candidate_paths:
+                    poni_text = _read_poni_text_from_path(ref_path)
+                    if poni_text:
+                        return poni_text
+                return ""
+
             # Prefer runtime rows for editable in-progress containers.
             rows = self._extract_rows_from_runtime_group(h5f, schema, h5_path)
             if not rows:
                 rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
 
             detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
-
-            tech_group = h5f.get(schema.GROUP_TECHNICAL)
-            if tech_group is None:
-                tech_group = h5f.get(f"{schema.GROUP_CALIBRATION_SNAPSHOT}/events")
-            if tech_group is not None:
-                for event_name in tech_group.keys():
-                    if not str(event_name).startswith("tech_evt_"):
-                        continue
-                    event_group = tech_group[event_name]
-                    for detector_name in event_group.keys():
-                        detector_group = event_group[detector_name]
-                        alias = detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
-                        detector_attr_id = detector_group.attrs.get(
-                            getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
-                            "",
-                        )
-                        _resolved_alias, detector_id, _alias_candidates = (
-                            self._resolve_configured_technical_alias(
-                                alias,
-                                detector_attr_id,
-                                detector_name,
-                            )
-                        )
-                        if not detector_id:
-                            continue
-                        distance_attr = detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
-                        if distance_attr is not None:
-                            try:
-                                extracted_distances[detector_id] = float(distance_attr)
-                            except (TypeError, ValueError) as exc:
-                                logger.warning(
-                                    "Failed to parse technical distance from event alias=%s id=%s: %s",
-                                    alias,
-                                    detector_id,
-                                    exc,
-                                )
 
             poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
             if poni_group is not None:
@@ -1493,6 +1559,114 @@ class H5ManagementLoadingMixin:
                     except (KeyError, OSError, TypeError, ValueError) as poni_err:
                         logger.warning("Failed to parse PONI dataset '%s': %s", ds_name, poni_err)
 
+            tech_group = h5f.get(schema.GROUP_TECHNICAL)
+            if tech_group is None:
+                tech_group = h5f.get(f"{schema.GROUP_CALIBRATION_SNAPSHOT}/events")
+            if tech_group is not None:
+                dataset_name = getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal")
+                for event_name in tech_group.keys():
+                    if not str(event_name).startswith("tech_evt_"):
+                        continue
+                    event_group = tech_group[event_name]
+                    for detector_name in event_group.keys():
+                        detector_group = event_group[detector_name]
+                        alias = detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
+                        detector_attr_id = detector_group.attrs.get(
+                            getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                            "",
+                        )
+                        resolved_alias, detector_id, alias_candidates = (
+                            self._resolve_configured_technical_alias(
+                                alias,
+                                detector_attr_id,
+                                detector_name,
+                            )
+                        )
+                        if detector_id:
+                            distance_attr = detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
+                            if distance_attr is not None:
+                                try:
+                                    extracted_distances[detector_id] = float(distance_attr)
+                                except (TypeError, ValueError) as exc:
+                                    logger.warning(
+                                        "Failed to parse technical distance from event alias=%s id=%s: %s",
+                                        alias,
+                                        detector_id,
+                                        exc,
+                                    )
+
+                        if dataset_name not in detector_group:
+                            continue
+                        try:
+                            image = np.asarray(detector_group[dataset_name][()], dtype=float)
+                        except Exception:
+                            logger.debug(
+                                "Failed to read processed signal for %s/%s from %s",
+                                event_name,
+                                detector_name,
+                                h5_path,
+                                exc_info=True,
+                            )
+                            continue
+                        if image.ndim != 2 or image.size <= 0:
+                            continue
+
+                        canonical_alias = self._canonical_faulty_pixel_alias(
+                            resolved_alias,
+                            *sorted(alias_candidates),
+                            detector_name,
+                        )
+                        if not canonical_alias:
+                            continue
+
+                        poni_text = _read_detector_linked_poni_text(detector_group)
+                        if not poni_text:
+                            for candidate in [resolved_alias, *sorted(alias_candidates)]:
+                                store_key = str(candidate or "").strip().upper()
+                                if store_key and store_key in loaded_poni:
+                                    poni_text = str(loaded_poni.get(store_key) or "").strip()
+                                    if poni_text:
+                                        break
+
+                        faulty_pixel_records.append(
+                            {
+                                "alias": canonical_alias,
+                                "image": image,
+                                "poni_text": poni_text,
+                                "meas_name": f"{canonical_alias}_{event_name}_{detector_name}",
+                            }
+                        )
+
+        if faulty_pixel_records:
+            try:
+                detected_masks, mask_stats = detect_faulty_pixel_masks(faulty_pixel_records)
+                if detected_masks:
+                    self._apply_loaded_masks(detected_masks)
+                    logger.info(
+                        "Loaded automatic faulty-pixel masks from %s: PRIMARY=%s SECONDARY=%s",
+                        Path(h5_path).name,
+                        int(np.count_nonzero(detected_masks.get("PRIMARY"))) if "PRIMARY" in detected_masks else 0,
+                        int(np.count_nonzero(detected_masks.get("SECONDARY"))) if "SECONDARY" in detected_masks else 0,
+                    )
+                    if hasattr(self, "_log_technical_event"):
+                        self._log_technical_event(
+                            "Auto-detected faulty pixels from container: "
+                            f"PRIMARY={int(np.count_nonzero(detected_masks.get('PRIMARY'))) if 'PRIMARY' in detected_masks else 0}, "
+                            f"SECONDARY={int(np.count_nonzero(detected_masks.get('SECONDARY'))) if 'SECONDARY' in detected_masks else 0}"
+                        )
+                else:
+                    logger.debug(
+                        "No automatic faulty-pixel masks detected from %s: %s",
+                        h5_path,
+                        mask_stats,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to auto-detect faulty pixels from %s",
+                    h5_path,
+                    exc_info=True,
+                )
+
         self._restoring_aux_table = True
         try:
             self.auxTable.setRowCount(0)
@@ -1523,6 +1697,8 @@ class H5ManagementLoadingMixin:
             for widget in (getattr(self, "measurement_widgets", {}) or {}).values():
                 if hasattr(widget, "ponis"):
                     widget.ponis = self.ponis
+                if hasattr(widget, "masks") and isinstance(getattr(self, "masks", None), dict):
+                    widget.masks = self.masks
 
         if extracted_distances:
             self._detector_distances = extracted_distances

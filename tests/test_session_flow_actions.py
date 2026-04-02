@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import h5py
 
 from container.v0_2 import writer as session_writer
+from difra.gui.main_window_ext import session_mixin as session_mixin_module
 from difra.gui.main_window_ext import session_flow_actions as module
 
 
@@ -253,3 +254,18 @@ def test_find_archived_session_candidates_hides_not_complete_sessions(tmp_path, 
 
     assert len(candidates) == 1
     assert Path(candidates[0]["path"]) == Path(complete_path)
+
+
+def test_on_import_workspace_from_session_uses_archived_session_picker(monkeypatch):
+    called = {}
+    harness = SimpleNamespace()
+
+    monkeypatch.setattr(
+        module,
+        "_import_workspace_from_previous_session",
+        lambda owner: called.setdefault("owner", owner),
+    )
+
+    session_mixin_module.SessionMixin.on_import_workspace_from_session(harness)
+
+    assert called["owner"] is harness

@@ -293,11 +293,13 @@ class SessionFinalizeWorkflow:
         mirror_folder = SessionLifecycleService.copy_archive_item_to_mirror(
             archive_folder,
             config=config,
+            archive_kind="measurements",
         )
         if bundle_path is not None and Path(bundle_path).exists():
             SessionLifecycleService.copy_archive_item_to_mirror(
                 bundle_path,
                 config=config,
+                archive_kind="measurements",
             )
         if logger and mirror_folder is not None:
             logger.info(

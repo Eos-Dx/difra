@@ -206,8 +206,8 @@ Reject reason schema (`poni_center_review_reason`):
 
 #### Session Queue and Archive
 - Session tab shows active session info plus queue/archive tables
-- Session tab lists all `session_*.h5` containers in measurements folder
-- Close/send one, selected set, or all containers (fake cloud send in current dev mode)
+- Session tab shows the current `session_*.h5` container in measurements folder
+- Refresh, load, close, or close+send that single session container
 - Sent containers are locked, moved to session archive, and removed from pending list
 - Archive list shows sample/study/operator/created/archived metadata
 

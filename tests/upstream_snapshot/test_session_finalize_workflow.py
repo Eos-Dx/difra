@@ -112,3 +112,43 @@ def test_finalize_session_runs_lock_archive_and_bundle(tmp_path):
     assert result.old_format_dir is not None
     assert result.old_format_dir.exists() is True
     assert result.old_format_dir.parent == tmp_path / "Old_format"
+
+
+def test_finalize_session_mirrors_archive_payload_to_secondary_folder(tmp_path):
+    measurements = tmp_path / "measurements"
+    _session_id, session_path = _create_session_file(measurements, "SAMPLE_MIRROR")
+
+    (measurements / "SAMPLE_MIRROR_state.json").write_text('{"meta": true}')
+    (measurements / "raw.txt").write_text("raw")
+
+    archive_root = tmp_path / "archive" / "measurements"
+    mirror_root = tmp_path / "onedrive_archive"
+
+    result = SessionFinalizeWorkflow.finalize_session(
+        session_path=session_path,
+        measurements_folder=measurements,
+        sample_id="SAMPLE_MIRROR",
+        container_manager=container_manager,
+        lock_user="sad",
+        config={
+            "measurements_archive_folder": str(archive_root),
+            "measurements_archive_mirror_folder": str(mirror_root),
+        },
+    )
+
+    mirrored_folder = (
+        mirror_root
+        / "Archive"
+        / "measurements"
+        / result.archive_dest.name
+    )
+    assert mirrored_folder.exists() is True
+    assert (mirrored_folder / "raw.txt").exists() is True
+    assert (mirrored_folder / "SAMPLE_MIRROR_state.json").exists() is True
+    assert (mirrored_folder / result.session_path.name).exists() is True
+    assert (
+        mirror_root
+        / "Archive"
+        / "measurements"
+        / f"{result.archive_dest.name}.zip"
+    ).exists() is True
