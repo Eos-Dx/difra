@@ -41,6 +41,12 @@ class DrawingMixin:
         self.crop_act = QAction(
             "Crop", self, checkable=True, triggered=self.select_crop_mode
         )
+        self.apply_crop_act = QAction(
+            "Apply Crop", self, triggered=self.apply_crop
+        )
+        self.cancel_crop_act = QAction(
+            "Cancel Crop", self, triggered=self.cancel_crop
+        )
         self.select_act = QAction(
             "Select", self, checkable=True, triggered=self.select_select_mode
         )
@@ -55,6 +61,10 @@ class DrawingMixin:
 
         # Set the "Select" mode as the default.
         self.select_act.setChecked(True)
+        self.apply_crop_act.setEnabled(False)
+        self.cancel_crop_act.setEnabled(False)
+        if hasattr(self, "image_view"):
+            self.image_view.crop_state_changed_callback = self.update_crop_actions_state
 
     def add_drawing_actions_to_tool_bar(self) -> None:
         """
@@ -66,6 +76,8 @@ class DrawingMixin:
         self.toolbar.addAction(self.select_profile_act)
         self.toolbar.addAction(self.clear_profile_act)
         self.toolbar.addAction(self.crop_act)
+        self.toolbar.addAction(self.apply_crop_act)
+        self.toolbar.addAction(self.cancel_crop_act)
         self.toolbar.addAction(self.select_act)
 
     # Mode switching callback methods:
@@ -95,6 +107,7 @@ class DrawingMixin:
         """
         # Tell the image view to set its drawing mode to crop.
         self.image_view.set_drawing_mode("crop")
+        self.update_crop_actions_state()
 
     def select_select_mode(self) -> None:
         """
@@ -102,6 +115,32 @@ class DrawingMixin:
         """
         # Set the drawing mode to None, which typically represents the selection mode.
         self.image_view.set_drawing_mode(None)
+        self.update_crop_actions_state()
+
+    def update_crop_actions_state(self, has_crop: bool | None = None) -> None:
+        if has_crop is None:
+            image_view = getattr(self, "image_view", None)
+            has_crop = bool(getattr(image_view, "crop_item", None) is not None)
+        self.apply_crop_act.setEnabled(bool(has_crop))
+        self.cancel_crop_act.setEnabled(bool(has_crop))
+
+    def apply_crop(self) -> None:
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return
+        image_view.apply_crop_preview()
+        self.select_act.setChecked(True)
+        self.image_view.set_drawing_mode(None)
+        self.update_crop_actions_state()
+
+    def cancel_crop(self) -> None:
+        image_view = getattr(self, "image_view", None)
+        if image_view is None:
+            return
+        image_view.clear_crop_preview()
+        self.select_act.setChecked(True)
+        self.image_view.set_drawing_mode(None)
+        self.update_crop_actions_state()
 
     def create_delete_action(self) -> None:
         """

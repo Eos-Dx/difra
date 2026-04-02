@@ -7,11 +7,15 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QPointF, Qt
+from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QApplication, QGraphicsRectItem, QMainWindow
+from PyQt5.QtWidgets import QApplication, QGraphicsRectItem, QMainWindow, QMessageBox
 
-from difra.gui.extra.resizable_zone import ResizableEllipseItem, ResizableRectangleItem
+from difra.gui.extra.resizable_zone import (
+    ResizableEllipseItem,
+    ResizableRectangleItem,
+    ResizableZoneItem,
+)
 from difra.gui.main_window_ext.shape_table_extension import ShapeTableMixin
 from difra.gui.views.image_view import ImageView
 
@@ -49,6 +53,7 @@ class _ShapeHarness(QMainWindow, ShapeTableMixin):
         self._conversion_updates = 0
         self._deleted_points = 0
         self._cleared_profiles = 0
+        self._messagebox_warnings = []
         self.create_shape_table()
 
     def update_conversion_label(self):
@@ -67,6 +72,9 @@ class _ShapeHarness(QMainWindow, ShapeTableMixin):
     def _clear_profile_paths(self):
         self._cleared_profiles += 1
         self.image_view.profile_paths = []
+
+    def _append_warning(self, text: str):
+        self._messagebox_warnings.append(str(text))
 
 
 def test_sample_holder_draws_stage_limit_outline(qapp):
@@ -157,7 +165,7 @@ def test_defining_new_calibration_shape_removes_previous_one(qapp, monkeypatch):
     )
     monkeypatch.setattr(
         "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
-        staticmethod(lambda *args, **kwargs: 16384),
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
     )
 
     square_item = QGraphicsRectItem(50.0, 60.0, 100.0, 100.0)
@@ -273,6 +281,34 @@ def test_drawn_rectangle_is_immediately_resizable(qapp):
     assert callback_hits
 
 
+def test_crop_creates_editable_preview_and_applies(qapp):
+    view = ImageView()
+    pixmap = QPixmap(200, 100)
+    pixmap.fill(Qt.white)
+    view.set_image(pixmap)
+
+    view._create_crop_preview(QRectF(10.0, 15.0, 80.0, 40.0))
+
+    assert isinstance(view.crop_item, ResizableRectangleItem)
+    assert view.crop_rect is not None
+    assert any(handle.isVisible() for handle in view.crop_item._handles.values())
+
+    east_handle = view.crop_item._handles["E"]
+    view.crop_item.resize_from_handle("E", east_handle.pos() + QPointF(20.0, 0.0))
+    crop_rect = view.crop_rect
+
+    assert crop_rect is not None
+    assert crop_rect.width() > 80.0
+
+    applied = view.apply_crop_preview()
+
+    assert applied is True
+    assert view.current_pixmap.width() == int(crop_rect.width())
+    assert view.current_pixmap.height() == int(crop_rect.height())
+    assert view.crop_item is None
+    assert view.crop_rect is None
+
+
 def test_calibration_geometry_change_clears_points_profiles_and_non_calibration_shapes(qapp, monkeypatch):
     harness = _ShapeHarness()
     monkeypatch.setattr(
@@ -281,7 +317,7 @@ def test_calibration_geometry_change_clears_points_profiles_and_non_calibration_
     )
     monkeypatch.setattr(
         "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
-        staticmethod(lambda *args, **kwargs: 16384),
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
     )
 
     circle_item = ResizableEllipseItem(100.0, 100.0, 120.0, 80.0)
@@ -324,9 +360,169 @@ def test_calibration_geometry_change_clears_points_profiles_and_non_calibration_
     assert harness._deleted_points >= 1
     assert harness._cleared_profiles >= 1
     assert include_info not in harness.image_view.shapes
-    assert exclude_info not in harness.image_view.shapes
-    assert circle_info in harness.image_view.shapes
+
+
+def test_define_holder_circle_keeps_moved_ellipse_center(qapp, monkeypatch):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QInputDialog.getDouble",
+        staticmethod(lambda *args, **kwargs: (15.18, True)),
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.No),
+    )
+
+    ellipse_item = ResizableEllipseItem(100.0, 120.0, 80.0, 40.0)
+    harness.image_view.scene.addItem(ellipse_item)
+    ellipse_item.setPos(35.0, -15.0)
+    original_scene_rect = ellipse_item.mapRectToScene(ellipse_item.rect())
+    original_center = original_scene_rect.center()
+    ellipse_item._normalize_translation()
+
+    circle_info = {
+        "id": 1,
+        "uid": "holder_from_moved_ellipse",
+        "type": "Circle",
+        "item": ellipse_item,
+        "role": "include",
+    }
+    harness.image_view.shapes.append(circle_info)
+
+    harness.define_shape_as_calibration_role(circle_info, harness.ROLE_HOLDER_CIRCLE)
+
+    new_item = circle_info["item"]
+    new_rect = new_item.mapRectToScene(new_item.rect())
+    new_center = new_rect.center()
     assert circle_info["role"] == harness.ROLE_HOLDER_CIRCLE
+    assert isinstance(new_item, ResizableEllipseItem)
+    assert new_rect.width() == pytest.approx(original_scene_rect.width())
+    assert new_rect.height() == pytest.approx(original_scene_rect.height())
+    assert new_center.x() == pytest.approx(original_center.x())
+    assert new_center.y() == pytest.approx(original_center.y())
+
+
+def test_deleting_holder_circle_clears_all_shapes_points_and_profiles_before_measurements(
+    qapp, monkeypatch
+):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.warning",
+        staticmethod(lambda *args, **kwargs: harness._append_warning(args[2] if len(args) > 2 else "")),
+    )
+
+    holder_item = ResizableZoneItem(120.0, 100.0, 40.0)
+    include_item = ResizableRectangleItem(80.0, 80.0, 60.0, 40.0)
+    harness.image_view.scene.addItem(holder_item)
+    harness.image_view.scene.addItem(include_item)
+    holder_info = {
+        "id": 1,
+        "uid": "holder_delete_all",
+        "type": "Circle",
+        "item": holder_item,
+        "role": harness.ROLE_HOLDER_CIRCLE,
+    }
+    include_info = {
+        "id": 2,
+        "uid": "include_delete_all",
+        "type": "Rectangle",
+        "item": include_item,
+        "role": "include",
+    }
+    harness.image_view.shapes.extend([holder_info, include_info])
+    harness.image_view.profile_paths = [{"id": "p1", "item": object(), "points": [(0.0, 0.0), (1.0, 1.0)]}]
+    harness.image_view.points_dict["generated"]["points"] = [object()]
+    harness.image_view.points_dict["generated"]["zones"] = [object()]
+
+    changed = harness._delete_shape_infos([holder_info])
+
+    assert changed is True
+    assert harness.image_view.shapes == []
+    assert harness._deleted_points >= 1
+    assert harness._cleared_profiles >= 1
+    assert harness._messagebox_warnings == []
+
+
+def test_deleting_include_shape_clears_points_and_profiles_before_measurements(
+    qapp, monkeypatch
+):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.warning",
+        staticmethod(lambda *args, **kwargs: harness._append_warning(args[2] if len(args) > 2 else "")),
+    )
+
+    include_item = ResizableRectangleItem(80.0, 80.0, 60.0, 40.0)
+    exclude_item = ResizableEllipseItem(140.0, 90.0, 40.0, 40.0)
+    harness.image_view.scene.addItem(include_item)
+    harness.image_view.scene.addItem(exclude_item)
+    include_info = {
+        "id": 1,
+        "uid": "include_delete_points",
+        "type": "Rectangle",
+        "item": include_item,
+        "role": "include",
+    }
+    exclude_info = {
+        "id": 2,
+        "uid": "exclude_keep",
+        "type": "Circle",
+        "item": exclude_item,
+        "role": "exclude",
+    }
+    harness.image_view.shapes.extend([include_info, exclude_info])
+    harness.image_view.profile_paths = [{"id": "p1", "item": object(), "points": [(0.0, 0.0), (1.0, 1.0)]}]
+    harness.image_view.points_dict["generated"]["points"] = [object()]
+    harness.image_view.points_dict["generated"]["zones"] = [object()]
+
+    changed = harness._delete_shape_infos([include_info])
+
+    assert changed is True
+    assert include_info not in harness.image_view.shapes
+    assert exclude_info in harness.image_view.shapes
+    assert harness._deleted_points >= 1
+    assert harness._cleared_profiles >= 1
+    assert harness._messagebox_warnings == []
+
+
+def test_measured_shapes_cannot_be_deleted_but_new_shapes_can(qapp, monkeypatch):
+    harness = _ShapeHarness()
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.shape_table_extension.QMessageBox.warning",
+        staticmethod(lambda *args, **kwargs: harness._append_warning(args[2] if len(args) > 2 else "")),
+    )
+    harness.session_manager = SimpleNamespace(has_point_measurements=lambda: True)
+
+    locked_item = ResizableRectangleItem(50.0, 50.0, 40.0, 40.0)
+    new_item = ResizableRectangleItem(140.0, 50.0, 40.0, 40.0)
+    harness.image_view.scene.addItem(locked_item)
+    harness.image_view.scene.addItem(new_item)
+    locked_info = {
+        "id": 1,
+        "uid": "locked_shape",
+        "type": "Rectangle",
+        "item": locked_item,
+        "role": "include",
+        "locked_after_measurements": True,
+        "isNew": False,
+    }
+    new_info = {
+        "id": 2,
+        "uid": "new_shape",
+        "type": "Rectangle",
+        "item": new_item,
+        "role": "include",
+        "locked_after_measurements": False,
+        "isNew": True,
+    }
+    harness.image_view.shapes.extend([locked_info, new_info])
+
+    changed = harness._delete_shape_infos([locked_info, new_info])
+
+    assert changed is True
+    assert locked_info in harness.image_view.shapes
+    assert new_info not in harness.image_view.shapes
+    assert any("cannot be deleted" in text for text in harness._messagebox_warnings)
 
 
 def test_stage_limit_outline_uses_holder_center_and_beam_center_mm(qapp):

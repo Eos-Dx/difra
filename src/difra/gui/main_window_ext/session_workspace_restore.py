@@ -33,6 +33,7 @@ def restore_session_workspace_from_container(owner, session_path: Path):
         restored_rotation_confirmed = False
         restored_beam_center = None
         restored_load_position = None
+        restored_has_measurements = False
 
         with h5py.File(session_path, "r") as h5f:
             images_group = h5f.get(schema.GROUP_IMAGES)
@@ -138,6 +139,16 @@ def restore_session_workspace_from_container(owner, session_path: Path):
                         }
                     )
 
+            measurements_group = h5f.get(schema.GROUP_MEASUREMENTS)
+            if measurements_group is not None:
+                for point_group in measurements_group.values():
+                    try:
+                        if len(point_group.keys()) > 0:
+                            restored_has_measurements = True
+                            break
+                    except Exception:
+                        continue
+
             mapping_ds = h5f.get(f"{schema.GROUP_IMAGES_MAPPING}/mapping")
             if mapping_ds is not None:
                 mapping_raw = mapping_ds[()]
@@ -191,6 +202,10 @@ def restore_session_workspace_from_container(owner, session_path: Path):
 
         owner.state["shapes"] = restored_shapes
         owner.state["zone_points"] = restored_points
+        if restored_has_measurements:
+            for shape in owner.state["shapes"]:
+                shape["locked_after_measurements"] = True
+                shape["isNew"] = False
         owner._sample_photo_has_explicit_holder_circle = any(
             str(shape.get("role", "") or "").lower()
             in ("holder circle", "calibration square")

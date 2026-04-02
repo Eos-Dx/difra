@@ -21,6 +21,9 @@ class ImageViewBasic(QGraphicsView):
         # Store the file path if provided.
         if image_path:
             self.current_image_path = image_path
+        self.crop_rect = None
+        if hasattr(self, "crop_item"):
+            self.crop_item = None
         self.scene.clear()
         self.image_item = self.scene.addPixmap(pixmap)
         # Reset rotation angle when a new image is set.
