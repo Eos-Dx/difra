@@ -251,6 +251,77 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
 
 
+def test_send_and_archive_non_integer_specimen_fails_explicitly(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    _add_complete_session_payload(path_a)
+
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
+    )
+
+    assert result.moved == 1
+    assert result.upload_success == 0
+    assert result.upload_failed == 1
+    archived = result.archived_paths[0]
+    assert container_manager.get_transfer_status(archived) == "unsent"
+    with h5py.File(archived, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "failed"
+        assert "must be an integer" in str(h5f.attrs.get("upload_result_message", ""))
+        assert "326111__326169" in str(h5f.attrs.get("upload_result_message", ""))
+
+
+def test_reupload_archived_container_allows_specimen_override(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    _add_complete_session_payload(path_a)
+
+    first_result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
+    )
+    archived = first_result.archived_paths[0]
+
+    resend_result = SessionLifecycleActions.reupload_archived_session_containers(
+        container_paths=[archived],
+        container_manager=container_manager,
+        lock_user="sad",
+        uploader_id="sad",
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
+        specimen_overrides={str(archived): 326111},
+    )
+
+    assert resend_result.upload_success == 1
+    assert resend_result.upload_failed == 0
+    assert container_manager.get_transfer_status(archived) == "sent"
+    with h5py.File(archived, "r") as h5f:
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326111
+        assert h5f.attrs.get("upload_status") == "success"
+        assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
+
+
 def test_send_and_archive_old_format_export_enabled_by_default(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"

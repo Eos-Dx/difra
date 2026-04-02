@@ -218,6 +218,61 @@ def test_session_queue_send_selected_and_all(qapp, tmp_path, monkeypatch):
     harness._apply_archive_filters()
 
 
+def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    session_path = _create_session_file(measurements_folder, "326111__326169", "STUDY_A")
+    _make_session_complete(session_path)
+
+    session_manager = _FakeSessionManager()
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
+        session_manager=session_manager,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    monkeypatch.setattr(
+        harness,
+        "_request_upload_login_context",
+        lambda fallback_operator: {
+            "uploader_id": fallback_operator,
+            "token": "",
+            "matador_url": "https://dev-gamma.matur.co.uk",
+        },
+    )
+
+    harness._send_and_archive_sessions([session_path])
+    qapp.processEvents()
+
+    archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
+    assert len(archived_files) == 1
+    archived = archived_files[0]
+    with h5py.File(archived, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "failed"
+
+    monkeypatch.setattr(harness, "_request_matador_specimen_override", lambda **kwargs: 326111)
+    harness._send_archived_sessions([archived])
+    qapp.processEvents()
+
+    with h5py.File(archived, "r") as h5f:
+        assert int(h5f.attrs.get("matadorSpecimenId")) == 326111
+        assert h5f.attrs.get("upload_status") == "success"
+        assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
+
+
 def test_session_tab_close_finalize_active_session(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
