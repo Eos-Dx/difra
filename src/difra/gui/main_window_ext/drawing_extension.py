@@ -32,6 +32,9 @@ class DrawingMixin:
         self.select_ellipse_act = QAction(
             "Circle", self, checkable=True, triggered=self.select_ellipse_mode
         )
+        self.catch_auto_act = QAction(
+            "Catch Auto", self, triggered=self.catch_auto_selected_shape
+        )
         self.select_profile_act = QAction(
             "Draw Profile", self, checkable=True, triggered=self.select_profile_mode
         )
@@ -73,6 +76,7 @@ class DrawingMixin:
         # Add each drawing mode action to the toolbar.
         self.toolbar.addAction(self.select_rect_act)
         self.toolbar.addAction(self.select_ellipse_act)
+        self.toolbar.addAction(self.catch_auto_act)
         self.toolbar.addAction(self.select_profile_act)
         self.toolbar.addAction(self.clear_profile_act)
         self.toolbar.addAction(self.crop_act)
@@ -100,6 +104,11 @@ class DrawingMixin:
         Switch to freehand profile drawing mode.
         """
         self.image_view.set_drawing_mode("profile")
+
+    def catch_auto_selected_shape(self) -> None:
+        catcher = getattr(self, "catch_auto_selected_calibration_shape", None)
+        if callable(catcher):
+            catcher()
 
     def select_crop_mode(self) -> None:
         """
