@@ -150,9 +150,10 @@
     "expected_technical_schema_version": "0.2",
     "difra_base_folder": "D:\\Data",
     "technical_folder": "D:\\Data\\technical",
-    "technical_archive_folder": "D:\\Data\\archive\\technical",
+    "technical_archive_folder": "D:\\Data\\Archive\\technical",
     "measurements_folder": "D:\\Data\\measurements",
-    "measurements_archive_folder": "D:\\Data\\archive\\measurements",
+    "measurements_archive_folder": "D:\\Data\\Archive\\measurements",
+    "measurements_archive_mirror_folder": "C:\\Users\\Ulster_matur\\OneDrive - Matur\\General - Ulster\\Measurements_Grant_1_2_and_4",
     "poni_center_validation": {
         "enabled": true,
         "apply_in_dev_mode": false,

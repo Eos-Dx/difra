@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import numpy as np
 from PIL import Image
+from container import loader
+from container.registry import load_version_module
 
 
 @dataclass
@@ -36,6 +38,17 @@ class SessionOldFormatExporter:
         "AGBH": "AgBH",
         "BACKGROUND": "Bg",
     }
+
+    @staticmethod
+    def _schema_for_h5(h5f: h5py.File):
+        file_name = getattr(h5f, "filename", None)
+        if file_name:
+            try:
+                resolved_version = loader.detect_version(Path(file_name))
+                return load_version_module(resolved_version.replace(".", "_")).schema
+            except Exception:
+                pass
+        return None
 
     @staticmethod
     def _as_text(value: Any, default: str = "") -> str:
@@ -67,6 +80,18 @@ class SessionOldFormatExporter:
             return float(value)
         except Exception:
             return None
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            try:
+                return int(str(value).strip())
+            except Exception:
+                return None
 
     @staticmethod
     def _npy_bytes(array: Any) -> bytes:
@@ -210,6 +235,21 @@ class SessionOldFormatExporter:
         return None
 
     @classmethod
+    def _extract_xy_pair(cls, value: Any) -> Tuple[Optional[float], Optional[float]]:
+        if value is None:
+            return None, None
+        try:
+            coords = np.asarray(value).flatten().tolist()
+        except Exception:
+            return None, None
+        if len(coords) < 2:
+            return None, None
+        try:
+            return float(coords[0]), float(coords[1])
+        except Exception:
+            return None, None
+
+    @classmethod
     def resolve_old_format_root(
         cls,
         *,
@@ -239,11 +279,14 @@ class SessionOldFormatExporter:
         h5f: h5py.File,
         point_name: str,
     ) -> Tuple[Optional[float], Optional[float]]:
-        points_group = h5f.get("/entry/points")
+        schema = cls._schema_for_h5(h5f)
+        points_group = h5f.get(getattr(schema, "GROUP_POINTS", "/entry/points"))
         if points_group is None or point_name not in points_group:
             return None, None
         point_group = points_group[point_name]
-        coords = point_group.attrs.get("physical_coordinates_mm")
+        coords = point_group.attrs.get(
+            getattr(schema, "ATTR_PHYSICAL_COORDINATES_MM", "physical_coordinates_mm")
+        )
         if coords is None:
             return None, None
         arr = np.asarray(coords).flatten().tolist()
@@ -257,7 +300,8 @@ class SessionOldFormatExporter:
     @classmethod
     def _build_measurement_points(cls, h5f: h5py.File) -> List[Dict[str, Any]]:
         points: List[Dict[str, Any]] = []
-        points_group = h5f.get("/entry/points")
+        schema = cls._schema_for_h5(h5f)
+        points_group = h5f.get(getattr(schema, "GROUP_POINTS", "/entry/points"))
         if points_group is None:
             return points
 
@@ -427,9 +471,8 @@ class SessionOldFormatExporter:
     @classmethod
     def _extract_image_bytes_from_container(cls, h5f: h5py.File) -> Optional[bytes]:
         """Best-effort recovery of a representative JPG from session image datasets."""
-        images_group = h5f.get("/entry/images")
-        if images_group is None:
-            images_group = h5f.get("/images")
+        schema = cls._schema_for_h5(h5f)
+        images_group = h5f.get(getattr(schema, "GROUP_IMAGES", "/entry/images"))
         if images_group is None:
             return None
 
@@ -442,7 +485,10 @@ class SessionOldFormatExporter:
                 continue
             if "data" not in item:
                 continue
-            image_type = cls._as_text(item.attrs.get("image_type"), "").strip().lower()
+            image_type = cls._as_text(
+                item.attrs.get(getattr(schema, "ATTR_IMAGE_TYPE", "image_type")),
+                "",
+            ).strip().lower()
             image_groups.append((0 if image_type == "sample" else 1, str(key), item))
 
         if not image_groups:
@@ -504,23 +550,39 @@ class SessionOldFormatExporter:
     @classmethod
     def _collect_fallback_timestamps(cls, h5f: h5py.File) -> List[str]:
         values: List[str] = []
+        schema = cls._schema_for_h5(h5f)
 
-        technical_group = h5f.get("/entry/technical")
+        technical_group = h5f.get(getattr(schema, "GROUP_TECHNICAL", "/entry/technical"))
         if technical_group is not None:
             for event_name in sorted(technical_group.keys()):
                 if not str(event_name).startswith("tech_evt_"):
                     continue
                 event_group = technical_group[event_name]
-                values.append(cls._as_text(event_group.attrs.get("timestamp"), ""))
+                values.append(
+                    cls._as_text(
+                        event_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP", "timestamp")),
+                        "",
+                    )
+                )
 
-        measurements_group = h5f.get("/entry/measurements")
+        measurements_group = h5f.get(getattr(schema, "GROUP_MEASUREMENTS", "/entry/measurements"))
         if measurements_group is not None:
             for point_name in sorted(measurements_group.keys()):
                 point_group = measurements_group[point_name]
                 for meas_name in sorted(point_group.keys()):
                     meas_group = point_group[meas_name]
-                    values.append(cls._as_text(meas_group.attrs.get("timestamp_end"), ""))
-                    values.append(cls._as_text(meas_group.attrs.get("timestamp_start"), ""))
+                    values.append(
+                        cls._as_text(
+                            meas_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP_END", "timestamp_end")),
+                            "",
+                        )
+                    )
+                    values.append(
+                        cls._as_text(
+                            meas_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP_START", "timestamp_start")),
+                            "",
+                        )
+                    )
 
         return [v for v in values if str(v).strip()]
 
@@ -532,20 +594,26 @@ class SessionOldFormatExporter:
         day_token: str,
         default_distance_int: int,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        technical_group = h5f.get("/entry/technical")
+        schema = cls._schema_for_h5(h5f)
+        technical_group = h5f.get(getattr(schema, "GROUP_TECHNICAL", "/entry/technical"))
         if technical_group is None:
             return [], int(default_distance_int)
 
         poni_by_path: Dict[str, str] = {}
         poni_by_alias: Dict[str, str] = {}
-        poni_group = technical_group.get("poni")
+        poni_group = h5f.get(
+            getattr(schema, "GROUP_TECHNICAL_PONI", f"{technical_group.name}/poni")
+        )
         if poni_group is not None:
             for poni_name in sorted(poni_group.keys()):
                 poni_ds = poni_group[poni_name]
                 text = cls._as_text(poni_ds[()], "")
                 ds_path = f"{poni_group.name}/{poni_name}"
                 poni_by_path[ds_path] = text
-                alias = cls._as_text(poni_ds.attrs.get("detector_alias"), "").upper()
+                alias = cls._as_text(
+                    poni_ds.attrs.get(getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")),
+                    "",
+                ).upper()
                 if alias:
                     poni_by_alias[alias] = text
 
@@ -556,8 +624,17 @@ class SessionOldFormatExporter:
             if not str(event_name).startswith("tech_evt_"):
                 continue
             event_group = technical_group[event_name]
-            event_type = cls._as_text(event_group.attrs.get("type"), "UNKNOWN").upper()
-            event_ts = cls._normalize_timestamp_token(event_group.attrs.get("timestamp"), day_token)
+            event_type = cls._as_text(
+                event_group.attrs.get(
+                    "type",
+                    event_group.attrs.get(getattr(schema, "ATTR_TECHNICAL_TYPE", "technical_type")),
+                ),
+                "UNKNOWN",
+            ).upper()
+            event_ts = cls._normalize_timestamp_token(
+                event_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP", "timestamp")),
+                day_token,
+            )
             event_is_primary = bool(event_group.attrs.get("is_primary", False))
             event_distance = cls._extract_distance_from_attrs(event_group.attrs)
             if event_distance is not None:
@@ -573,14 +650,18 @@ class SessionOldFormatExporter:
                 if not str(det_name).startswith("det_"):
                     continue
                 det_group = event_group[det_name]
-                if "processed_signal" not in det_group:
+                dataset_processed_signal = getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal")
+                if dataset_processed_signal not in det_group:
                     continue
 
                 alias = cls._as_text(
-                    det_group.attrs.get("detector_alias"),
+                    det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")),
                     str(det_name).replace("det_", "").upper(),
                 ).upper()
-                detector_id = cls._as_text(det_group.attrs.get("detector_id"), alias)
+                detector_id = cls._as_text(
+                    det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id")),
+                    alias,
+                )
                 integration_ms = cls._to_float(det_group.attrs.get("integration_time_ms"))
                 integration_s = None
                 if integration_ms is not None:
@@ -600,7 +681,11 @@ class SessionOldFormatExporter:
                         raw_blobs[str(blob_name)] = cls._read_blob_bytes(blob_group[blob_name])
 
                 poni_text = None
-                poni_path = cls._as_text(det_group.attrs.get("poni_path"), "")
+                poni_path = cls._as_text(
+                    det_group.attrs.get(getattr(schema, "ATTR_PONI_REF", "poni_ref"))
+                    or det_group.attrs.get("poni_path"),
+                    "",
+                )
                 if poni_path:
                     poni_text = poni_by_path.get(poni_path)
                 if poni_text is None:
@@ -615,7 +700,7 @@ class SessionOldFormatExporter:
                         "detector_id": detector_id,
                         "integration_s": integration_s,
                         "is_primary": bool(event_is_primary),
-                        "processed_signal": np.asarray(det_group["processed_signal"][()]),
+                        "processed_signal": np.asarray(det_group[dataset_processed_signal][()]),
                         "raw_blobs": raw_blobs,
                         "poni_text": poni_text,
                     }
@@ -898,6 +983,302 @@ class SessionOldFormatExporter:
         return by_txt, by_npy, by_uid_alias, by_uid_detector
 
     @classmethod
+    def _resolve_attenuation_role(
+        cls,
+        *,
+        analysis_type: str,
+        analysis_role: str,
+        has_i0_already: bool,
+    ) -> Optional[str]:
+        att_type = analysis_type.strip().lower()
+        att_role = analysis_role.strip().lower()
+
+        if att_role in {"i0", "without", "without_sample"} or att_type in {
+            "attenuation_i0",
+            "attenuation_without",
+            "attenuation_without_sample",
+        }:
+            return "without_sample"
+        if att_role in {"i", "with", "with_sample"} or att_type in {
+            "attenuation_i",
+            "attenuation_with",
+            "attenuation_with_sample",
+        }:
+            return "with_sample"
+
+        if att_type and not att_type.startswith("attenuation"):
+            return None
+        return "with_sample" if has_i0_already else "without_sample"
+
+    @classmethod
+    def _extract_point_indices_from_refs(
+        cls,
+        *,
+        h5f: h5py.File,
+        refs: Any,
+    ) -> List[int]:
+        indices: List[int] = []
+        for ref in np.asarray(refs).flatten().tolist():
+            try:
+                point_obj = h5f[ref]
+            except Exception:
+                continue
+            match = re.search(r"pt_(\d+)$", getattr(point_obj, "name", ""))
+            if not match:
+                continue
+            indices.append(int(match.group(1)))
+        return indices
+
+    @classmethod
+    def _copy_attenuation_source_files(
+        cls,
+        *,
+        sample_dir: Path,
+        state_payload: Dict[str, Any],
+    ) -> Tuple[int, Dict[str, Dict[str, Dict[str, str]]]]:
+        copied_count = 0
+        copied: Dict[str, Dict[str, Dict[str, str]]] = {}
+        source_cache: Dict[str, str] = {}
+        raw = state_payload.get("attenuation_files")
+        if not isinstance(raw, dict):
+            return copied_count, copied
+
+        for point_uid, point_roles in raw.items():
+            if not isinstance(point_roles, dict):
+                continue
+            point_uid_text = cls._as_text(point_uid, "").strip()
+            if not point_uid_text:
+                continue
+
+            for role_key in ("without_sample", "with_sample"):
+                alias_map = point_roles.get(role_key)
+                if not isinstance(alias_map, dict):
+                    continue
+
+                for alias, source_value in sorted(alias_map.items()):
+                    alias_text = cls._as_text(alias, "").strip()
+                    source_text = cls._as_text(source_value, "").strip()
+                    if not alias_text or not source_text:
+                        continue
+
+                    source_path = Path(source_text)
+                    cache_key = source_text
+                    try:
+                        cache_key = str(source_path.resolve())
+                    except Exception:
+                        pass
+
+                    exported_path = source_cache.get(cache_key)
+                    if exported_path is None:
+                        try:
+                            if not source_path.exists() or not source_path.is_file():
+                                continue
+                            payload = source_path.read_bytes()
+                            target_name = source_path.name or f"{cls._safe_token(alias_text, 'detector')}.npy"
+                            target_path = sample_dir / target_name
+                            if target_path.exists() and target_path.read_bytes() != payload:
+                                target_path = cls._unique_path(sample_dir, target_name)
+                            target_path.write_bytes(payload)
+                            exported_path = str(target_path.resolve())
+                            source_cache[cache_key] = exported_path
+                            copied_count += 1
+                        except Exception:
+                            continue
+
+                    copied.setdefault(point_uid_text, {}).setdefault(role_key, {})[alias_text] = exported_path
+
+        return copied_count, copied
+
+    @classmethod
+    def _export_attenuation_from_container(
+        cls,
+        *,
+        h5f: h5py.File,
+        sample_dir: Path,
+        sample_base_with_distance: str,
+        day_token: str,
+        point_uid_by_session_index: Dict[int, str],
+    ) -> Tuple[int, Dict[str, Dict[str, Dict[str, str]]]]:
+        schema = cls._schema_for_h5(h5f)
+        ana_group = h5f.get(
+            getattr(schema, "GROUP_ANALYTICAL_MEASUREMENTS", "/analytical_measurements")
+        )
+        if ana_group is None:
+            return 0, {}
+
+        exported = 0
+        attenuation_files: Dict[str, Dict[str, Dict[str, str]]] = {}
+        path_cache: Dict[Tuple[str, str], str] = {}
+        seen_i0 = False
+
+        type_attr_name = getattr(schema, "ATTR_ANALYSIS_TYPE", "analysis_type")
+        role_attr_name = getattr(schema, "ATTR_ANALYSIS_ROLE", "analysis_role")
+        point_ids_attr_name = getattr(schema, "ATTR_POINT_IDS", "point_ids")
+        point_refs_attr_name = getattr(schema, "ATTR_POINT_REFS", "point_refs")
+        timestamp_end_attr_name = getattr(schema, "ATTR_TIMESTAMP_END", "timestamp_end")
+        timestamp_start_attr_name = getattr(schema, "ATTR_TIMESTAMP_START", "timestamp_start")
+        dataset_processed_signal = getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal")
+
+        for ana_name in sorted(ana_group.keys()):
+            ana_item = ana_group[ana_name]
+            analysis_type = cls._as_text(ana_item.attrs.get(type_attr_name), "")
+            analysis_role = cls._as_text(ana_item.attrs.get(role_attr_name), "")
+            role_key = cls._resolve_attenuation_role(
+                analysis_type=analysis_type,
+                analysis_role=analysis_role,
+                has_i0_already=seen_i0,
+            )
+            if role_key is None:
+                continue
+            if role_key == "without_sample":
+                seen_i0 = True
+
+            point_indices: List[int] = []
+            point_ids_raw = ana_item.attrs.get(point_ids_attr_name)
+            if point_ids_raw is not None:
+                for point_id in np.asarray(point_ids_raw).flatten().tolist():
+                    point_idx = cls._safe_int(point_id)
+                    if point_idx is not None:
+                        point_indices.append(point_idx)
+            if not point_indices:
+                point_refs = ana_item.attrs.get(point_refs_attr_name)
+                if point_refs is not None:
+                    point_indices = cls._extract_point_indices_from_refs(h5f=h5f, refs=point_refs)
+            if role_key == "without_sample" and not point_indices:
+                point_indices = sorted(point_uid_by_session_index.keys())
+
+            ts_token = cls._normalize_timestamp_token(
+                ana_item.attrs.get(timestamp_end_attr_name)
+                or ana_item.attrs.get(timestamp_start_attr_name),
+                day_token,
+            )
+
+            for det_name in sorted(ana_item.keys()):
+                if not str(det_name).startswith("det_"):
+                    continue
+                det_group = ana_item[det_name]
+                if dataset_processed_signal not in det_group:
+                    continue
+
+                detector_alias = cls._as_text(
+                    det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")),
+                    str(det_name).replace("det_", "").upper(),
+                ).upper()
+                alias_token = cls._safe_token(detector_alias, "DETECTOR").upper()
+                cache_key = (str(ana_name), detector_alias)
+                exported_path = path_cache.get(cache_key)
+
+                if exported_path is None:
+                    if role_key == "with_sample":
+                        x_mm = y_mm = None
+                        if point_indices:
+                            x_mm, y_mm = cls._extract_point_coordinates(
+                                h5f, f"pt_{int(point_indices[0]):03d}"
+                            )
+                        if x_mm is None or y_mm is None:
+                            point_position = det_group.attrs.get("point_position_mm")
+                            if point_position is None:
+                                point_position = ana_item.attrs.get("point_position_mm")
+                            x_mm, y_mm = cls._extract_xy_pair(
+                                point_position
+                            )
+                        base = (
+                            f"{sample_base_with_distance}_"
+                            f"{cls._format_coord_token(x_mm)}_"
+                            f"{cls._format_coord_token(y_mm)}_"
+                            f"{ts_token}__{alias_token}_ATTENUATION"
+                        )
+                    else:
+                        base = f"{sample_base_with_distance}_{ts_token}__{alias_token}_ATTENUATION0"
+
+                    npy_name = f"{base}.npy"
+                    cls._write_bytes_if_changed(
+                        sample_dir / npy_name,
+                        cls._npy_bytes(det_group[dataset_processed_signal][()]),
+                    )
+                    exported_path = str((sample_dir / npy_name).resolve())
+                    path_cache[cache_key] = exported_path
+                    exported += 1
+
+                    blob_group = det_group.get("blob")
+                    has_txt_blob = False
+                    if blob_group is not None:
+                        for blob_name in sorted(blob_group.keys()):
+                            if not str(blob_name).startswith("raw_"):
+                                continue
+                            ext = str(blob_name)[4:] or "bin"
+                            if ext == "txt":
+                                raw_name = f"{base}.txt"
+                                has_txt_blob = True
+                            elif ext == "dsc":
+                                raw_name = f"{base}.txt.dsc"
+                            else:
+                                raw_name = f"{base}.{ext}"
+                            cls._write_bytes_if_changed(
+                                sample_dir / raw_name,
+                                cls._read_blob_bytes(blob_group[blob_name]),
+                            )
+                            exported += 1
+
+                    if not has_txt_blob:
+                        try:
+                            txt_buffer = io.StringIO()
+                            np.savetxt(
+                                txt_buffer,
+                                np.asarray(det_group[dataset_processed_signal][()]),
+                            )
+                            cls._write_bytes_if_changed(
+                                sample_dir / f"{base}.txt",
+                                txt_buffer.getvalue().encode("utf-8"),
+                            )
+                            exported += 1
+                        except Exception:
+                            pass
+
+                for point_index in point_indices:
+                    point_uid = point_uid_by_session_index.get(int(point_index))
+                    if not point_uid:
+                        continue
+                    attenuation_files.setdefault(point_uid, {}).setdefault(role_key, {})[
+                        detector_alias
+                    ] = exported_path
+
+        return exported, attenuation_files
+
+    @classmethod
+    def _export_attenuation_files(
+        cls,
+        *,
+        h5f: h5py.File,
+        sample_dir: Path,
+        sample_base_with_distance: str,
+        day_token: str,
+        state_payload: Dict[str, Any],
+        point_uid_by_session_index: Dict[int, str],
+    ) -> Tuple[int, Dict[str, Dict[str, Dict[str, str]]]]:
+        copied_count, copied_state = cls._copy_attenuation_source_files(
+            sample_dir=sample_dir,
+            state_payload=state_payload,
+        )
+        container_count, container_files = cls._export_attenuation_from_container(
+            h5f=h5f,
+            sample_dir=sample_dir,
+            sample_base_with_distance=sample_base_with_distance,
+            day_token=day_token,
+            point_uid_by_session_index=point_uid_by_session_index,
+        )
+
+        merged: Dict[str, Dict[str, Dict[str, str]]] = {}
+        for source in (copied_state, container_files):
+            for point_uid, point_roles in source.items():
+                for role_key, alias_map in point_roles.items():
+                    target = merged.setdefault(point_uid, {}).setdefault(role_key, {})
+                    for alias, file_path in alias_map.items():
+                        target.setdefault(alias, file_path)
+
+        return copied_count + container_count, merged
+
+    @classmethod
     def _export_measurement_raw(
         cls,
         *,
@@ -914,7 +1295,8 @@ class SessionOldFormatExporter:
             Dict[Tuple[str, str], Dict[str, Any]],
         ],
     ) -> Tuple[int, Dict[str, Dict[str, Any]]]:
-        measurements_group = h5f.get("/entry/measurements")
+        schema = cls._schema_for_h5(h5f)
+        measurements_group = h5f.get(getattr(schema, "GROUP_MEASUREMENTS", "/entry/measurements"))
         if measurements_group is None:
             return 0, {}
 
@@ -935,8 +1317,8 @@ class SessionOldFormatExporter:
             for meas_name in sorted(point_group.keys()):
                 measurement_group = point_group[meas_name]
                 ts_token = cls._normalize_timestamp_token(
-                    measurement_group.attrs.get("timestamp_end")
-                    or measurement_group.attrs.get("timestamp_start"),
+                    measurement_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP_END", "timestamp_end"))
+                    or measurement_group.attrs.get(getattr(schema, "ATTR_TIMESTAMP_START", "timestamp_start")),
                     day_token,
                 )
 
@@ -944,14 +1326,18 @@ class SessionOldFormatExporter:
                     if not str(det_name).startswith("det_"):
                         continue
                     det_group = measurement_group[det_name]
-                    if "processed_signal" not in det_group:
+                    dataset_processed_signal = getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal")
+                    if dataset_processed_signal not in det_group:
                         continue
 
                     detector_alias = cls._as_text(
-                        det_group.attrs.get("detector_alias"),
+                        det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")),
                         str(det_name).replace("det_", "").upper(),
                     ).upper()
-                    detector_id = cls._as_text(det_group.attrs.get("detector_id"), detector_alias)
+                    detector_id = cls._as_text(
+                        det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id")),
+                        detector_alias,
+                    )
                     alias_token = cls._safe_token(detector_alias, "DETECTOR").upper()
 
                     base = (
@@ -964,7 +1350,7 @@ class SessionOldFormatExporter:
                     npy_name = f"{base}.npy"
                     txt_name = f"{base}.txt"
 
-                    npy_payload = cls._npy_bytes(det_group["processed_signal"][()])
+                    npy_payload = cls._npy_bytes(det_group[dataset_processed_signal][()])
                     cls._write_bytes_if_changed(sample_dir / npy_name, npy_payload)
                     exported += 1
 
@@ -992,7 +1378,7 @@ class SessionOldFormatExporter:
                         # Keep old-style keying by .txt when session lacks raw txt blob.
                         try:
                             txt_buffer = io.StringIO()
-                            np.savetxt(txt_buffer, np.asarray(det_group["processed_signal"][()]))
+                            np.savetxt(txt_buffer, np.asarray(det_group[dataset_processed_signal][()]))
                             txt_payload = txt_buffer.getvalue().encode("utf-8")
                             cls._write_bytes_if_changed(sample_dir / txt_name, txt_payload)
                             exported += 1
@@ -1001,7 +1387,9 @@ class SessionOldFormatExporter:
                             has_txt_blob = False
 
                     integration_s = None
-                    integration_ms = cls._to_float(det_group.attrs.get("integration_time_ms"))
+                    integration_ms = cls._to_float(
+                        det_group.attrs.get(getattr(schema, "ATTR_INTEGRATION_TIME_MS", "integration_time_ms"))
+                    )
                     if integration_ms is not None:
                         integration_s = integration_ms / 1000.0
 
@@ -1155,6 +1543,20 @@ class SessionOldFormatExporter:
             )
 
             state_payload["measurements_meta"] = measurements_meta
+
+            attenuation_count, attenuation_files = cls._export_attenuation_files(
+                h5f=h5f,
+                sample_dir=sample_dir,
+                sample_base_with_distance=sample_base_with_distance,
+                day_token=day_token,
+                state_payload=state_payload,
+                point_uid_by_session_index=point_uid_by_session_index,
+            )
+            raw_count += attenuation_count
+            if attenuation_files:
+                state_payload["attenuation_files"] = attenuation_files
+            elif "attenuation_files" in state_payload:
+                state_payload["attenuation_files"] = {}
 
             if technical_aux_map:
                 preferred_types = ["DARK", "EMPTY", "AGBH", "BACKGROUND"]

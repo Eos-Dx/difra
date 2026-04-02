@@ -281,6 +281,32 @@ class SessionFinalizeWorkflow:
                 logger.warning(f"Failed to create session ZIP bundle: {exc}")
             return None
 
+    @staticmethod
+    def mirror_archive_outputs(
+        archive_folder: Path,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        bundle_path: Optional[Path] = None,
+        logger: Optional[Any] = None,
+    ) -> Optional[Path]:
+        """Copy archived folder and optional ZIP into the configured secondary archive root."""
+        mirror_folder = SessionLifecycleService.copy_archive_item_to_mirror(
+            archive_folder,
+            config=config,
+        )
+        if bundle_path is not None and Path(bundle_path).exists():
+            SessionLifecycleService.copy_archive_item_to_mirror(
+                bundle_path,
+                config=config,
+            )
+        if logger and mirror_folder is not None:
+            logger.info(
+                "Mirrored archived session payload",
+                archive_folder=str(archive_folder),
+                mirror_folder=str(mirror_folder),
+            )
+        return mirror_folder
+
     @classmethod
     def finalize_session(
         cls,
@@ -361,6 +387,13 @@ class SessionFinalizeWorkflow:
         archived_session_path = cls.archive_session_container_into_folder(
             session_path=session_path,
             archive_folder=archive_dest,
+            logger=logger,
+        )
+
+        cls.mirror_archive_outputs(
+            archive_folder=archive_dest,
+            config=config,
+            bundle_path=bundle_path,
             logger=logger,
         )
 

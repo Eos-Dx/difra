@@ -186,6 +186,10 @@ class SessionFlowMixin(SessionRestoreMixin):
                 session_id=session_id,
                 config=self.config if hasattr(self, "config") else None,
             )
+            SessionLifecycleService.copy_archive_item_to_mirror(
+                destination.parent,
+                config=self.config if hasattr(self, "config") else None,
+            )
             logger.info(
                 "Archived session container: %s -> %s/%s",
                 session_path.name,

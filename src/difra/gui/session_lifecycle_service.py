@@ -149,6 +149,46 @@ class SessionLifecycleService:
         return Path.home() / "difra_measurements" / "archive"
 
     @staticmethod
+    def resolve_archive_mirror_folder(
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Path]:
+        """Resolve optional secondary archive root used for mirrored copies."""
+        cfg = config or {}
+        configured = cfg.get("measurements_archive_mirror_folder") or cfg.get(
+            "session_archive_mirror_folder"
+        )
+        if not configured:
+            return None
+        return Path(configured)
+
+    @classmethod
+    def copy_archive_item_to_mirror(
+        cls,
+        source_path: Path,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Path]:
+        """Copy one archived file/folder into the optional secondary archive root."""
+        mirror_root = cls.resolve_archive_mirror_folder(config=config)
+        if mirror_root is None:
+            return None
+
+        source = Path(source_path)
+        if not source.exists():
+            return None
+
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        destination = mirror_root / source.name
+
+        if source.is_dir():
+            shutil.copytree(str(source), str(destination), dirs_exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(source), str(destination))
+
+        return destination
+
+    @staticmethod
     def lock_container_if_needed(
         container_path: Path,
         container_manager: Any,

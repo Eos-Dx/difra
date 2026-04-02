@@ -86,7 +86,7 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
             config=owner.config if hasattr(owner, "config") else None,
             logger=logger,
         )
-        SessionFinalizeWorkflow.create_session_bundle_zip(
+        bundle_path = SessionFinalizeWorkflow.create_session_bundle_zip(
             session_path=session_path,
             archive_folder=archive_dest,
             logger=logger,
@@ -94,6 +94,12 @@ def finalize_active_session_for_new_technical_container(owner) -> bool:
         archived_session_path = SessionFinalizeWorkflow.archive_session_container_into_folder(
             session_path=session_path,
             archive_folder=archive_dest,
+            logger=logger,
+        )
+        SessionFinalizeWorkflow.mirror_archive_outputs(
+            archive_folder=archive_dest,
+            config=owner.config if hasattr(owner, "config") else None,
+            bundle_path=bundle_path,
             logger=logger,
         )
         uploader_id = None

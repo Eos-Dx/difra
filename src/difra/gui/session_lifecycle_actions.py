@@ -1058,6 +1058,7 @@ class SessionLifecycleActions:
         *,
         container_manager: Any,
         archive_folder: Path,
+        config: Optional[Dict[str, Any]] = None,
         active_session_path: Optional[Path] = None,
         lock_user: Optional[str] = None,
         uploader_id: Optional[str] = None,
@@ -1168,6 +1169,11 @@ class SessionLifecycleActions:
                 result.archived_paths.append(archived_path)
                 result.moved += 1
 
+                SessionLifecycleService.copy_archive_item_to_mirror(
+                    Path(archived_path).parent,
+                    config=config,
+                )
+
                 if was_active:
                     result.archived_active_session = True
             except Exception as exc:
@@ -1190,6 +1196,7 @@ class SessionLifecycleActions:
         *,
         container_manager: Any,
         archive_folder: Path,
+        config: Optional[Dict[str, Any]] = None,
         active_session_path: Optional[Path] = None,
         lock_user: Optional[str] = None,
         uploader_id: Optional[str] = None,
@@ -1201,6 +1208,7 @@ class SessionLifecycleActions:
             container_paths=container_paths,
             container_manager=container_manager,
             archive_folder=archive_folder,
+            config=config,
             active_session_path=active_session_path,
             lock_user=lock_user,
             uploader_id=uploader_id,
@@ -1486,6 +1494,10 @@ class SessionLifecycleActions:
                 cls._archive_measurement_artifacts(
                     measurements_folder=candidate.parent,
                     destination_folder=archived_path.parent,
+                )
+                SessionLifecycleService.copy_archive_item_to_mirror(
+                    Path(archived_path).parent,
+                    config=config,
                 )
                 try:
                     cleanup_folders.add(str(candidate.parent.resolve()))
