@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List
 
 from difra.gui.container_api import get_container_version
+from difra.gui.container_api import get_schema
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +26,34 @@ class TechnicalCaptureMixin:
         token = str(alias or "").strip().upper()
         if not token:
             return set()
+        if token.startswith("PONI_"):
+            token = token[5:]
+        if not token:
+            return set()
         candidates = {token}
+        bare = token[4:] if token.startswith("DET_") else token
+        if bare:
+            candidates.add(bare)
+            candidates.add(f"DET_{bare}")
         mapping = {
             "PRIMARY": "SAXS",
             "SAXS": "PRIMARY",
             "SECONDARY": "WAXS",
             "WAXS": "SECONDARY",
         }
-        if token in mapping:
-            candidates.add(mapping[token])
-        if token.startswith("DET_"):
-            candidates.add(token.replace("DET_", "", 1))
-        else:
-            candidates.add(f"DET_{token}")
+        detector_groups = (
+            {"PRIMARY", "SAXS", "DET_PRIMARY", "DET_SAXS"},
+            {"SECONDARY", "WAXS", "DET_SECONDARY", "DET_WAXS"},
+        )
+        if bare in mapping:
+            candidates.add(mapping[bare])
+        for group in detector_groups:
+            bare_group = {
+                value[4:] if value.startswith("DET_") else value for value in group
+            }
+            if token in group or bare in bare_group:
+                candidates.update(group)
+                candidates.update(bare_group)
         return {value for value in candidates if value}
 
     def _resolve_technical_measurement_poni(
@@ -47,6 +63,14 @@ class TechnicalCaptureMixin:
         source_ref: str = "",
         source_info: dict | None = None,
     ) -> str | None:
+        detector_context = self._read_technical_measurement_container_context(
+            source_ref=source_ref,
+            source_info=source_info,
+        )
+        direct_poni_text = str(detector_context.get("poni_text") or "").strip()
+        if direct_poni_text:
+            return direct_poni_text
+
         container_path = ""
         raw_source_ref = str(source_ref or "").strip()
         source_payload = source_info if isinstance(source_info, dict) else {}
@@ -75,11 +99,175 @@ class TechnicalCaptureMixin:
             logger.debug("Failed to collect PONI from technical container %s", container_path, exc_info=True)
             return None
         alias_candidates = self._normalize_technical_alias_candidates(alias)
+        alias_candidates.update(
+            self._normalize_technical_alias_candidates(detector_context.get("detector_alias"))
+        )
+        alias_candidates.update(
+            self._normalize_technical_alias_candidates(detector_context.get("detector_id"))
+        )
         for key, text in (poni_by_alias or {}).items():
             key_candidates = self._normalize_technical_alias_candidates(key)
             if alias_candidates & key_candidates and str(text or "").strip():
                 return str(text).strip()
         return None
+
+    def _read_technical_measurement_container_context(
+        self,
+        *,
+        source_ref: str = "",
+        source_info: dict | None = None,
+    ) -> dict:
+        raw_source_ref = str(source_ref or "").strip()
+        source_payload = source_info if isinstance(source_info, dict) else {}
+        container_path = ""
+        dataset_path = ""
+
+        if raw_source_ref.startswith("h5ref://"):
+            payload = raw_source_ref[len("h5ref://") :]
+            container_path, _sep, dataset_path = payload.partition("#")
+
+        if not container_path:
+            container_path = str(source_payload.get("container_path") or "").strip()
+        if not dataset_path:
+            dataset_path = str(source_payload.get("dataset_path") or "").strip()
+
+        if not container_path or not dataset_path:
+            return {}
+
+        try:
+            import h5py
+        except Exception:
+            logger.debug("h5py unavailable while reading technical measurement context", exc_info=True)
+            return {}
+
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                if dataset_path not in h5f:
+                    return {}
+
+                dataset = h5f[dataset_path]
+                detector_group = dataset.parent
+                schema = get_schema(self.config if hasattr(self, "config") else None)
+                context = {
+                    "detector_alias": self._decode_technical_h5_attr(
+                        detector_group.attrs.get(
+                            getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias"),
+                            "",
+                        )
+                    ),
+                    "detector_id": self._decode_technical_h5_attr(
+                        detector_group.attrs.get(
+                            getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                            "",
+                        )
+                    ),
+                    "poni_text": "",
+                }
+
+                candidate_paths = []
+
+                attr_poni_ref = getattr(schema, "ATTR_PONI_REF", "poni_ref")
+                for attr_name in (attr_poni_ref, "poni_path"):
+                    ref_path = self._decode_technical_h5_attr(
+                        detector_group.attrs.get(attr_name, "")
+                    ).strip()
+                    if ref_path and ref_path not in candidate_paths:
+                        candidate_paths.append(ref_path)
+
+                role_name = str(detector_group.name.rsplit("/", 1)[-1] or "").strip()
+                if role_name.startswith("det_"):
+                    technical_poni_group = getattr(
+                        schema,
+                        "GROUP_TECHNICAL_PONI",
+                        "/entry/technical/poni",
+                    )
+                    for suffix in (role_name[4:], role_name):
+                        canonical_path = f"{technical_poni_group}/poni_{suffix}"
+                        if canonical_path not in candidate_paths:
+                            candidate_paths.append(canonical_path)
+
+                if not role_name.startswith("det_"):
+                    format_detector_role = getattr(schema, "format_detector_role", None)
+                    if callable(format_detector_role):
+                        for candidate in (
+                            context["detector_alias"],
+                            context["detector_id"],
+                        ):
+                            try:
+                                role = str(format_detector_role(candidate) or "").strip()
+                            except Exception:
+                                role = ""
+                            if role.startswith("det_"):
+                                technical_poni_group = getattr(
+                                    schema,
+                                    "GROUP_TECHNICAL_PONI",
+                                    "/entry/technical/poni",
+                                )
+                                for suffix in (role[4:], role):
+                                    canonical_path = f"{technical_poni_group}/poni_{suffix}"
+                                    if canonical_path not in candidate_paths:
+                                        candidate_paths.append(canonical_path)
+
+                for ref_path in candidate_paths:
+                    if ref_path and ref_path in h5f:
+                        try:
+                            value = h5f[ref_path][()]
+                            context["poni_text"] = self._decode_technical_h5_attr(value).strip()
+                            if context["poni_text"]:
+                                context["poni_path"] = ref_path
+                                break
+                        except Exception:
+                            logger.debug(
+                                "Failed reading detector-linked technical PONI %s from %s",
+                                ref_path,
+                                container_path,
+                                exc_info=True,
+                            )
+                return context
+        except Exception:
+            logger.debug(
+                "Failed to read technical measurement context from %s#%s",
+                container_path,
+                dataset_path,
+                exc_info=True,
+            )
+            return {}
+
+    @staticmethod
+    def _decode_technical_h5_attr(value) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value or "")
+
+    def _resolve_technical_measurement_mask(
+        self,
+        *,
+        alias: str | None,
+        source_ref: str = "",
+        source_info: dict | None = None,
+    ):
+        masks = getattr(self, "masks", None)
+        if not isinstance(masks, dict) or not masks:
+            return None
+
+        detector_context = self._read_technical_measurement_container_context(
+            source_ref=source_ref,
+            source_info=source_info,
+        )
+        alias_candidates = []
+        for candidate in (
+            alias,
+            detector_context.get("detector_alias"),
+            detector_context.get("detector_id"),
+        ):
+            for normalized in sorted(self._normalize_technical_alias_candidates(candidate)):
+                if normalized not in alias_candidates:
+                    alias_candidates.append(normalized)
+
+        for key in alias_candidates:
+            if key in masks:
+                return masks.get(key)
+        return masks.get(alias)
 
     @staticmethod
     def _build_windows_pyfai_script(*, folder: str, env: str) -> str:
@@ -495,10 +683,15 @@ class TechnicalCaptureMixin:
             source_ref=source_ref,
             source_info=source_info if isinstance(source_info, dict) else {},
         )
+        mask = self._resolve_technical_measurement_mask(
+            alias=alias,
+            source_ref=source_ref,
+            source_info=source_info if isinstance(source_info, dict) else {},
+        )
         try:
             show_measurement_window(
                 resolved_path,
-                self.masks.get(alias),
+                mask,
                 poni_text,
                 self,
             )

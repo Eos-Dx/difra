@@ -83,6 +83,68 @@ class H5ManagementLockingMixin:
             return value.decode("utf-8", errors="replace")
         return str(value)
 
+    def _technical_alias_candidates(self, *values):
+        normalize = getattr(self, "_normalize_technical_alias_candidates", None)
+        candidates = set()
+        for value in values:
+            token = self._decode_attr_text(value, "").strip()
+            if not token:
+                continue
+            if token.lower().startswith("poni_"):
+                token = token[5:]
+            if callable(normalize):
+                candidates.update(normalize(token))
+            else:
+                upper = str(token or "").strip().upper()
+                if not upper:
+                    continue
+                candidates.add(upper)
+                if upper.startswith("DET_"):
+                    candidates.add(upper[4:])
+                else:
+                    candidates.add(f"DET_{upper}")
+        return {candidate for candidate in candidates if candidate}
+
+    def _resolve_configured_technical_alias(self, *values):
+        source_candidates = self._technical_alias_candidates(*values)
+        detector_configs = (
+            self.config.get("detectors", [])
+            if hasattr(self, "config") and isinstance(self.config, dict)
+            else []
+        )
+        for detector_cfg in detector_configs:
+            alias = str(detector_cfg.get("alias") or "").strip()
+            if not alias:
+                continue
+            cfg_candidates = self._technical_alias_candidates(
+                detector_cfg.get("alias"),
+                detector_cfg.get("id"),
+            )
+            if source_candidates & cfg_candidates:
+                return alias, detector_cfg.get("id"), source_candidates
+
+        preferred = ""
+        for value in values:
+            token = self._decode_attr_text(value, "").strip()
+            if not token:
+                continue
+            if token.lower().startswith("poni_"):
+                token = token[5:]
+            if token.lower().startswith("det_"):
+                token = token[4:]
+            token = token.strip().upper()
+            if token:
+                preferred = token
+                break
+        if not preferred:
+            for alias in ("PRIMARY", "SECONDARY", "SAXS", "WAXS"):
+                if alias in source_candidates:
+                    preferred = alias
+                    break
+        if not preferred and source_candidates:
+            preferred = sorted(source_candidates)[0]
+        return preferred, None, source_candidates
+
     @staticmethod
     def _sync_lock_action_overrides():
         """Mirror monkeypatchable module globals into extracted helper actions."""
@@ -618,20 +680,27 @@ class H5ManagementLockingMixin:
                 try:
                     ds = poni_group[ds_name]
                     alias = ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
-                    if isinstance(alias, bytes):
-                        alias = alias.decode("utf-8", errors="replace")
-                    alias = str(alias or "").strip()
-                    if not alias and str(ds_name).startswith("poni_"):
-                        alias = str(ds_name)[5:].upper()
-                    if not alias:
-                        continue
+                    detector_id = ds.attrs.get(
+                        getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                        "",
+                    )
+                    alias_key, _detector_cfg_id, alias_candidates = (
+                        self._resolve_configured_technical_alias(
+                            alias,
+                            detector_id,
+                            str(ds_name),
+                        )
+                    )
 
                     value = ds[()]
                     if isinstance(value, bytes):
                         text = value.decode("utf-8", errors="replace")
                     else:
                         text = str(value)
-                    poni_by_alias[alias] = text
+                    for candidate in [alias_key, *sorted(alias_candidates)]:
+                        key = str(candidate or "").strip().upper()
+                        if key:
+                            poni_by_alias[key] = text
                 except Exception:
                     logger.warning(
                         "Failed to parse PONI dataset while validating centers: %s",
