@@ -161,13 +161,15 @@ class H5ManagementLoadingMixin:
                     exc,
                     exc_info=True,
                 )
-        sync_state = getattr(self, "_sync_container_state", None)
-        if callable(sync_state):
+        infer_state = getattr(self, "_infer_container_state", None)
+        if callable(infer_state):
             try:
-                sync_state(Path(file_path), reason="active_container_set")
+                self._active_technical_container_state = str(
+                    infer_state(Path(file_path)) or ""
+                ).strip()
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
                 logger.debug(
-                    "Suppressed exception while syncing container state on activation",
+                    "Suppressed exception while inferring container state on activation",
                     exc_info=True,
                 )
 
@@ -734,31 +736,10 @@ class H5ManagementLoadingMixin:
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    def _sync_active_technical_container_from_table(self, show_errors: bool = False):
-        from difra.gui.container_api import get_technical_container
-
-        active_path = self._active_technical_container_path_obj()
-        if active_path is None or not active_path.exists():
-            return False
-
-        if not self._ensure_active_technical_container_available(for_edit=True, prompt_on_locked=False):
-            return False
-
-        schema = get_schema(self.config if hasattr(self, "config") else None)
-        technical_container = get_technical_container(
-            self.config if hasattr(self, "config") else None
-        )
-
-        detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
-        alias_to_detector_id = {
-            str(cfg.get("alias")): str(cfg.get("id"))
-            for cfg in detector_configs
-            if cfg.get("alias") and cfg.get("id")
-        }
-
+    def _collect_runtime_rows_from_table(self, show_errors: bool = False):
         runtime_rows = []
         for row in range(self.auxTable.rowCount() if hasattr(self, "auxTable") else 0):
-            file_item = self.auxTable.item(row, 1)
+            file_item = self.auxTable.item(row, self.AUX_COL_FILE)
             if file_item is None:
                 continue
 
@@ -768,21 +749,21 @@ class H5ManagementLoadingMixin:
                 source_info = {}
             source_path = str(source_info.get("source_path") or "").strip()
 
-            type_cb = self.auxTable.cellWidget(row, 2)
+            type_cb = self.auxTable.cellWidget(row, self.AUX_COL_TYPE)
             technical_type = None
             if type_cb is not None and hasattr(type_cb, "currentText"):
                 value = type_cb.currentText().strip()
                 if value and value != self.NO_SELECTION_LABEL:
                     technical_type = self._normalize_technical_type(value)
 
-            alias_cb = self.auxTable.cellWidget(row, 3)
+            alias_cb = self.auxTable.cellWidget(row, self.AUX_COL_ALIAS)
             alias = None
             if alias_cb is not None and hasattr(alias_cb, "currentText"):
                 value = alias_cb.currentText().strip()
                 if value and value != self.NO_SELECTION_LABEL:
                     alias = value
 
-            primary_widget = self.auxTable.cellWidget(row, 0)
+            primary_widget = self.auxTable.cellWidget(row, self.AUX_COL_PRIMARY)
             is_primary = False
             if primary_widget is not None:
                 try:
@@ -825,8 +806,111 @@ class H5ManagementLoadingMixin:
                     "metadata": metadata if isinstance(metadata, dict) else {},
                 }
             )
+        return runtime_rows
 
-        runtime_signature = self._runtime_rows_signature(runtime_rows)
+    def _collect_runtime_rows_from_container(self, container_path):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        h5_path = str(container_path)
+
+        with h5py.File(h5_path, "r") as h5f:
+            runtime_rows = self._extract_rows_from_runtime_group(h5f, schema, h5_path)
+            canonical_rows = []
+            if runtime_rows:
+                canonical_rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
+                runtime_rows = self._backfill_runtime_rows_from_canonical(
+                    runtime_rows,
+                    canonical_rows,
+                )
+                if self._should_prefer_canonical_rows(runtime_rows, canonical_rows):
+                    rows = canonical_rows
+                else:
+                    rows = runtime_rows
+            else:
+                rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
+
+        normalized_rows = []
+        for idx, row in enumerate(rows):
+            source_kind = str(row.get("source_kind") or "").strip().lower()
+            source_path = str(row.get("source_path") or "").strip()
+            source_container = str(row.get("source_container") or h5_path).strip()
+            source_dataset = str(row.get("source_dataset") or "").strip()
+            source_ref = ""
+            if source_kind == "container" and source_container and source_dataset:
+                source_ref = f"h5ref://{source_container}#{source_dataset}"
+            elif source_path:
+                source_ref = source_path
+
+            try:
+                data = self._load_aux_entry_array(
+                    {
+                        "source_ref": source_ref,
+                        "source_path": source_path,
+                    }
+                )
+            except (FileNotFoundError, KeyError, OSError, TypeError, ValueError):
+                logger.warning(
+                    "Skipping unreadable runtime row while collecting container-backed rows: %s",
+                    row,
+                    exc_info=True,
+                )
+                continue
+
+            metadata = row.get("capture_metadata", {})
+            normalized_rows.append(
+                {
+                    "index": idx,
+                    "alias": row.get("alias"),
+                    "technical_type": row.get("technical_type"),
+                    "is_primary": bool(row.get("is_primary")),
+                    "data": data,
+                    "source_ref": source_ref,
+                    "source_path": source_path,
+                    "row_id": str(row.get("source_row_id") or f"row_{idx + 1:06d}"),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+            )
+        return normalized_rows
+
+    def _write_runtime_rows_to_active_container(
+        self,
+        active_path,
+        runtime_rows,
+        *,
+        show_errors: bool = False,
+    ):
+        from difra.gui.container_api import get_technical_container
+
+        active_path = Path(active_path)
+        if not active_path.exists():
+            return False
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        technical_container = get_technical_container(
+            self.config if hasattr(self, "config") else None
+        )
+
+        detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
+        alias_to_detector_id = {
+            str(cfg.get("alias")): str(cfg.get("id"))
+            for cfg in detector_configs
+            if cfg.get("alias") and cfg.get("id")
+        }
+
+        runtime_rows_path = f"{schema.GROUP_RUNTIME}/technical_aux_rows"
+        persisted_runtime_rows = []
+        for idx, entry in enumerate(runtime_rows, start=1):
+            runtime_dataset_path = (
+                f"{runtime_rows_path}/row_{idx:06d}/{schema.DATASET_PROCESSED_SIGNAL}"
+            )
+            mapped_ref = f"h5ref://{active_path}#{runtime_dataset_path}"
+            persisted_entry = dict(entry)
+            persisted_entry["source_ref"] = mapped_ref
+            persisted_entry["row_id"] = str(entry.get("row_id") or f"row_{idx:06d}")
+            persisted_runtime_rows.append(persisted_entry)
+
+        runtime_signature = self._runtime_rows_signature(persisted_runtime_rows)
         poni_data = self._collect_poni_data_by_alias()
         poni_signature = self._poni_data_signature(poni_data)
 
@@ -854,14 +938,13 @@ class H5ManagementLoadingMixin:
                     return True
 
             with h5py.File(active_path, "a") as h5f:
-                runtime_rows_path = f"{schema.GROUP_RUNTIME}/technical_aux_rows"
                 if runtime_rows_path in h5f:
                     del h5f[runtime_rows_path]
                 runtime_group = h5f.require_group(runtime_rows_path)
 
-                for idx, entry in enumerate(runtime_rows, start=1):
+                for idx, entry in enumerate(persisted_runtime_rows, start=1):
                     row_group = runtime_group.create_group(f"row_{idx:06d}")
-                    row_group.attrs["row_index"] = int(entry["index"])
+                    row_group.attrs["row_index"] = int(entry.get("index", idx - 1))
                     if entry["alias"]:
                         row_group.attrs[schema.ATTR_DETECTOR_ALIAS] = str(entry["alias"])
                     if entry["technical_type"]:
@@ -879,6 +962,16 @@ class H5ManagementLoadingMixin:
                         value = metadata.get(key)
                         if value is not None:
                             row_group.attrs[key] = value
+
+                    dataset_name = str(schema.DATASET_PROCESSED_SIGNAL)
+                    if dataset_name in row_group:
+                        del row_group[dataset_name]
+                    row_group.create_dataset(
+                        dataset_name,
+                        data=np.asarray(entry["data"]),
+                        compression="gzip",
+                        compression_opts=schema.COMPRESSION_PROCESSED,
+                    )
                 runtime_parent = h5f.get(schema.GROUP_RUNTIME)
                 if runtime_parent is not None:
                     runtime_parent.attrs[self.RUNTIME_ROWS_SIGNATURE_ATTR] = runtime_signature
@@ -886,7 +979,7 @@ class H5ManagementLoadingMixin:
 
             # Rebuild canonical technical group from PRIMARY rows only.
             primary_map = {}
-            for entry in runtime_rows:
+            for entry in persisted_runtime_rows:
                 typ = entry.get("technical_type")
                 alias = entry.get("alias")
                 if not typ or not alias or not entry.get("is_primary"):
@@ -992,11 +1085,37 @@ class H5ManagementLoadingMixin:
                 with h5py.File(active_path, "a") as h5f:
                     h5f.attrs[schema.ATTR_DISTANCE_CM] = root_distance
 
+            source_ref_role = self._aux_metadata_role() - 1
+            source_info_role = self._aux_source_info_role()
+
+            for entry in persisted_runtime_rows:
+                if not hasattr(self, "auxTable") or self.auxTable is None:
+                    break
+                if int(entry["index"]) >= self.auxTable.rowCount():
+                    continue
+                file_item = self.auxTable.item(int(entry["index"]), self.AUX_COL_FILE)
+                if file_item is None:
+                    continue
+                file_item.setData(source_ref_role, str(entry["source_ref"] or ""))
+                source_info = file_item.data(source_info_role)
+                if isinstance(source_info, dict):
+                    patched_source_info = dict(source_info)
+                else:
+                    patched_source_info = {}
+                patched_source_info["source_kind"] = "container"
+                patched_source_info["container_path"] = str(active_path)
+                _parsed_container, parsed_dataset = self._parse_h5ref(str(entry["source_ref"] or ""))
+                patched_source_info["dataset_path"] = str(parsed_dataset or "")
+                if entry.get("source_path"):
+                    patched_source_info["source_path"] = str(entry["source_path"])
+                patched_source_info["row_id"] = str(entry.get("row_id") or "")
+                file_item.setData(source_info_role, patched_source_info)
+
             sync_state = getattr(self, "_sync_container_state", None)
             if callable(sync_state):
                 sync_state(Path(active_path), reason="table_sync_completed")
             self._log_technical_event(
-                f"Technical container synced from table: {active_path.name} (rows={len(runtime_rows)})"
+                f"Technical container synced from table: {active_path.name} (rows={len(persisted_runtime_rows)})"
             )
             return True
         except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -1008,6 +1127,141 @@ class H5ManagementLoadingMixin:
                     f"Failed to sync active technical container:\n{exc}",
                 )
             return False
+
+    def _append_captured_result_files_to_active_container(
+        self,
+        result_files: dict,
+        technical_type: str,
+        *,
+        show_errors: bool = False,
+    ):
+        active_path = self._active_technical_container_path_obj()
+        if active_path is None or not active_path.exists():
+            return False
+
+        if not self._ensure_active_technical_container_available(
+            for_edit=True,
+            prompt_on_locked=False,
+        ):
+            return False
+
+        runtime_rows = self._collect_runtime_rows_from_container(active_path)
+        normalize_alias_candidates = getattr(
+            self,
+            "_normalize_technical_alias_candidates",
+            None,
+        )
+        normalize_technical_type = getattr(self, "_normalize_technical_type", None)
+        capture_metadata_from_path = getattr(self, "_extract_capture_metadata_from_path", None)
+        pending_metadata = getattr(self, "_pending_aux_capture_metadata", None)
+
+        def _normalized_type(value):
+            raw = str(value or "").strip()
+            if callable(normalize_technical_type):
+                return normalize_technical_type(raw)
+            return raw.upper() or None
+
+        def _same_alias(left, right):
+            if callable(normalize_alias_candidates):
+                left_tokens = normalize_alias_candidates(left)
+                right_tokens = normalize_alias_candidates(right)
+                if left_tokens and right_tokens:
+                    return bool(left_tokens & right_tokens)
+            return str(left or "").strip().upper() == str(right or "").strip().upper()
+
+        normalized_type = _normalized_type(technical_type)
+        appended_rows = []
+        for alias, file_path in sorted((result_files or {}).items()):
+            source_path = str(file_path or "").strip()
+            if not source_path:
+                continue
+            try:
+                data = self._load_aux_entry_array(
+                    {
+                        "source_path": source_path,
+                    }
+                )
+            except (FileNotFoundError, KeyError, OSError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to load captured technical result '%s' for container append: %s",
+                    source_path,
+                    exc,
+                    exc_info=True,
+                )
+                if show_errors:
+                    QMessageBox.warning(
+                        self,
+                        "Technical Capture",
+                        f"Failed to load captured measurement:\n{source_path}\n\n{exc}",
+                    )
+                continue
+
+            metadata = {}
+            if callable(capture_metadata_from_path):
+                metadata.update(capture_metadata_from_path(source_path))
+            if isinstance(pending_metadata, dict):
+                for key, value in pending_metadata.items():
+                    if value is not None:
+                        metadata[key] = value
+
+            appended_rows.append(
+                {
+                    "index": len(runtime_rows) + len(appended_rows),
+                    "alias": str(alias or "").strip() or None,
+                    "technical_type": normalized_type,
+                    "is_primary": True,
+                    "data": data,
+                    "source_ref": source_path,
+                    "source_path": source_path,
+                    "row_id": Path(source_path).stem,
+                    "metadata": metadata,
+                }
+            )
+
+        if not appended_rows:
+            return False
+
+        for new_entry in appended_rows:
+            for existing in runtime_rows:
+                if _normalized_type(existing.get("technical_type")) != normalized_type:
+                    continue
+                if not _same_alias(existing.get("alias"), new_entry.get("alias")):
+                    continue
+                existing["is_primary"] = False
+
+        runtime_rows.extend(appended_rows)
+
+        written = self._write_runtime_rows_to_active_container(
+            active_path,
+            runtime_rows,
+            show_errors=show_errors,
+        )
+        if not written:
+            return False
+
+        self._populate_aux_table_from_h5(str(active_path), set_active=False)
+        self._log_technical_event(
+            f"Technical container updated from new capture: {active_path.name} (added={len(appended_rows)})"
+        )
+        return True
+
+    def _sync_active_technical_container_from_table(self, show_errors: bool = False):
+        active_path = self._active_technical_container_path_obj()
+        if active_path is None or not active_path.exists():
+            return False
+
+        if not self._ensure_active_technical_container_available(
+            for_edit=True,
+            prompt_on_locked=False,
+        ):
+            return False
+
+        runtime_rows = self._collect_runtime_rows_from_table(show_errors=show_errors)
+        return self._write_runtime_rows_to_active_container(
+            active_path,
+            runtime_rows,
+            show_errors=show_errors,
+        )
 
     def _on_detector_distances_updated(self):
         if bool(getattr(self, "_suppress_distance_auto_container_creation", False)):
@@ -1055,23 +1309,26 @@ class H5ManagementLoadingMixin:
             dataset_path = ""
             source_container = ""
             source_kind = "file"
-            if source_file:
-                source_kind = "file"
+            parsed_container, parsed_dataset = self._parse_h5ref(str(source_ref))
+            if parsed_container and parsed_dataset:
+                source_kind = "container"
+                source_container = str(parsed_container)
+                dataset_path = str(parsed_dataset)
             elif schema.DATASET_PROCESSED_SIGNAL in row_group:
                 source_kind = "container"
                 source_container = str(h5_path)
                 dataset_path = f"{row_group.name}/{schema.DATASET_PROCESSED_SIGNAL}"
             else:
-                parsed_container, parsed_dataset = self._parse_h5ref(str(source_ref))
-                if parsed_container and parsed_dataset:
-                    source_kind = "container"
-                    source_container = str(parsed_container)
-                    dataset_path = str(parsed_dataset)
-                elif source_ref and os.path.exists(str(source_ref)):
+                if source_ref and os.path.exists(str(source_ref)):
                     source_file = str(source_ref)
                 else:
                     source_kind = "file"
-            if not source_file and source_ref and os.path.exists(str(source_ref)):
+            if (
+                source_kind == "file"
+                and not source_file
+                and source_ref
+                and os.path.exists(str(source_ref))
+            ):
                 source_file = str(source_ref)
 
             if source_kind == "file" and not source_file:
@@ -1157,6 +1414,80 @@ class H5ManagementLoadingMixin:
                     }
                 )
         return rows
+
+    @staticmethod
+    def _should_prefer_canonical_rows(runtime_rows, canonical_rows) -> bool:
+        """Use canonical container-backed rows when runtime rows point off-machine."""
+        if not runtime_rows or not canonical_rows:
+            return False
+        if len(canonical_rows) < len(runtime_rows):
+            return False
+
+        saw_file_row = False
+        missing_file_row = False
+        for row in runtime_rows:
+            if str(row.get("source_kind") or "").strip().lower() != "file":
+                return False
+            saw_file_row = True
+            source_path = str(row.get("source_path") or "").strip()
+            if source_path and not os.path.exists(source_path):
+                missing_file_row = True
+
+        return saw_file_row and missing_file_row
+
+    @staticmethod
+    def _runtime_row_needs_container_backfill(row) -> bool:
+        if str(row.get("source_kind") or "").strip().lower() != "file":
+            return False
+        source_path = str(row.get("source_path") or "").strip()
+        return not source_path or not os.path.exists(source_path)
+
+    @staticmethod
+    def _runtime_row_match_key(row) -> tuple[str, str]:
+        technical_type = str(row.get("technical_type") or "").strip().upper()
+        alias = str(row.get("alias") or "").strip().upper()
+        return technical_type, alias
+
+    @classmethod
+    def _backfill_runtime_rows_from_canonical(cls, runtime_rows, canonical_rows):
+        if not runtime_rows or not canonical_rows:
+            return list(runtime_rows or [])
+
+        canonical_by_key = {}
+        for row in canonical_rows:
+            if str(row.get("source_kind") or "").strip().lower() != "container":
+                continue
+            key = cls._runtime_row_match_key(row)
+            if not all(key):
+                continue
+            canonical_by_key.setdefault(key, []).append(dict(row))
+
+        if not canonical_by_key:
+            return list(runtime_rows)
+
+        backfilled_rows = []
+        canonical_index_by_key = {}
+        for row in runtime_rows:
+            patched_row = dict(row)
+            if cls._runtime_row_needs_container_backfill(row):
+                key = cls._runtime_row_match_key(row)
+                candidates = canonical_by_key.get(key, [])
+                if candidates:
+                    candidate_index = canonical_index_by_key.get(key, 0)
+                    if candidate_index < len(candidates):
+                        candidate = candidates[candidate_index]
+                        canonical_index_by_key[key] = candidate_index + 1
+                    else:
+                        candidate = candidates[-1]
+                    patched_row["source_kind"] = "container"
+                    patched_row["source_container"] = str(
+                        candidate.get("source_container") or ""
+                    )
+                    patched_row["source_dataset"] = str(
+                        candidate.get("source_dataset") or ""
+                    )
+            backfilled_rows.append(patched_row)
+        return backfilled_rows
 
     def _normalize_center_preview_alias(self, alias: str) -> str:
         detector_cfgs = self.config.get("detectors", []) if hasattr(self, "config") else []
@@ -1404,11 +1735,23 @@ class H5ManagementLoadingMixin:
                 return False
 
         try:
-            self._populate_aux_table_from_h5(file_path)
-            self._set_active_technical_container(file_path)
-            sync_state = getattr(self, "_sync_container_state", None)
-            if callable(sync_state):
-                sync_state(Path(file_path), reason="container_loaded")
+            self._loading_technical_container = True
+            try:
+                self._populate_aux_table_from_h5(file_path)
+                self._set_active_technical_container(file_path)
+                infer_state = getattr(self, "_infer_container_state", None)
+                if callable(infer_state):
+                    try:
+                        self._active_technical_container_state = str(
+                            infer_state(Path(file_path)) or ""
+                        ).strip()
+                    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                        logger.debug(
+                            "Suppressed exception while inferring container state on load",
+                            exc_info=True,
+                        )
+            finally:
+                self._loading_technical_container = False
 
             if hasattr(self, "on_technical_container_loaded"):
                 try:
@@ -1506,9 +1849,22 @@ class H5ManagementLoadingMixin:
                         return poni_text
                 return ""
 
-            # Prefer runtime rows for editable in-progress containers.
-            rows = self._extract_rows_from_runtime_group(h5f, schema, h5_path)
-            if not rows:
+            # Prefer runtime rows for editable in-progress containers, but fall
+            # back to canonical container-backed datasets when runtime metadata
+            # only references missing external files from another machine.
+            runtime_rows = self._extract_rows_from_runtime_group(h5f, schema, h5_path)
+            canonical_rows = []
+            if runtime_rows:
+                canonical_rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
+                runtime_rows = self._backfill_runtime_rows_from_canonical(
+                    runtime_rows,
+                    canonical_rows,
+                )
+                if self._should_prefer_canonical_rows(runtime_rows, canonical_rows):
+                    rows = canonical_rows
+                else:
+                    rows = runtime_rows
+            else:
                 rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
 
             detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []

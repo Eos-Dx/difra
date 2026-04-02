@@ -1337,6 +1337,166 @@ def test_restore_session_reapplies_mapping_origin_from_container(qapp, tmp_path,
     assert harness.real_y_pos_mm.value() == pytest.approx(-3.75)
 
 
+def test_restore_session_does_not_prompt_for_rotation_again(qapp, tmp_path, monkeypatch):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_restore_rotation_prompt"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+    }
+    harness = _SessionRestoreHistoryHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    _session_id, session_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_restore_rotation_prompt",
+        distance_cm=17.0,
+        sample_id="RESTORE_ROTATION_SAMPLE",
+        study_name="RESTORE_ROTATION_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+
+    monkeypatch.setattr(
+        harness,
+        "_extract_current_image_array",
+        lambda: np.full((8, 8), 50, dtype=np.uint8),
+    )
+    harness.state = {
+        "shapes": [
+            {
+                "id": 1,
+                "type": "circle",
+                "role": "holder circle",
+                "physical_size_mm": 15.0,
+                "center_px": [100.0, 120.0],
+                "geometry": {"x": 50.0, "y": 70.0, "width": 100.0, "height": 100.0},
+            }
+        ],
+        "zone_points": [],
+    }
+    harness.sync_workspace_to_session_container(state=harness.state)
+
+    question_calls = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(
+            lambda *args, **kwargs: (
+                question_calls.append(args[1]),
+                QMessageBox.Yes,
+            )[1]
+        ),
+    )
+
+    harness._restore_session_workspace_from_container(Path(session_path))
+
+    assert "Rotate Sample Holder" not in question_calls
+
+
+def test_restore_measured_legacy_session_infers_rotation_without_prompt(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_restore_legacy_rotation"
+    technical_path = _make_technical_container(technical_folder)
+    lock_container(technical_path, user_id="sad")
+
+    config = {
+        "technical_folder": str(technical_folder),
+        "operator_id": "sad",
+        "site_id": "ULSTER",
+        "machine_name": "DIFRA_TEST",
+        "beam_energy_kev": 17.5,
+    }
+    harness = _SessionRestoreHistoryHarness(config=config)
+    harness.show()
+    qapp.processEvents()
+
+    _session_id, session_path = harness.session_manager.create_session(
+        folder=tmp_path / "sessions_restore_legacy_rotation",
+        distance_cm=17.0,
+        sample_id="RESTORE_LEGACY_ROTATION_SAMPLE",
+        study_name="RESTORE_LEGACY_ROTATION_STUDY",
+        operator_id="sad",
+        site_id="ULSTER",
+        machine_name="DIFRA_TEST",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-02-13",
+    )
+
+    monkeypatch.setattr(
+        harness,
+        "_extract_current_image_array",
+        lambda: np.full((8, 8), 50, dtype=np.uint8),
+    )
+    harness.state = {
+        "shapes": [
+            {
+                "id": 1,
+                "type": "circle",
+                "role": "holder circle",
+                "physical_size_mm": 15.0,
+                "center_px": [100.0, 120.0],
+                "geometry": {"x": 50.0, "y": 70.0, "width": 100.0, "height": 100.0},
+            }
+        ],
+        "zone_points": [
+            {"id": 1, "uid": "pt_001", "x": 100.0, "y": 120.0, "type": "generated", "radius": 5.0}
+        ],
+    }
+    harness.sync_workspace_to_session_container(state=harness.state)
+
+    with h5py.File(session_path, "a") as h5f:
+        point_group = h5f.require_group(f"{schema.GROUP_MEASUREMENTS}/point_001")
+        point_group.require_group("measurement_001")
+        mapping_ds = h5f[f"{schema.GROUP_IMAGES_MAPPING}/mapping"]
+        mapping_raw = mapping_ds[()]
+        if isinstance(mapping_raw, bytes):
+            mapping_raw = mapping_raw.decode("utf-8", errors="replace")
+        mapping_payload = json.loads(mapping_raw)
+        conversion = dict(mapping_payload.get("pixel_to_mm_conversion", {}) or {})
+        conversion["rotation_deg"] = 0
+        conversion["rotation_confirmed"] = False
+        conversion["workspace_image_type"] = "sample"
+        mapping_payload["pixel_to_mm_conversion"] = conversion
+        del h5f[f"{schema.GROUP_IMAGES_MAPPING}/mapping"]
+        h5f.require_group(schema.GROUP_IMAGES_MAPPING.lstrip("/")).create_dataset(
+            "mapping",
+            data=json.dumps(mapping_payload).encode("utf-8"),
+        )
+
+    question_calls = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(
+            lambda *args, **kwargs: (
+                question_calls.append(args[1]),
+                QMessageBox.Yes,
+            )[1]
+        ),
+    )
+
+    harness._restore_session_workspace_from_container(Path(session_path))
+
+    assert "Rotate Sample Holder" not in question_calls
+    assert harness.sample_photo_rotation_confirmed is True
+    assert harness.sample_photo_rotation_deg == 180
+    assert harness.sample_photo_workspace_image_type == "sample_rotated"
+
+
 def test_loading_technical_updates_active_unlocked_session(qapp, tmp_path, monkeypatch):
     _patch_non_blocking_dialogs(monkeypatch)
 
@@ -1955,7 +2115,7 @@ def test_archive_active_container_locks_then_archives_container_and_related_file
     assert (archive_subdir / related_poni.name).exists()
 
 
-def test_sync_runtime_rows_are_metadata_only_and_lock_rewrites_paths(qapp, tmp_path, monkeypatch):
+def test_sync_runtime_rows_store_container_datasets_and_lock_rewrites_paths(qapp, tmp_path, monkeypatch):
     _patch_non_blocking_dialogs(monkeypatch)
 
     technical_folder = tmp_path / "technical_compact"
@@ -1985,8 +2145,11 @@ def test_sync_runtime_rows_are_metadata_only_and_lock_rewrites_paths(qapp, tmp_p
     runtime_path = "/entry/difra_runtime/technical_aux_rows/row_000001"
     with h5py.File(tech_path, "r") as h5f:
         assert runtime_path in h5f
-        assert f"{runtime_path}/processed_signal" not in h5f
+        assert f"{runtime_path}/processed_signal" in h5f
         assert str(h5f[runtime_path].attrs.get("source_file", "")).endswith(".npy")
+        assert str(h5f[runtime_path].attrs.get("source_ref", "")).startswith(
+            f"h5ref://{tech_path}#{runtime_path}/processed_signal"
+        )
         assert str(h5f["/entry/difra_runtime"].attrs.get("technical_aux_rows_signature", "")).strip()
 
     with h5py.File(tech_path, "a") as h5f:
@@ -2010,6 +2173,222 @@ def test_sync_runtime_rows_are_metadata_only_and_lock_rewrites_paths(qapp, tmp_p
         source_file = str(h5f[runtime_path].attrs.get("source_file", ""))
         assert source_file.startswith(str(archive_folder))
         assert Path(source_file).exists() is True
+
+
+def test_capture_append_writes_new_measurements_to_container_before_table_refresh(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_capture_append"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={"operator_id": "sad"}, work_dir=technical_folder)
+
+    harness._populate_aux_table_from_h5(str(tech_path))
+    harness._set_active_technical_container(str(tech_path))
+    initial_rows = harness.auxTable.rowCount()
+
+    new_file = technical_folder / "agbh_capture_002_20260213_130000_1.000000s_1frames_PRIMARY.npy"
+    expected = np.full((8, 8), 123.0, dtype=np.float32)
+    np.save(new_file, expected)
+    harness._pending_aux_capture_metadata = {
+        "integration_time_ms": 1000.0,
+        "n_frames": 1,
+    }
+
+    appended = harness._append_captured_result_files_to_active_container(
+        {"PRIMARY": str(new_file)},
+        "AGBH",
+        show_errors=True,
+    )
+
+    assert appended is True
+    assert harness.auxTable.rowCount() == initial_rows + 1
+
+    file_item = harness.auxTable.item(harness.auxTable.rowCount() - 1, harness.AUX_COL_FILE)
+    assert file_item is not None
+    source_ref = str(file_item.data(Qt.UserRole) or "")
+    assert source_ref.startswith(
+        f"h5ref://{tech_path}#/entry/difra_runtime/technical_aux_rows/row_{initial_rows + 1:06d}/processed_signal"
+    )
+
+    with h5py.File(tech_path, "r") as h5f:
+        row_group = h5f[
+            f"/entry/difra_runtime/technical_aux_rows/row_{initial_rows + 1:06d}"
+        ]
+        assert np.array_equal(np.asarray(row_group["processed_signal"][()]), expected)
+        assert str(row_group.attrs.get("type", "")) == "AGBH"
+        assert bool(row_group.attrs.get("is_primary", False)) is True
+        assert str(row_group.attrs.get("source_file", "")) == str(new_file)
+
+
+def test_load_technical_container_prefers_canonical_h5refs_when_runtime_paths_are_off_machine(
+    qapp, tmp_path
+):
+    technical_folder = tmp_path / "technical_foreign_runtime"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={}, work_dir=technical_folder)
+
+    harness._populate_aux_table_from_h5(str(tech_path))
+    assert harness._sync_active_technical_container_from_table(show_errors=True) is True
+
+    initial_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert initial_item is not None
+    initial_ref = str(initial_item.data(technical_measurements.Qt.UserRole) or "")
+    assert initial_ref.startswith(
+        f"h5ref://{tech_path}#/entry/difra_runtime/technical_aux_rows/row_000001/processed_signal"
+    )
+
+    with h5py.File(tech_path, "a") as h5f:
+        runtime_group = h5f["/entry/difra_runtime/technical_aux_rows"]
+        for row_name in runtime_group.keys():
+            row_group = runtime_group[row_name]
+            source_file = str(row_group.attrs.get("source_file", "")).strip()
+            if source_file:
+                filename = Path(source_file).name
+                row_group.attrs["source_file"] = (
+                    "D:\\Data\\archive\\technical\\foreign_machine\\" + filename
+                )
+
+    harness._populate_aux_table_from_h5(str(tech_path), set_active=False)
+
+    assert harness.auxTable.rowCount() > 0
+    file_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert file_item is not None
+    source_ref = str(file_item.data(technical_measurements.Qt.UserRole) or "")
+    assert source_ref.startswith(
+        f"h5ref://{tech_path}#/entry/difra_runtime/technical_aux_rows/row_000001/processed_signal"
+    )
+
+
+def test_load_technical_container_backfills_missing_runtime_rows_from_canonical_even_with_extra_legacy_rows(
+    qapp, tmp_path
+):
+    technical_folder = tmp_path / "technical_foreign_runtime_extra"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={}, work_dir=technical_folder)
+
+    harness._populate_aux_table_from_h5(str(tech_path))
+    assert harness._sync_active_technical_container_from_table(show_errors=True) is True
+
+    with h5py.File(tech_path, "a") as h5f:
+        runtime_group = h5f["/entry/difra_runtime/technical_aux_rows"]
+        for row_name in list(runtime_group.keys()):
+            row_group = runtime_group[row_name]
+            if "processed_signal" in row_group:
+                del row_group["processed_signal"]
+            source_file = str(row_group.attrs.get("source_file", "")).strip()
+            filename = Path(source_file).name if source_file else f"{row_name}.npy"
+            row_group.attrs["source_file"] = (
+                "D:\\Data\\archive\\technical\\foreign_machine\\" + filename
+            )
+            if "source_ref" in row_group.attrs:
+                del row_group.attrs["source_ref"]
+
+        extra_group = runtime_group.create_group("row_999999")
+        extra_group.attrs["row_index"] = 999999
+        extra_group.attrs["type"] = "AGBH"
+        extra_group.attrs["is_primary"] = False
+        extra_group.attrs["detector_alias"] = "PRIMARY"
+        extra_group.attrs["source_file"] = (
+            "D:\\Data\\archive\\technical\\foreign_machine\\missing_extra.npy"
+        )
+
+    harness._populate_aux_table_from_h5(str(tech_path), set_active=False)
+
+    assert harness.auxTable.rowCount() > 0
+    first_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert first_item is not None
+    first_ref = str(first_item.data(technical_measurements.Qt.UserRole) or "")
+    assert first_ref.startswith("h5ref://")
+    assert "D:\\Data\\archive\\technical" not in first_ref
+
+
+def test_container_backed_rows_show_filename_not_full_windows_path(qapp, tmp_path):
+    harness = _TechnicalLoadHarness(config={}, work_dir=tmp_path / "ui_windows_display")
+    harness._add_aux_item_to_list(
+        "SECONDARY",
+        "D:\\Data\\archive\\technical\\foreign_machine\\AgBH_005_20260402_103121_300.000000s_1frames_SECONDARY.npy",
+        source_kind="container",
+        source_container=str(tmp_path / "technical.nxs.h5"),
+        source_dataset="/entry/technical/tech_evt_000004/det_secondary/processed_signal",
+        technical_type="AGBH",
+        is_primary=True,
+        source_row_id="tech_evt_000004:det_secondary",
+    )
+
+    file_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert file_item is not None
+    assert "D:\\Data\\archive\\technical" not in file_item.text()
+    assert "AgBH_005_20260402_103121_300.000000s_1frames_SECONDARY.npy" in file_item.text()
+    assert str(file_item.data(Qt.UserRole) or "").startswith("h5ref://")
+
+
+def test_open_measurement_from_table_repairs_stale_user_role_from_container_source_info(
+    qapp, tmp_path, monkeypatch
+):
+    harness = _TechnicalLoadHarness(config={}, work_dir=tmp_path / "ui_open_stale")
+    harness._technical_imports_available = lambda: True
+    harness.detector_controller = {"SECONDARY": object()}
+    opened = []
+
+    def _fake_get_technical_module(name):
+        if name == "show_measurement_window":
+            return lambda path, mask, poni_text, parent: opened.append(
+                {"path": path, "mask": mask, "poni_text": poni_text, "parent": parent}
+            )
+        raise AssertionError(f"Unexpected technical module request: {name}")
+
+    harness._get_technical_module = _fake_get_technical_module
+    harness._resolve_technical_measurement_poni = lambda **_kwargs: None
+    harness._resolve_technical_measurement_mask = lambda **_kwargs: None
+
+    harness._add_aux_item_to_list(
+        "SECONDARY",
+        "D:\\Data\\archive\\technical\\foreign_machine\\AgBH_005_20260402_103121_300.000000s_1frames_SECONDARY.npy",
+        source_kind="container",
+        source_container=str(tmp_path / "technical.nxs.h5"),
+        source_dataset="/entry/technical/tech_evt_000004/det_secondary/processed_signal",
+        technical_type="AGBH",
+        is_primary=True,
+        source_row_id="tech_evt_000004:det_secondary",
+    )
+    file_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert file_item is not None
+    file_item.setData(
+        Qt.UserRole,
+        "D:\\Data\\archive\\technical\\foreign_machine\\AgBH_005_20260402_103121_300.000000s_1frames_SECONDARY.npy",
+    )
+
+    harness._open_measurement_from_table(0, harness.AUX_COL_FILE)
+
+    assert len(opened) == 1
+    assert opened[0]["path"].startswith("h5ref://")
+    assert str(file_item.data(Qt.UserRole) or "").startswith("h5ref://")
+
+
+def test_load_technical_container_does_not_sync_state_back_to_file(qapp, tmp_path, monkeypatch):
+    technical_folder = tmp_path / "technical_readonly_load"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={}, work_dir=technical_folder)
+
+    sync_calls = []
+    infer_calls = []
+
+    monkeypatch.setattr(
+        harness,
+        "_sync_container_state",
+        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        harness,
+        "_infer_container_state",
+        lambda path: (infer_calls.append(Path(path)), "ready_to_lock")[1],
+    )
+
+    assert harness.load_technical_h5_from_path(str(tech_path), show_dialogs=False) is True
+    assert sync_calls == []
+    assert infer_calls
 
 
 def test_sync_rewrites_embedded_poni_when_only_poni_changes(qapp, tmp_path, monkeypatch):

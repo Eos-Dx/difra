@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QVBoxLayout,
 )
 
@@ -93,11 +94,181 @@ def _save_poni_validation_rule_edits(
     return target_path
 
 
+def _decode_h5_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _inspect_embedded_poni(
+    measurement_filename: str,
+    provided_poni_text: str | None = None,
+) -> dict:
+    info = {
+        "measurement_ref": str(measurement_filename or "").strip(),
+        "container_path": "",
+        "measurement_dataset_path": "",
+        "detector_group_path": "",
+        "detector_alias": "",
+        "detector_id": "",
+        "measurement_source_file": "",
+        "resolved_poni_path": "",
+        "resolved_poni_filename": "",
+        "resolved_poni_text": "",
+        "provided_poni_text": str(provided_poni_text or ""),
+        "resolution_error": "",
+    }
+
+    ref_value = info["measurement_ref"]
+    if not ref_value.startswith("h5ref://"):
+        return info
+
+    try:
+        import h5py
+    except Exception as exc:
+        info["resolution_error"] = f"h5py unavailable: {exc}"
+        return info
+
+    payload = ref_value[len("h5ref://") :]
+    container_path, sep, dataset_path = payload.partition("#")
+    info["container_path"] = str(container_path or "").strip()
+    info["measurement_dataset_path"] = str(dataset_path or "").strip()
+    if not sep or not info["container_path"] or not info["measurement_dataset_path"]:
+        info["resolution_error"] = f"Invalid H5 reference: {measurement_filename}"
+        return info
+
+    try:
+        with h5py.File(info["container_path"], "r") as h5f:
+            if info["measurement_dataset_path"] not in h5f:
+                info["resolution_error"] = (
+                    "Measurement dataset not found in container: "
+                    f"{info['measurement_dataset_path']}"
+                )
+                return info
+
+            dataset = h5f[info["measurement_dataset_path"]]
+            detector_group = dataset.parent
+            info["detector_group_path"] = str(detector_group.name or "")
+            info["detector_alias"] = _decode_h5_text(
+                detector_group.attrs.get("detector_alias", "")
+            ).strip()
+            info["detector_id"] = _decode_h5_text(
+                detector_group.attrs.get("detector_id", "")
+            ).strip()
+            info["measurement_source_file"] = _decode_h5_text(
+                detector_group.attrs.get("source_file", "")
+            ).strip()
+
+            candidate_paths = []
+            for attr_name in ("poni_ref", "poni_path"):
+                ref_path = _decode_h5_text(detector_group.attrs.get(attr_name, "")).strip()
+                if ref_path and ref_path not in candidate_paths:
+                    candidate_paths.append(ref_path)
+
+            role_name = str(detector_group.name.rsplit("/", 1)[-1] or "").strip()
+            if role_name.startswith("det_"):
+                for suffix in (role_name[4:], role_name):
+                    canonical_path = f"/entry/technical/poni/poni_{suffix}"
+                    if canonical_path not in candidate_paths:
+                        candidate_paths.append(canonical_path)
+
+            for ref_path in candidate_paths:
+                if not ref_path or ref_path not in h5f:
+                    continue
+                try:
+                    poni_dataset = h5f[ref_path]
+                    info["resolved_poni_path"] = ref_path
+                    info["resolved_poni_filename"] = _decode_h5_text(
+                        poni_dataset.attrs.get("poni_filename", "")
+                    ).strip()
+                    info["resolved_poni_text"] = _decode_h5_text(poni_dataset[()]).strip()
+                    if info["resolved_poni_text"]:
+                        break
+                except Exception as exc:
+                    info["resolution_error"] = f"Failed reading PONI dataset '{ref_path}': {exc}"
+    except Exception as exc:
+        info["resolution_error"] = f"Failed reading H5 diagnostics: {exc}"
+
+    return info
+
+
+def _format_measurement_diagnostics(
+    *,
+    measurement_filename: str,
+    poni_info: dict,
+    integration_error: str = "",
+) -> str:
+    info = poni_info if isinstance(poni_info, dict) else {}
+    provided_poni_text = str(info.get("provided_poni_text") or "").strip()
+    embedded_poni_text = str(info.get("resolved_poni_text") or "").strip()
+
+    lines = [f"Measurement source: {str(measurement_filename or '').strip() or '<empty>'}"]
+
+    container_path = str(info.get("container_path") or "").strip()
+    if container_path:
+        lines.append(f"Container: {container_path}")
+
+    dataset_path = str(info.get("measurement_dataset_path") or "").strip()
+    if dataset_path:
+        lines.append(f"Measurement dataset: {dataset_path}")
+
+    detector_group_path = str(info.get("detector_group_path") or "").strip()
+    if detector_group_path:
+        lines.append(f"Detector group: {detector_group_path}")
+
+    detector_alias = str(info.get("detector_alias") or "").strip()
+    if detector_alias:
+        lines.append(f"Detector alias: {detector_alias}")
+
+    detector_id = str(info.get("detector_id") or "").strip()
+    if detector_id:
+        lines.append(f"Detector id: {detector_id}")
+
+    measurement_source_file = str(info.get("measurement_source_file") or "").strip()
+    if measurement_source_file:
+        lines.append(f"Measurement source_file: {measurement_source_file}")
+
+    resolved_poni_path = str(info.get("resolved_poni_path") or "").strip()
+    if resolved_poni_path:
+        lines.append(f"Embedded PONI dataset: {resolved_poni_path}")
+
+    resolved_poni_filename = str(info.get("resolved_poni_filename") or "").strip()
+    if resolved_poni_filename:
+        lines.append(f"Embedded PONI filename: {resolved_poni_filename}")
+
+    if embedded_poni_text and provided_poni_text:
+        if embedded_poni_text == provided_poni_text:
+            lines.append("PONI payload used for integration: embedded container PONI (matches caller text)")
+        else:
+            lines.append("PONI payload used for integration: embedded container PONI (caller text differs)")
+    elif embedded_poni_text:
+        lines.append("PONI payload used for integration: embedded container PONI")
+    elif provided_poni_text:
+        lines.append("PONI payload used for integration: caller-provided text")
+    else:
+        lines.append("PONI payload used for integration: unavailable")
+
+    resolution_error = str(info.get("resolution_error") or "").strip()
+    if resolution_error:
+        lines.append(f"PONI resolution issue: {resolution_error}")
+
+    if integration_error:
+        lines.append(f"Integration error: {integration_error}")
+
+    if embedded_poni_text:
+        lines.extend(["", "--- Embedded PONI text ---", embedded_poni_text])
+    elif provided_poni_text:
+        lines.extend(["", "--- Caller-provided PONI text ---", provided_poni_text])
+
+    return "\n".join(lines).strip()
+
+
 def _build_measurement_dialog(
     measurement_filename: str,
     *,
     parent=None,
     note: str = "",
+    diagnostics_text: str = "",
 ) -> tuple[QDialog, Figure]:
     dialog = QDialog(parent)
     dialog.setWindowTitle(
@@ -110,10 +281,22 @@ def _build_measurement_dialog(
         note_label.setStyleSheet("color: #555; font-size: 11px;")
         layout.addWidget(note_label)
 
+    if str(diagnostics_text or "").strip():
+        diagnostics_label = QLabel("Diagnostics / PONI")
+        diagnostics_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(diagnostics_label)
+
+        diagnostics_box = QPlainTextEdit()
+        diagnostics_box.setObjectName("measurementDiagnosticsText")
+        diagnostics_box.setReadOnly(True)
+        diagnostics_box.setPlainText(str(diagnostics_text).strip())
+        diagnostics_box.setMinimumHeight(220)
+        layout.addWidget(diagnostics_box)
+
     fig = Figure(figsize=(6, 6))
     canvas = FigureCanvas(fig)
     layout.addWidget(canvas)
-    dialog.resize(700, 700)
+    dialog.resize(820, 920 if str(diagnostics_text or "").strip() else 700)
     dialog.show()
     return dialog, fig
 
@@ -433,13 +616,15 @@ def show_measurement_window(
 
     # Load data
     data = _load_measurement_array(measurement_filename)
+    poni_info = _inspect_embedded_poni(measurement_filename, poni_text)
+    active_poni_text = str(poni_info.get("resolved_poni_text") or poni_text or "").strip()
 
     radial = intensity = std = sigma = cake = None
     integration_error = ""
     integration_note = ""
 
     def _run_integration(active_mask):
-        ai = initialize_azimuthal_integrator_poni_text(poni_text)
+        ai = initialize_azimuthal_integrator_poni_text(active_poni_text)
         result = ai.integrate1d(
             data, 200, unit="q_nm^-1", error_model="azimuthal", mask=active_mask
         )
@@ -471,7 +656,7 @@ def show_measurement_window(
         local_cake, _, _ = ai.integrate2d(data, 200, npt_azim=180, mask=active_mask)
         return local_radial, local_intensity, local_std, local_sigma, local_cake
 
-    if poni_text:
+    if active_poni_text:
         try:
             radial, intensity, std, sigma, cake = _run_integration(mask)
         except Exception as exc:
@@ -501,7 +686,7 @@ def show_measurement_window(
                 )
 
     note = ""
-    if not str(poni_text or "").strip():
+    if not active_poni_text:
         note = "No PONI is embedded for this measurement. Showing raw image only."
     elif integration_note:
         note = integration_note
@@ -511,10 +696,17 @@ def show_measurement_window(
             f"Showing raw image only.\nReason: {integration_error}"
         )
 
+    diagnostics_text = _format_measurement_diagnostics(
+        measurement_filename=measurement_filename,
+        poni_info=poni_info,
+        integration_error=integration_error,
+    )
+
     dialog, fig = _build_measurement_dialog(
         measurement_filename,
         parent=parent,
         note=note,
+        diagnostics_text=diagnostics_text,
     )
 
     # Top-left: raw 2D heatmap

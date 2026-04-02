@@ -213,6 +213,15 @@ def restore_session_workspace_from_container(
                         restored_rotation_deg = 0
                     restored_rotation_confirmed = bool(conversion.get("rotation_confirmed", False))
 
+        # Legacy measured sessions may predate explicit rotation metadata.
+        # Once a session already contains measurements, treat the workspace
+        # image as already confirmed/rotated on restore instead of prompting.
+        if restored_has_measurements and not restored_rotation_confirmed:
+            restored_rotation_confirmed = True
+            if int(restored_rotation_deg or 0) % 360 == 0:
+                restored_rotation_deg = 180
+            restored_workspace_image_type = "sample_rotated"
+
         display_image = restored_raw_image
         if (
             restored_rotation_confirmed
@@ -266,12 +275,19 @@ def restore_session_workspace_from_container(
             for shape in restored_shapes
         )
 
-        if hasattr(owner, "_restore_shapes"):
-            owner._restore_shapes(restored_shapes)
-        if hasattr(owner, "_restore_points"):
-            owner._restore_points(restored_points)
-        if hasattr(owner, "_refresh_id_counter"):
-            owner._refresh_id_counter()
+        previous_prompt_suppression = bool(
+            getattr(owner, "_suppress_sample_photo_rotation_prompt", False)
+        )
+        owner._suppress_sample_photo_rotation_prompt = True
+        try:
+            if hasattr(owner, "_restore_shapes"):
+                owner._restore_shapes(restored_shapes)
+            if hasattr(owner, "_restore_points"):
+                owner._restore_points(restored_points)
+            if hasattr(owner, "_refresh_id_counter"):
+                owner._refresh_id_counter()
+        finally:
+            owner._suppress_sample_photo_rotation_prompt = previous_prompt_suppression
 
         if hasattr(owner, "update_points_table"):
             owner.update_points_table()
@@ -394,125 +410,132 @@ def restore_measurement_history_from_session(owner, session_path: Path):
                 if point_uid:
                     point_uid_to_display[point_uid] = point_display_id
 
-        with h5py.File(session_path, "r") as h5f:
-            measurements_group = h5f.get(schema.GROUP_MEASUREMENTS)
-            if measurements_group is None:
-                return
-            session_point_uid_by_index = {}
-            points_group = h5f.get(schema.GROUP_POINTS)
-            if points_group is not None:
-                for point_group_name in sorted(points_group.keys()):
+        previous_widget_restore = bool(
+            getattr(owner, "_restoring_measurement_history_widgets", False)
+        )
+        owner._restoring_measurement_history_widgets = True
+        try:
+            with h5py.File(session_path, "r") as h5f:
+                measurements_group = h5f.get(schema.GROUP_MEASUREMENTS)
+                if measurements_group is None:
+                    return
+                session_point_uid_by_index = {}
+                points_group = h5f.get(schema.GROUP_POINTS)
+                if points_group is not None:
+                    for point_group_name in sorted(points_group.keys()):
+                        if not str(point_group_name).startswith("pt_"):
+                            continue
+                        try:
+                            point_index = int(str(point_group_name).split("_")[-1])
+                        except Exception:
+                            continue
+                        point_group = points_group[point_group_name]
+                        point_uid = owner._decode_attr(point_group.attrs.get("point_uid", ""))
+                        point_uid = str(point_uid or "").strip()
+                        if point_uid:
+                            session_point_uid_by_index[point_index] = point_uid
+
+                for point_group_name in sorted(measurements_group.keys()):
                     if not str(point_group_name).startswith("pt_"):
                         continue
                     try:
                         point_index = int(str(point_group_name).split("_")[-1])
                     except Exception:
                         continue
-                    point_group = points_group[point_group_name]
-                    point_uid = owner._decode_attr(point_group.attrs.get("point_uid", ""))
-                    point_uid = str(point_uid or "").strip()
-                    if point_uid:
-                        session_point_uid_by_index[point_index] = point_uid
 
-            for point_group_name in sorted(measurements_group.keys()):
-                if not str(point_group_name).startswith("pt_"):
-                    continue
-                try:
-                    point_index = int(str(point_group_name).split("_")[-1])
-                except Exception:
-                    continue
+                    point_group = measurements_group[point_group_name]
+                    point_uid = str(session_point_uid_by_index.get(point_index) or "").strip()
+                    if not point_uid:
+                        point_uid = str(
+                            owner._decode_attr(point_group.attrs.get("point_uid", "")) or ""
+                        ).strip()
+                    if not point_uid and callable(identity_getter):
+                        try:
+                            point_uid, _point_display_id = identity_getter(point_index - 1)
+                        except Exception:
+                            point_uid = None
+                        point_uid = str(point_uid or "").strip()
+                    if not point_uid:
+                        continue
 
-                point_group = measurements_group[point_group_name]
-                point_uid = str(session_point_uid_by_index.get(point_index) or "").strip()
-                if not point_uid:
-                    point_uid = str(
-                        owner._decode_attr(point_group.attrs.get("point_uid", "")) or ""
-                    ).strip()
-                if not point_uid and callable(identity_getter):
+                    point_display_id = point_uid_to_display.get(point_uid)
+                    if point_display_id is None:
+                        try:
+                            point_display_id = int(str(point_uid).split("_", 1)[0])
+                        except Exception:
+                            point_display_id = None
+
                     try:
-                        point_uid, _point_display_id = identity_getter(point_index - 1)
-                    except Exception:
-                        point_uid = None
-                    point_uid = str(point_uid or "").strip()
-                if not point_uid:
-                    continue
+                        owner.add_measurement_widget_to_panel(
+                            point_uid, point_display_id=point_display_id
+                        )
+                    except TypeError:
+                        owner.add_measurement_widget_to_panel(point_uid)
+                    widget = owner.measurement_widgets.get(point_uid)
+                    if widget is None:
+                        continue
 
-                point_display_id = point_uid_to_display.get(point_uid)
-                if point_display_id is None:
-                    try:
-                        point_display_id = int(str(point_uid).split("_", 1)[0])
-                    except Exception:
-                        point_display_id = None
-
-                try:
-                    owner.add_measurement_widget_to_panel(
-                        point_uid, point_display_id=point_display_id
-                    )
-                except TypeError:
-                    owner.add_measurement_widget_to_panel(point_uid)
-                widget = owner.measurement_widgets.get(point_uid)
-                if widget is None:
-                    continue
-
-                for meas_name in sorted(point_group.keys()):
-                    meas_group = point_group[meas_name]
-                    timestamp = owner._decode_attr(
-                        meas_group.attrs.get(schema.ATTR_TIMESTAMP_END, "")
-                    )
-                    if not timestamp:
+                    for meas_name in sorted(point_group.keys()):
+                        meas_group = point_group[meas_name]
                         timestamp = owner._decode_attr(
-                            meas_group.attrs.get(schema.ATTR_TIMESTAMP_START, "")
+                            meas_group.attrs.get(schema.ATTR_TIMESTAMP_END, "")
                         )
-                    if not timestamp:
-                        timestamp = owner._decode_attr(
-                            meas_group.attrs.get(schema.ATTR_TIMESTAMP, "")
-                        )
-                    results = {}
-                    for detector_group_name in sorted(meas_group.keys()):
-                        if not str(detector_group_name).startswith("det_"):
-                            continue
-                        detector_group = meas_group[detector_group_name]
-                        detector_alias = owner._decode_attr(
-                            detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
-                        )
-                        if not detector_alias:
-                            detector_id = owner._decode_attr(
-                                detector_group.attrs.get(schema.ATTR_DETECTOR_ID, "")
+                        if not timestamp:
+                            timestamp = owner._decode_attr(
+                                meas_group.attrs.get(schema.ATTR_TIMESTAMP_START, "")
                             )
-                            detector_alias = detector_id_to_alias.get(
-                                str(detector_id),
-                                str(detector_group_name).replace("det_", "").upper(),
+                        if not timestamp:
+                            timestamp = owner._decode_attr(
+                                meas_group.attrs.get(schema.ATTR_TIMESTAMP, "")
                             )
-
-                        dataset_name = schema.DATASET_PROCESSED_SIGNAL
-                        if dataset_name not in detector_group:
-                            continue
-                        dataset_path = (
-                            f"{schema.GROUP_MEASUREMENTS}/{point_group_name}/"
-                            f"{meas_name}/{detector_group_name}/{dataset_name}"
-                        )
-                        h5_ref = f"h5ref://{session_path}#{dataset_path}"
-                        results[str(detector_alias)] = {
-                            "filename": h5_ref,
-                            "goodness": None,
-                        }
-
-                    if results:
-                        widget.add_measurement(results, timestamp or "from container")
-                        preview_updater = getattr(
-                            owner,
-                            "_update_profile_previews_from_result_files",
-                            None,
-                        )
-                        if callable(preview_updater):
-                            try:
-                                preview_updater(results, point_uid=point_uid)
-                            except Exception:
-                                logger.debug(
-                                    "Failed to restore detector profile previews for point %s",
-                                    point_uid,
-                                    exc_info=True,
+                        results = {}
+                        for detector_group_name in sorted(meas_group.keys()):
+                            if not str(detector_group_name).startswith("det_"):
+                                continue
+                            detector_group = meas_group[detector_group_name]
+                            detector_alias = owner._decode_attr(
+                                detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
+                            )
+                            if not detector_alias:
+                                detector_id = owner._decode_attr(
+                                    detector_group.attrs.get(schema.ATTR_DETECTOR_ID, "")
                                 )
+                                detector_alias = detector_id_to_alias.get(
+                                    str(detector_id),
+                                    str(detector_group_name).replace("det_", "").upper(),
+                                )
+
+                            dataset_name = schema.DATASET_PROCESSED_SIGNAL
+                            if dataset_name not in detector_group:
+                                continue
+                            dataset_path = (
+                                f"{schema.GROUP_MEASUREMENTS}/{point_group_name}/"
+                                f"{meas_name}/{detector_group_name}/{dataset_name}"
+                            )
+                            h5_ref = f"h5ref://{session_path}#{dataset_path}"
+                            results[str(detector_alias)] = {
+                                "filename": h5_ref,
+                                "goodness": None,
+                            }
+
+                        if results:
+                            widget.add_measurement(results, timestamp or "from container")
+                            preview_updater = getattr(
+                                owner,
+                                "_update_profile_previews_from_result_files",
+                                None,
+                            )
+                            if callable(preview_updater):
+                                try:
+                                    preview_updater(results, point_uid=point_uid)
+                                except Exception:
+                                    logger.debug(
+                                        "Failed to restore detector profile previews for point %s",
+                                        point_uid,
+                                        exc_info=True,
+                                    )
+        finally:
+            owner._restoring_measurement_history_widgets = previous_widget_restore
     except Exception as exc:
         logger.warning(
             "Failed to restore measurement history from session container %s: %s",

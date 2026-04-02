@@ -574,17 +574,34 @@ class TechnicalCaptureMixin:
             return
 
         self._log_technical_event("Processing measurement files...")
-        MeasurementWorker = self._get_technical_module("MeasurementWorker")
-        worker = MeasurementWorker(
-            filenames=result_files,
-            frames=1,
-            average_frames=False,
-        )
-        worker.add_aux_item.connect(self._add_aux_item_to_list)
         try:
+            append_to_container = getattr(
+                self,
+                "_append_captured_result_files_to_active_container",
+                None,
+            )
+            if callable(append_to_container):
+                appended = bool(
+                    append_to_container(
+                        result_files=result_files,
+                        technical_type=typ,
+                        show_errors=True,
+                    )
+                )
+                self._aux_status.setText("" if appended else "Container sync error")
+                return
+
+            MeasurementWorker = self._get_technical_module("MeasurementWorker")
+            worker = MeasurementWorker(
+                filenames=result_files,
+                frames=1,
+                average_frames=False,
+            )
+            worker.add_aux_item.connect(self._add_aux_item_to_list)
             worker.run()
             if hasattr(self, "_sync_active_technical_container_from_table"):
                 self._sync_active_technical_container_from_table(show_errors=True)
+            self._aux_status.setText("")
         finally:
             self._pending_aux_capture_metadata = None
 
@@ -625,8 +642,34 @@ class TechnicalCaptureMixin:
         file_item = self.auxTable.item(row, self.AUX_COL_FILE)
         if not file_item:
             return
+        source_info = (
+            file_item.data(self._aux_source_info_role())
+            if file_item is not None and hasattr(self, "_aux_source_info_role")
+            else {}
+        )
+        if not isinstance(source_info, dict):
+            source_info = {}
+
         file_path = file_item.data(tm.Qt.UserRole)
         resolved_path = str(file_path or "").strip()
+        source_kind = str(source_info.get("source_kind") or "").strip().lower()
+        container_path = str(source_info.get("container_path") or "").strip()
+        dataset_path = str(source_info.get("dataset_path") or "").strip()
+        if (
+            not resolved_path.startswith("h5ref://")
+            and source_kind == "container"
+            and container_path
+            and dataset_path
+        ):
+            resolved_path = f"h5ref://{container_path}#{dataset_path}"
+            try:
+                file_item.setData(tm.Qt.UserRole, resolved_path)
+            except Exception:
+                logger.debug(
+                    "Failed to repoint stale technical-table source ref for row %s",
+                    row,
+                    exc_info=True,
+                )
         is_h5_ref = resolved_path.startswith("h5ref://")
         if resolved_path and not is_h5_ref and not os.path.exists(resolved_path):
             folder = self._current_technical_output_folder()
@@ -671,11 +714,6 @@ class TechnicalCaptureMixin:
             self._log_technical_event("Cannot open measurement window - technical imports not available")
             return
 
-        source_info = (
-            file_item.data(self._aux_source_info_role())
-            if file_item is not None and hasattr(self, "_aux_source_info_role")
-            else {}
-        )
         source_ref = str(file_item.data(tm.Qt.UserRole) or "").strip() if file_item is not None else ""
         show_measurement_window = self._get_technical_module("show_measurement_window")
         poni_text = self._resolve_technical_measurement_poni(

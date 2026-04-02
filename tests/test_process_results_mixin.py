@@ -387,6 +387,47 @@ def test_update_profile_previews_falls_back_to_legacy_updater_signature():
     assert calls == [("PRIMARY", (1.0, 2.0))]
 
 
+def test_update_profile_previews_accepts_result_records_with_filename():
+    calls = []
+    owner = SimpleNamespace(
+        _extract_profile_from_measurement=lambda measurement_ref, alias="": [
+            measurement_ref.get("filename"),
+            alias,
+        ],
+        update_detector_profile_preview=lambda alias, profile, point_uid=None: calls.append(
+            (alias, tuple(profile), point_uid)
+        ),
+    )
+
+    ZoneMeasurementsProcessResultsMixin._update_profile_previews_from_result_files(
+        owner,
+        {
+            "PRIMARY": {"filename": "h5ref:///tmp/session.h5#/entry/measurements/pt_001/meas_0001/det_primary/processed_signal"},
+            "SECONDARY": {"filename": "h5ref:///tmp/session.h5#/entry/measurements/pt_001/meas_0001/det_secondary/processed_signal"},
+        },
+        point_uid="1_uid",
+    )
+
+    assert calls == [
+        (
+            "PRIMARY",
+            (
+                "h5ref:///tmp/session.h5#/entry/measurements/pt_001/meas_0001/det_primary/processed_signal",
+                "PRIMARY",
+            ),
+            "1_uid",
+        ),
+        (
+            "SECONDARY",
+            (
+                "h5ref:///tmp/session.h5#/entry/measurements/pt_001/meas_0001/det_secondary/processed_signal",
+                "SECONDARY",
+            ),
+            "1_uid",
+        ),
+    ]
+
+
 def test_get_or_create_measurement_widget_prefers_existing_widget(monkeypatch):
     _patch_pm(monkeypatch)
     widget = _MeasurementWidget()

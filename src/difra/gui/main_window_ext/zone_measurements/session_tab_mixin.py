@@ -388,7 +388,11 @@ class SessionTabMixin:
             self.archive_path_label.setText(f"Archive folder: {archive_folder}")
 
     def _set_pending_session_actions_enabled(self, enabled: bool) -> None:
-        for attr_name in ("load_session_btn", "close_session_btn", "send_session_btn"):
+        load_button = getattr(self, "load_session_btn", None)
+        if load_button is not None:
+            load_button.setEnabled(True)
+
+        for attr_name in ("close_session_btn", "send_session_btn"):
             button = getattr(self, attr_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
@@ -698,11 +702,7 @@ class SessionTabMixin:
     def _on_load_selected_session_container(self):
         container_path = self._selected_pending_container()
         if container_path is None:
-            QMessageBox.warning(
-                self,
-                "No Container Selected",
-                "Select a session container from the queue.",
-            )
+            self._on_load_session_container_from_dialog()
             return
         self._open_session_container_path(container_path)
 

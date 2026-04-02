@@ -213,9 +213,50 @@ def test_session_queue_multiple_pending_containers_disables_actions(qapp, tmp_pa
 
     assert harness._selected_pending_container() is None
     assert "Multiple session containers found" in harness.pending_session_summary_label.text()
-    assert harness.load_session_btn.isEnabled() is False
+    assert harness.load_session_btn.isEnabled() is True
     assert harness.close_session_btn.isEnabled() is False
     assert harness.send_session_btn.isEnabled() is False
+
+
+def test_session_queue_load_button_falls_back_to_file_dialog_when_measurements_folder_is_empty(
+    qapp, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    chosen_container = tmp_path / "picked_elsewhere" / "session_external.nxs.h5"
+    chosen_container.parent.mkdir(parents=True, exist_ok=True)
+    chosen_container.write_bytes(b"placeholder")
+
+    harness = _SessionQueueHarness(
+        config={"measurements_folder": str(measurements_folder)},
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+    harness._refresh_session_container_lists()
+
+    opened_paths = []
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.QFileDialog.getOpenFileName",
+        staticmethod(
+            lambda *args, **kwargs: (
+                opened_paths.append((args[2], args[3])) or str(chosen_container),
+                "NeXus HDF5 Files (*.nxs.h5 *.h5)",
+            )
+        ),
+    )
+    monkeypatch.setattr(harness, "_open_session_container_path", lambda path: opened_paths.append(Path(path)))
+
+    assert harness.load_session_btn.isEnabled() is True
+
+    harness._on_load_selected_session_container()
+
+    assert opened_paths[0][0] == str(measurements_folder)
+    assert "NeXus HDF5 Files" in opened_paths[0][1]
+    assert opened_paths[1] == chosen_container
 
 
 def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monkeypatch):
