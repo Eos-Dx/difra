@@ -178,6 +178,23 @@ class ResizableEllipseItem(QGraphicsEllipseItem):
         self.unsetCursor()
         super().hoverLeaveEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._normalize_translation()
+
+    def _normalize_translation(self):
+        delta = self.pos()
+        if abs(delta.x()) < 1e-9 and abs(delta.y()) < 1e-9:
+            return
+        rect = QRectF(self.rect())
+        rect.translate(float(delta.x()), float(delta.y()))
+        self.setRect(rect)
+        self.setPos(0.0, 0.0)
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()
+
 
 class ResizableRectangleItem(QGraphicsRectItem):
     """Editable rectangle with draggable handles."""
@@ -264,6 +281,23 @@ class ResizableRectangleItem(QGraphicsRectItem):
     def hoverLeaveEvent(self, event):
         self.unsetCursor()
         super().hoverLeaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._normalize_translation()
+
+    def _normalize_translation(self):
+        delta = self.pos()
+        if abs(delta.x()) < 1e-9 and abs(delta.y()) < 1e-9:
+            return
+        rect = QRectF(self.rect())
+        rect.translate(float(delta.x()), float(delta.y()))
+        self.setRect(rect)
+        self.setPos(0.0, 0.0)
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()
 
 
 class ResizableZoneItem(QGraphicsEllipseItem):
@@ -428,6 +462,28 @@ class ResizableZoneItem(QGraphicsEllipseItem):
         self.unsetCursor()
         super().hoverLeaveEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._normalize_translation()
+
+    def _normalize_translation(self):
+        delta = self.pos()
+        if abs(delta.x()) < 1e-9 and abs(delta.y()) < 1e-9:
+            return
+        self._center_x += float(delta.x())
+        self._center_y += float(delta.y())
+        self.setRect(
+            self._center_x - self._radius,
+            self._center_y - self._radius,
+            2 * self._radius,
+            2 * self._radius
+        )
+        self.setPos(0.0, 0.0)
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()
+
 
 class ResizableSquareItem(QGraphicsRectItem):
     """Square calibration item with draggable handles."""
@@ -538,3 +594,26 @@ class ResizableSquareItem(QGraphicsRectItem):
     def hoverLeaveEvent(self, event):
         self.unsetCursor()
         super().hoverLeaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._normalize_translation()
+
+    def _normalize_translation(self):
+        delta = self.pos()
+        if abs(delta.x()) < 1e-9 and abs(delta.y()) < 1e-9:
+            return
+        self._center_x += float(delta.x())
+        self._center_y += float(delta.y())
+        half = self._side / 2.0
+        self.setRect(
+            self._center_x - half,
+            self._center_y - half,
+            self._side,
+            self._side,
+        )
+        self.setPos(0.0, 0.0)
+        self._update_handle_positions()
+        callback = getattr(self, "geometry_changed_callback", None)
+        if callable(callback):
+            callback()

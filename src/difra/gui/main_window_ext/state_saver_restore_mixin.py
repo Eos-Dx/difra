@@ -21,7 +21,7 @@ QPen = _module.QPen
 QPixmap = _module.QPixmap
 QGraphicsEllipseItem = _module.QGraphicsEllipseItem
 QGraphicsRectItem = _module.QGraphicsRectItem
-from difra.gui.extra.resizable_zone import ResizableSquareItem, ResizableZoneItem
+from difra.gui.extra.resizable_zone import ResizableEllipseItem, ResizableRectangleItem
 
 null_dict = _module.null_dict
 
@@ -265,18 +265,10 @@ class StateSaverRestoreMixin:
                 geo.get("height"),
             )
             role_lower = str(role or "").lower()
-            if role_lower in ["sample holder", "holder circle"]:
-                item = ResizableZoneItem(
-                    float(x) + float(w) / 2.0,
-                    float(y) + float(h) / 2.0,
-                    max(float(w), float(h)) / 2.0,
-                )
-            elif role_lower == "calibration square":
-                item = ResizableSquareItem(
-                    float(x) + float(w) / 2.0,
-                    float(y) + float(h) / 2.0,
-                    min(float(w), float(h)),
-                )
+            if role_lower == "holder circle":
+                item = ResizableEllipseItem(float(x), float(y), float(w), float(h))
+            elif role_lower in ["sample holder", "calibration square"]:
+                item = ResizableRectangleItem(float(x), float(y), float(w), float(h))
             else:
                 item = (
                     QGraphicsEllipseItem(x, y, w, h)
@@ -301,22 +293,31 @@ class StateSaverRestoreMixin:
             )
             item.setPen(pen)
             self.image_view.scene.addItem(item)
-            self.image_view.shapes.append(
-                {
-                    "id": shape_id,
-                    "uid": shape_uid,
-                    "type": s_type,
-                    "role": role,
-                    "physical_size_mm": shape.get("physical_size_mm"),
-                    "center_px": tuple(shape.get("center_px")) if shape.get("center_px") else None,
-                    "item": item,
-                    "active": (
-                        True
-                        if role in ["include", "exclude", "sample holder", "holder circle", "calibration square"]
-                        else False
-                    ),
-                }
-            )
+            shape_info = {
+                "id": shape_id,
+                "uid": shape_uid,
+                "type": s_type,
+                "role": role,
+                "isNew": bool(shape.get("isNew", False)),
+                "locked_after_measurements": bool(
+                    shape.get("locked_after_measurements", False)
+                ),
+                "physical_size_mm": shape.get("physical_size_mm"),
+                "center_px": tuple(shape.get("center_px")) if shape.get("center_px") else None,
+                "item": item,
+                "active": (
+                    True
+                    if role in ["include", "exclude", "sample holder", "holder circle", "calibration square"]
+                    else False
+                ),
+            }
+            callback = getattr(self, "_on_shape_geometry_changed", None)
+            if callable(callback) and hasattr(item, "geometry_changed_callback"):
+                try:
+                    item.geometry_changed_callback = lambda si=shape_info: callback(si)
+                except Exception:
+                    pass
+            self.image_view.shapes.append(shape_info)
         try:
             if hasattr(self.image_view, "shape_counter"):
                 self.image_view.shape_counter = (

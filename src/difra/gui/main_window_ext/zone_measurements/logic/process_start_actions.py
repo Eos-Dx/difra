@@ -684,6 +684,10 @@ def start_measurements(owner):
             else:
                 pm.logger.warning("⚠ _add_mapping_to_session method not found")
 
+            lock_shapes = getattr(owner, "_mark_current_shapes_as_measurement_locked", None)
+            if callable(lock_shapes):
+                lock_shapes()
+
             pm.logger.info("=== SESSION CONTAINER INITIALIZED ===")
             owner._append_session_log("Session container initialization complete")
         except Exception as exc:

@@ -46,6 +46,16 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
                     break
 
         for shape_info in shapes_to_delete:
+            if (
+                main_window is not None
+                and hasattr(main_window, "_delete_shape_infos")
+            ):
+                try:
+                    main_window._delete_shape_infos(shapes_to_delete)
+                    shapes_to_delete = []
+                    break
+                except Exception:
+                    pass
             shape_item = shape_info.get("item")
             if shape_item is not None:
                 self.scene.removeItem(shape_item)
