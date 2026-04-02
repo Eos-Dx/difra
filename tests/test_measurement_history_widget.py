@@ -8,6 +8,8 @@ import h5py
 import pytest
 from PyQt5.QtWidgets import QApplication
 
+from difra.gui.container_api import get_schema
+
 if "seaborn" not in sys.modules:
     sys.modules["seaborn"] = SimpleNamespace(
         heatmap=lambda data, robust=True, square=True, ax=None, cbar=False: ax.imshow(data)
@@ -27,30 +29,72 @@ def qapp():
 def test_resolve_poni_text_from_h5ref_reads_detector_poni_ref(tmp_path: Path):
     session_path = tmp_path / "session.h5"
     poni_text = "Distance: 0.17\nPoni1: 0.00704\nPoni2: 0.00088\n"
+    schema = get_schema(None)
 
     with h5py.File(session_path, "w") as h5f:
-        technical = h5f.create_group("technical")
-        poni_group = technical.create_group("poni")
+        h5f.require_group(getattr(schema, "GROUP_TECHNICAL", "/entry/technical"))
+        poni_group = h5f.require_group(
+            getattr(schema, "GROUP_TECHNICAL_PONI", "/entry/technical/poni")
+        )
         poni_ds = poni_group.create_dataset("poni_det_saxs", data=poni_text.encode("utf-8"))
-        poni_ds.attrs["detector_alias"] = "SAXS"
-        poni_ds.attrs["detector_id"] = "DET_SAXS"
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "SAXS"
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "DET_SAXS"
 
         processed = h5f.create_dataset(
-            "measurements/pt_001/meas_0001/det_det_saxs/processed_signal",
+            f"{getattr(schema, 'GROUP_MEASUREMENTS', '/entry/measurements')}/pt_001/meas_0001/det_det_saxs/{getattr(schema, 'DATASET_PROCESSED_SIGNAL', 'processed_signal')}",
             data=[[1.0, 2.0], [3.0, 4.0]],
         )
-        processed.parent.attrs["detector_alias"] = "SAXS"
-        processed.parent.attrs["detector_id"] = "DET_SAXS"
-        processed.parent.attrs["poni_ref"] = "/technical/poni/poni_det_saxs"
+        processed.parent.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "SAXS"
+        processed.parent.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "DET_SAXS"
+        processed.parent.attrs[getattr(schema, "ATTR_PONI_REF", "poni_ref")] = (
+            f"{getattr(schema, 'GROUP_TECHNICAL_PONI', '/entry/technical/poni')}/poni_det_saxs"
+        )
 
     measurement_ref = (
         f"h5ref://{session_path}"
-        "#/measurements/pt_001/meas_0001/det_det_saxs/processed_signal"
+        f"#{getattr(schema, 'GROUP_MEASUREMENTS', '/entry/measurements')}/pt_001/meas_0001/det_det_saxs/{getattr(schema, 'DATASET_PROCESSED_SIGNAL', 'processed_signal')}"
     )
 
     resolved = MeasurementHistoryWidget._resolve_poni_text_from_h5ref(
         measurement_ref,
         alias="SAXS",
+    )
+
+    assert resolved == poni_text.strip()
+
+
+def test_resolve_poni_text_from_h5ref_matches_raw_detector_role_aliases(tmp_path: Path):
+    session_path = tmp_path / "session_role_alias.h5"
+    poni_text = "Distance: 0.1701\nPoni1: 0.00704\nPoni2: 0.00088\n"
+    schema = get_schema(None)
+
+    with h5py.File(session_path, "w") as h5f:
+        h5f.require_group(getattr(schema, "GROUP_TECHNICAL", "/entry/technical"))
+        poni_group = h5f.require_group(
+            getattr(schema, "GROUP_TECHNICAL_PONI", "/entry/technical/poni")
+        )
+        poni_ds = poni_group.create_dataset(
+            "poni_det_primary",
+            data=poni_text.encode("utf-8"),
+        )
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "det_primary"
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "det_primary"
+
+        processed = h5f.create_dataset(
+            f"{getattr(schema, 'GROUP_MEASUREMENTS', '/entry/measurements')}/pt_001/meas_0001/det_primary/{getattr(schema, 'DATASET_PROCESSED_SIGNAL', 'processed_signal')}",
+            data=[[1.0, 2.0], [3.0, 4.0]],
+        )
+        processed.parent.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "det_primary"
+        processed.parent.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "det_primary"
+
+    measurement_ref = (
+        f"h5ref://{session_path}"
+        f"#{getattr(schema, 'GROUP_MEASUREMENTS', '/entry/measurements')}/pt_001/meas_0001/det_primary/{getattr(schema, 'DATASET_PROCESSED_SIGNAL', 'processed_signal')}"
+    )
+
+    resolved = MeasurementHistoryWidget._resolve_poni_text_from_h5ref(
+        measurement_ref,
+        alias="PRIMARY",
     )
 
     assert resolved == poni_text.strip()

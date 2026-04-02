@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
 
 from container.v0_2 import schema, technical_container, writer as session_writer
 from container.v0_2.container_manager import lock_container
+from difra.gui.container_api import get_schema
 from difra.gui.main_window_ext import session_mixin, technical_measurements
 from difra.gui.main_window_ext.technical import h5_management_mixin
 from difra.gui.main_window_ext.technical import h5_management_lock_actions
@@ -357,6 +358,40 @@ def test_load_technical_h5_sets_primary_and_types(qapp, tmp_path, monkeypatch):
         assert "/processed_signal" in source_value
 
     assert type_counts == {"DARK": 2, "EMPTY": 2, "BACKGROUND": 2, "AGBH": 2}
+
+
+def test_populate_aux_table_from_session_container_normalizes_embedded_ponis(qapp, tmp_path):
+    schema = get_schema(None)
+    session_path = tmp_path / "session_with_poni.nxs.h5"
+
+    with h5py.File(session_path, "w") as h5f:
+        entry = h5f.require_group("entry")
+        technical = entry.require_group("technical")
+        poni_group = technical.require_group("poni")
+        poni_ds = poni_group.create_dataset(
+            "poni_det_primary",
+            data=b"Distance: 0.1702\nPoni1: 0.00700\n",
+        )
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")] = "det_primary"
+        poni_ds.attrs[getattr(schema, "ATTR_DETECTOR_ID", "detector_id")] = "det_primary"
+
+    config = {
+        "DEV": True,
+        "detectors": [
+            {"id": "det_primary", "alias": "PRIMARY"},
+            {"id": "det_secondary", "alias": "SECONDARY"},
+        ],
+        "dev_active_detectors": ["det_primary", "det_secondary"],
+        "active_detectors": ["det_primary", "det_secondary"],
+    }
+    harness = _TechnicalLoadHarness(config=config, work_dir=tmp_path / "ui_session_like")
+    harness.show()
+    qapp.processEvents()
+
+    harness._populate_aux_table_from_h5(str(session_path), set_active=False)
+
+    assert "PRIMARY" in harness.ponis
+    assert "Distance: 0.1702" in harness.ponis["PRIMARY"]
 
 
 def test_open_image_requires_manual_session_container(qapp, tmp_path, monkeypatch):

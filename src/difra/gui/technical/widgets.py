@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from container import loader
+from container.registry import load_version_module
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
@@ -129,6 +131,14 @@ class DetectorProfilePreview(QWidget):
 
 
 class MeasurementHistoryWidget(QWidget):
+    @staticmethod
+    def _load_container_schema(container_path: Path):
+        try:
+            resolved_version = loader.detect_version(container_path)
+            return load_version_module(resolved_version.replace(".", "_")).schema
+        except Exception:
+            return None
+
     def __init__(self, masks, ponis, parent=None, point_id=None):
         super().__init__(parent)
         self.measurements = []
@@ -188,6 +198,33 @@ class MeasurementHistoryWidget(QWidget):
         return str(value or "")
 
     @classmethod
+    def _expand_technical_alias_candidates(cls, alias: str | None) -> set[str]:
+        token = cls._as_text(alias).strip().upper()
+        if not token:
+            return set()
+        if token.startswith("PONI_"):
+            token = token[5:]
+        if not token:
+            return set()
+        candidates = {token}
+        bare = token[4:] if token.startswith("DET_") else token
+        if bare:
+            candidates.add(bare)
+            candidates.add(f"DET_{bare}")
+        detector_groups = (
+            {"PRIMARY", "SAXS", "DET_PRIMARY", "DET_SAXS"},
+            {"SECONDARY", "WAXS", "DET_SECONDARY", "DET_WAXS"},
+        )
+        for group in detector_groups:
+            bare_group = {
+                value[4:] if value.startswith("DET_") else value for value in group
+            }
+            if token in group or bare in bare_group:
+                candidates.update(group)
+                candidates.update(bare_group)
+        return {candidate for candidate in candidates if candidate}
+
+    @classmethod
     def _read_poni_dataset_text(cls, dataset) -> str | None:
         try:
             value = dataset[()]
@@ -226,9 +263,27 @@ class MeasurementHistoryWidget(QWidget):
                     return None
                 dataset = h5f[dataset_path]
                 detector_group = dataset.parent
+                schema = cls._load_container_schema(container)
 
-                for attr_name in ("poni_ref", "poni_path"):
+                attr_detector_alias = getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")
+                attr_detector_id = getattr(schema, "ATTR_DETECTOR_ID", "detector_id")
+                attr_poni_ref = getattr(schema, "ATTR_PONI_REF", "poni_ref")
+                technical_poni_group = getattr(schema, "GROUP_TECHNICAL_PONI", "/entry/technical/poni")
+
+                candidate_paths = []
+                for attr_name in (attr_poni_ref, "poni_path"):
                     ref_path = cls._as_text(detector_group.attrs.get(attr_name, "")).strip()
+                    if ref_path and ref_path not in candidate_paths:
+                        candidate_paths.append(ref_path)
+
+                role_name = str(detector_group.name.rsplit("/", 1)[-1] or "").strip()
+                if role_name.startswith("det_"):
+                    for suffix in (role_name[4:], role_name):
+                        canonical_path = f"{technical_poni_group}/poni_{suffix}"
+                        if canonical_path not in candidate_paths:
+                            candidate_paths.append(canonical_path)
+
+                for ref_path in candidate_paths:
                     if ref_path and ref_path in h5f:
                         text = cls._read_poni_dataset_text(h5f[ref_path])
                         if text:
@@ -237,30 +292,34 @@ class MeasurementHistoryWidget(QWidget):
                 alias_candidates = set()
                 for candidate in (
                     alias,
-                    detector_group.attrs.get("detector_alias"),
-                    detector_group.attrs.get("detector_id"),
-                    detector_group.name.rsplit("/", 1)[-1],
+                    detector_group.attrs.get(attr_detector_alias),
+                    detector_group.attrs.get(attr_detector_id),
+                    role_name,
                 ):
-                    text = cls._as_text(candidate).strip().upper()
-                    if text:
-                        alias_candidates.add(text)
-                        if text.startswith("DET_"):
-                            alias_candidates.add(text.replace("DET_", "", 1))
+                    alias_candidates.update(
+                        cls._expand_technical_alias_candidates(candidate)
+                    )
 
-                poni_group = h5f.get("/technical/poni")
+                poni_group = h5f.get(technical_poni_group)
                 if poni_group is not None:
-                    for _, poni_dataset in poni_group.items():
+                    for dataset_name, poni_dataset in poni_group.items():
                         detector_alias = cls._as_text(
-                            getattr(poni_dataset, "attrs", {}).get("detector_alias", "")
-                        ).strip().upper()
+                            getattr(poni_dataset, "attrs", {}).get(attr_detector_alias, "")
+                        )
                         detector_id = cls._as_text(
-                            getattr(poni_dataset, "attrs", {}).get("detector_id", "")
-                        ).strip().upper()
-                        if (
-                            detector_alias and detector_alias in alias_candidates
-                        ) or (
-                            detector_id and detector_id in alias_candidates
-                        ):
+                            getattr(poni_dataset, "attrs", {}).get(attr_detector_id, "")
+                        )
+                        dataset_candidates = set()
+                        dataset_candidates.update(
+                            cls._expand_technical_alias_candidates(detector_alias)
+                        )
+                        dataset_candidates.update(
+                            cls._expand_technical_alias_candidates(detector_id)
+                        )
+                        dataset_candidates.update(
+                            cls._expand_technical_alias_candidates(dataset_name)
+                        )
+                        if alias_candidates & dataset_candidates:
                             text = cls._read_poni_dataset_text(poni_dataset)
                             if text:
                                 return text

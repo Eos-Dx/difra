@@ -83,7 +83,12 @@ class _Harness(TechnicalCaptureMixin):
     AUX_COL_FILE = 0
 
     def __init__(self, *, checked=True):
-        self.config = {}
+        self.config = {
+            "detectors": [
+                {"id": "det_primary", "alias": "PRIMARY"},
+                {"id": "det_secondary", "alias": "SECONDARY"},
+            ]
+        }
         self.hardware_controller = None
         self.stage_controller = None
         self.hardware_client = _FakeHardwareClient(_FakeStageController())
@@ -121,11 +126,23 @@ class _Harness(TechnicalCaptureMixin):
     def _collect_container_poni_text_by_alias(self, container_path: Path):
         payload = {}
         with h5py.File(container_path, "r") as h5f:
-            for name, ds in h5f["technical/poni"].items():
+            poni_group = h5f.get("/entry/technical/poni")
+            if poni_group is None:
+                return payload
+            for name, ds in poni_group.items():
                 alias = ds.attrs.get("detector_alias", "")
-                if isinstance(alias, bytes):
-                    alias = alias.decode("utf-8")
-                payload[str(alias)] = ds[()].decode("utf-8")
+                detector_id = ds.attrs.get("detector_id", "")
+                value = ds[()]
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                alias_candidates = set()
+                alias_candidates.update(self._normalize_technical_alias_candidates(alias))
+                alias_candidates.update(
+                    self._normalize_technical_alias_candidates(detector_id)
+                )
+                alias_candidates.update(self._normalize_technical_alias_candidates(name))
+                for candidate in alias_candidates:
+                    payload[str(candidate)] = str(value)
         return payload
 
 
@@ -171,7 +188,8 @@ def test_resolve_technical_measurement_poni_reads_from_active_container(tmp_path
     harness = _Harness()
     container_path = tmp_path / "technical.h5"
     with h5py.File(container_path, "w") as h5f:
-        technical = h5f.create_group("technical")
+        entry = h5f.create_group("entry")
+        technical = entry.create_group("technical")
         group = technical.create_group("poni")
         ds = group.create_dataset("poni_waxs", data=b"Distance: 0.17\nPoni1: 0.007\nPoni2: 0.008\n")
         ds.attrs["detector_alias"] = "WAXS"
@@ -181,3 +199,108 @@ def test_resolve_technical_measurement_poni_reads_from_active_container(tmp_path
 
     assert resolved is not None
     assert "Distance:" in resolved
+
+
+def test_resolve_technical_measurement_poni_prefers_detector_linked_ref(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_ref.h5"
+    with h5py.File(container_path, "w") as h5f:
+        entry = h5f.create_group("entry")
+        technical = entry.create_group("technical")
+        poni_group = technical.create_group("poni")
+        wrong = poni_group.create_dataset("poni_primary", data=b"Distance: 9.99\n")
+        wrong.attrs["detector_alias"] = "PRIMARY"
+        linked = poni_group.create_dataset("poni_det_saxs", data=b"Distance: 0.17\nPoni1: 0.007\n")
+        linked.attrs["detector_alias"] = "SAXS"
+        linked.attrs["detector_id"] = "DET_SAXS"
+
+        event = technical.create_group("tech_evt_001")
+        detector_group = event.create_group("det_saxs")
+        detector_group.attrs["detector_alias"] = "SAXS"
+        detector_group.attrs["detector_id"] = "DET_SAXS"
+        detector_group.attrs["poni_ref"] = "/entry/technical/poni/poni_det_saxs"
+        detector_group.create_dataset("processed_signal", data=[[1.0, 2.0], [3.0, 4.0]])
+
+    resolved = harness._resolve_technical_measurement_poni(
+        alias="PRIMARY",
+        source_ref=f"h5ref://{container_path}#/entry/technical/tech_evt_001/det_saxs/processed_signal",
+    )
+
+    assert resolved is not None
+    assert "Distance: 0.17" in resolved
+    assert "9.99" not in resolved
+
+
+def test_resolve_technical_measurement_mask_uses_detector_alias_from_container_context(tmp_path):
+    harness = _Harness()
+    harness.masks = {"SAXS": "saxs-mask"}
+    container_path = tmp_path / "technical_mask.h5"
+    with h5py.File(container_path, "w") as h5f:
+        entry = h5f.create_group("entry")
+        technical = entry.create_group("technical")
+        event = technical.create_group("tech_evt_001")
+        detector_group = event.create_group("det_saxs")
+        detector_group.attrs["detector_alias"] = "SAXS"
+        detector_group.attrs["detector_id"] = "DET_SAXS"
+        detector_group.create_dataset("processed_signal", data=[[1.0, 2.0], [3.0, 4.0]])
+
+    resolved = harness._resolve_technical_measurement_mask(
+        alias="PRIMARY",
+        source_ref=f"h5ref://{container_path}#/entry/technical/tech_evt_001/det_saxs/processed_signal",
+    )
+
+    assert resolved == "saxs-mask"
+
+
+def test_resolve_technical_measurement_poni_uses_container_canonical_technical_path(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_entry.h5"
+    with h5py.File(container_path, "w") as h5f:
+        entry = h5f.create_group("entry")
+        technical = entry.create_group("technical")
+        poni_group = technical.create_group("poni")
+        canonical = poni_group.create_dataset("poni_primary", data=b"Distance: 0.172399\nPoni1: 0.00702\n")
+        canonical.attrs["detector_alias"] = "PRIMARY"
+
+        event = technical.create_group("tech_evt_000001")
+        detector_group = event.create_group("det_primary")
+        detector_group.attrs["detector_alias"] = "PRIMARY"
+        detector_group.attrs["detector_id"] = "MiniPIX G08-W0299"
+        detector_group.create_dataset("processed_signal", data=[[1.0, 2.0], [3.0, 4.0]])
+
+    resolved = harness._resolve_technical_measurement_poni(
+        alias="PRIMARY",
+        source_ref=f"h5ref://{container_path}#/entry/technical/tech_evt_000001/det_primary/processed_signal",
+    )
+
+    assert resolved is not None
+    assert "Distance: 0.172399" in resolved
+
+
+def test_resolve_technical_measurement_poni_matches_raw_detector_role_aliases(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "session_like.h5"
+    with h5py.File(container_path, "w") as h5f:
+        entry = h5f.create_group("entry")
+        technical = entry.create_group("technical")
+        poni_group = technical.create_group("poni")
+        ds = poni_group.create_dataset(
+            "poni_det_primary",
+            data=b"Distance: 0.170001\nPoni1: 0.00701\n",
+        )
+        ds.attrs["detector_alias"] = "det_primary"
+        ds.attrs["detector_id"] = "det_primary"
+
+        event = technical.create_group("tech_evt_000001")
+        detector_group = event.create_group("det_primary")
+        detector_group.attrs["detector_alias"] = "det_primary"
+        detector_group.attrs["detector_id"] = "det_primary"
+        detector_group.create_dataset("processed_signal", data=[[1.0, 2.0], [3.0, 4.0]])
+
+    resolved = harness._resolve_technical_measurement_poni(
+        alias="PRIMARY",
+        source_ref=f"h5ref://{container_path}#/entry/technical/tech_evt_000001/det_primary/processed_signal",
+    )
+
+    assert resolved is not None
+    assert "Distance: 0.170001" in resolved

@@ -1410,11 +1410,6 @@ class H5ManagementLoadingMixin:
                 rows = self._extract_rows_from_canonical_group(h5f, schema, h5_path)
 
             detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
-            alias_to_detector_id = {
-                cfg.get("alias"): cfg.get("id")
-                for cfg in detector_configs
-                if cfg.get("alias") and cfg.get("id")
-            }
 
             tech_group = h5f.get(schema.GROUP_TECHNICAL)
             if tech_group is None:
@@ -1427,10 +1422,17 @@ class H5ManagementLoadingMixin:
                     for detector_name in event_group.keys():
                         detector_group = event_group[detector_name]
                         alias = detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
-                        if isinstance(alias, bytes):
-                            alias = alias.decode("utf-8", errors="replace")
-                        alias = str(alias or "").strip()
-                        detector_id = alias_to_detector_id.get(alias)
+                        detector_attr_id = detector_group.attrs.get(
+                            getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                            "",
+                        )
+                        _resolved_alias, detector_id, _alias_candidates = (
+                            self._resolve_configured_technical_alias(
+                                alias,
+                                detector_attr_id,
+                                detector_name,
+                            )
+                        )
                         if not detector_id:
                             continue
                         distance_attr = detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
@@ -1457,30 +1459,35 @@ class H5ManagementLoadingMixin:
                             poni_text = str(poni_blob)
 
                         alias = ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, "")
-                        if isinstance(alias, bytes):
-                            alias = alias.decode("utf-8", errors="replace")
-                        alias = str(alias or "").strip()
-                        if not alias and str(ds_name).startswith("poni_"):
-                            alias = str(ds_name)[5:].upper()
-                        if not alias:
+                        detector_attr_id = ds.attrs.get(
+                            getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                            "",
+                        )
+                        alias_key, detector_id, alias_candidates = (
+                            self._resolve_configured_technical_alias(
+                                alias,
+                                detector_attr_id,
+                                str(ds_name),
+                            )
+                        )
+                        if not alias_key and not alias_candidates:
                             continue
 
                         poni_filename = ds.attrs.get("poni_filename", "")
                         if isinstance(poni_filename, bytes):
                             poni_filename = poni_filename.decode("utf-8", errors="replace")
 
-                        loaded_poni[alias] = poni_text
-                        loaded_poni_files[alias] = {
-                            "path": "",
-                            "name": str(poni_filename or f"{alias}.poni"),
-                        }
+                        for candidate in [alias_key, *sorted(alias_candidates)]:
+                            store_key = str(candidate or "").strip().upper()
+                            if not store_key:
+                                continue
+                            loaded_poni[store_key] = poni_text
+                            loaded_poni_files[store_key] = {
+                                "path": "",
+                                "name": str(poni_filename or f"{store_key}.poni"),
+                            }
 
                         distance_attr = ds.attrs.get(schema.ATTR_DISTANCE_CM)
-                        detector_id = None
-                        for cfg in detector_configs:
-                            if cfg.get("alias") == alias:
-                                detector_id = cfg.get("id")
-                                break
                         if detector_id and distance_attr is not None:
                             extracted_distances[detector_id] = float(distance_attr)
                     except (KeyError, OSError, TypeError, ValueError) as poni_err:
@@ -1513,6 +1520,9 @@ class H5ManagementLoadingMixin:
                 self.poni_files = {}
             self.ponis.update(loaded_poni)
             self.poni_files.update(loaded_poni_files)
+            for widget in (getattr(self, "measurement_widgets", {}) or {}).values():
+                if hasattr(widget, "ponis"):
+                    widget.ponis = self.ponis
 
         if extracted_distances:
             self._detector_distances = extracted_distances
