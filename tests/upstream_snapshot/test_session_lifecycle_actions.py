@@ -85,6 +85,46 @@ def test_read_matador_metadata_uses_leading_specimen_id_from_container(tmp_path)
     assert metadata["specimen_id"] == 326111
 
 
+def test_upload_payload_names_include_specimen_distance_and_session_ids(tmp_path):
+    sid, session_path = _create_session_file(tmp_path / "measurements", "9907__9856")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["specimenId"] = "9907__9856"
+        h5f.attrs["distance_cm"] = 17.0
+        h5f.attrs["session_id"] = sid
+        h5f.require_group("/entry/calibration_snapshot").attrs["source_container_id"] = "tech_abc123"
+
+    names = SessionLifecycleActions._read_upload_payload_names(session_path)
+
+    assert names["measurement_zip_name"] == f"measurement_9907__9856_17cm_{sid}.zip"
+    assert names["calibration_zip_name"] == "calibration_17cm_tech_abc123.zip"
+
+
+def test_prepare_old_format_payload_uses_descriptive_zip_filenames(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    sid, session_path = _create_session_file(measurements, "9907__9856")
+    _add_complete_session_payload(session_path)
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["specimenId"] = "9907__9856"
+        h5f.attrs["distance_cm"] = 17.0
+        h5f.attrs["session_id"] = sid
+        h5f.require_group("/entry/calibration_snapshot").attrs["source_container_id"] = "tech_abc123"
+
+    _summary, _archived_export_dir, zip_path, calibration_zip_paths = (
+        SessionLifecycleActions._prepare_old_format_payload(
+            session_path,
+            archive_folder=archive_folder,
+            config={"old_format_export_folder": str(tmp_path / "old_format")},
+        )
+    )
+
+    assert Path(zip_path).name == f"measurement_9907__9856_17cm_{sid}.zip"
+    assert len(calibration_zip_paths) == 1
+    assert Path(calibration_zip_paths[0]).name == "calibration_17cm_tech_abc123.zip"
+
+
 def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
