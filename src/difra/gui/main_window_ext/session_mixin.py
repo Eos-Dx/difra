@@ -265,9 +265,11 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         file_menu.addAction(new_session_action)
         
         # Close Session action
-        close_session_action = QAction("Close Session", self)
+        close_session_action = QAction("Close && Archive Session", self)
         close_session_action.triggered.connect(self.on_close_session)
-        close_session_action.setStatusTip("Close the current session")
+        close_session_action.setStatusTip(
+            "Close the current session and move it to archive as UNSENT"
+        )
         file_menu.addAction(close_session_action)
         
         # Session Info action
@@ -275,15 +277,6 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         session_info_action.triggered.connect(self.on_session_info)
         session_info_action.setStatusTip("Show current session information")
         file_menu.addAction(session_info_action)
-        
-        # Add separator
-        file_menu.addSeparator()
-        
-        # Finalize & Send Session action
-        finalize_session_action = QAction("Finalize && Send Session", self)
-        finalize_session_action.triggered.connect(self.on_finalize_session)
-        finalize_session_action.setStatusTip("Finalize session and prepare for upload")
-        file_menu.addAction(finalize_session_action)
         
         # Add separator
         file_menu.addSeparator()
@@ -331,7 +324,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 "A session container is already open.\n\n"
                 f"Specimen ID: {self.session_manager.sample_id}\n"
                 f"Container: {Path(self.session_manager.session_path).name}\n\n"
-                "Close/finalize and send the current session from the Session controls before creating a new one.",
+                "Close and archive the current session from the Session controls before creating a new one.",
             )
             self._append_session_log("New session blocked: active session is still open")
             return
@@ -460,29 +453,40 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 "No session is currently active.",
             )
             return
-        
+
+        container_path = Path(self.session_manager.session_path)
         reply = QMessageBox.question(
             self,
-            "Close Session?",
-            f"Close session '{self.session_manager.sample_id}'?\n\n"
-            f"The container has been saved.",
+            "Close And Archive Session?",
+            (
+                f"Close and archive session '{self.session_manager.sample_id}'?\n\n"
+                "Complete containers will be archived as UNSENT.\n"
+                "Incomplete containers will be archived as NOT_COMPLETE and blocked from Matador send."
+            ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
-        if reply == QMessageBox.Yes:
-            closed_sample = self.session_manager.sample_id
-            self.session_manager.close_session()
-            QMessageBox.information(
-                self,
-                "Session Closed",
-                "Session closed successfully.",
-            )
-            logger.info("Session closed by user")
-            self._append_session_log(f"Closed session for sample {closed_sample}")
-            
-            # Update UI
-            self.update_session_status()
+
+        if reply != QMessageBox.Yes:
+            return
+
+        archive_handler = getattr(self, "_archive_sessions", None)
+        if callable(archive_handler):
+            archive_handler([container_path])
+            return
+
+        closed_sample = self.session_manager.sample_id
+        self.session_manager.close_session()
+        QMessageBox.information(
+            self,
+            "Session Closed",
+            "Session closed successfully.",
+        )
+        logger.info("Session closed by user")
+        self._append_session_log(f"Closed session for sample {closed_sample}")
+
+        # Update UI
+        self.update_session_status()
     
     def on_session_info(self):
         """Handle Session Info action."""

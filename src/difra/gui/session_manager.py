@@ -202,6 +202,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.specimen_id: Optional[str] = None
         self.study_name: Optional[str] = None
         self.technical_container_path: Optional[Path] = None
+        self.technical_container_id: Optional[str] = None
         self.session_state: str = self.SESSION_STATE_DRAFT
         
         # Track counters for linking
@@ -277,6 +278,15 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    @staticmethod
+    def _read_h5_text_attr(path: Path, attr_name: str, default: str = "") -> str:
+        try:
+            with h5py.File(path, "r") as h5f:
+                value = h5f.attrs.get(attr_name)
+        except Exception:
+            return default
+        return SessionManager._as_text(value, default)
 
     def _write_capture_manifest(self, measurement_path: str, payload: Dict) -> bool:
         """Persist measurement capture manifest JSON into measurement attrs."""
@@ -1001,6 +1011,12 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         )
         specimen_text = self._as_text(specimen_id, sample_id)
         self.specimen_id = specimen_text
+        technical_container_id = self._read_h5_text_attr(
+            Path(tech_path),
+            self.schema.ATTR_CONTAINER_ID,
+            "",
+        ).strip()
+        self.technical_container_id = technical_container_id or None
         extra_attrs = {
             "specimenId": specimen_text,
             "distance_cm": float(distance_cm),
@@ -1083,6 +1099,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         self.specimen_id = None
         self.study_name = None
         self.technical_container_path = None
+        self.technical_container_id = None
         self.i0_counter = None
         self.i_counter = None
         self._pending_measurements = {}
@@ -1141,9 +1158,14 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
 
             if calibration_snapshot is not None:
                 source = calibration_snapshot.attrs.get("source_file")
+                source_container_id = calibration_snapshot.attrs.get("source_container_id")
                 self.technical_container_path = Path(source) if source else None
+                self.technical_container_id = self._as_text(
+                    source_container_id, ""
+                ).strip() or None
             else:
                 self.technical_container_path = None
+                self.technical_container_id = None
 
             self._restore_attenuation_counters_from_h5(f)
             self.session_state = self._infer_session_state_from_h5(f)
@@ -1282,6 +1304,8 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             "operator_id": self.operator_id,
             "machine_name": self.machine_name,
             "beam_energy_kev": self.beam_energy_kev,
+            "technical_container_path": str(self.technical_container_path or ""),
+            "technical_container_id": str(self.technical_container_id or ""),
             "is_locked": self.is_locked(),
             "transfer_status": transfer_status,
             "session_state": str(self.session_state or self.SESSION_STATE_DRAFT),

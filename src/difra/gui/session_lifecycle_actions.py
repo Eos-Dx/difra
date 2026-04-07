@@ -22,6 +22,7 @@ from difra.gui.matador_upload_api import (
     sha256_file,
 )
 from difra.gui.main_window_ext.technical.helpers import _get_difra_base_folder
+from difra.gui.matador_zip_bundle_exporter import MatadorZipBundleExporter
 from difra.gui.session_lifecycle_service import SessionLifecycleService
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
@@ -270,7 +271,13 @@ class SessionLifecycleActions:
         return path
 
     @classmethod
-    def _zip_directory(cls, source_dir: Path, output_zip: Path) -> Path:
+    def _zip_directory(
+        cls,
+        source_dir: Path,
+        output_zip: Path,
+        *,
+        include_root: bool = True,
+    ) -> Path:
         source_dir = Path(source_dir)
         output_zip = Path(output_zip)
         output_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -278,7 +285,11 @@ class SessionLifecycleActions:
             for file_path in sorted(source_dir.rglob("*")):
                 if not file_path.is_file():
                     continue
-                arcname = file_path.relative_to(source_dir.parent)
+                arcname = (
+                    file_path.relative_to(source_dir.parent)
+                    if include_root
+                    else file_path.relative_to(source_dir)
+                )
                 zf.write(file_path, arcname=str(arcname))
         return output_zip
 
@@ -295,15 +306,48 @@ class SessionLifecycleActions:
             f"{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}"
         )
         temp_root.mkdir(parents=True, exist_ok=True)
-        summary = SessionOldFormatExporter.export_from_session_container(
+        summary = MatadorZipBundleExporter.export_from_session_container(
             session_path,
             config=config,
             archive_folder=archive_folder,
-            target_root=temp_root,
+            target_root=temp_root / "measurement_bundle",
         )
         export_dir = Path(summary.export_dir)
         export_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = cls._zip_directory(export_dir, export_dir.with_suffix(".zip"))
+        zip_path = cls._zip_directory(
+            export_dir,
+            export_dir.with_suffix(".zip"),
+            include_root=False,
+        )
+
+        calibration_zip_paths: List[Path] = []
+        calibration_export_dir: Optional[Path] = None
+        try:
+            calibration_summary = SessionOldFormatExporter.export_from_session_container(
+                session_path,
+                config=config,
+                archive_folder=archive_folder,
+                target_root=temp_root / "calibration_bundle",
+            )
+            calibration_export_dir = Path(calibration_summary.export_dir)
+            calibration_root = Path(calibration_summary.export_dir) / "calibration"
+            if calibration_root.exists():
+                for distance_dir in sorted(calibration_root.iterdir()):
+                    if not distance_dir.is_dir():
+                        continue
+                    calibration_zip = distance_dir.with_suffix(".zip")
+                    cls._zip_directory(
+                        distance_dir,
+                        calibration_zip,
+                        include_root=False,
+                    )
+                    calibration_zip_paths.append(calibration_zip)
+        except Exception:
+            logger.warning(
+                "Failed to prepare calibration ZIP payloads for %s",
+                str(session_path),
+                exc_info=True,
+            )
 
         archive_root = cls._resolve_old_format_archive_root(
             config=config,
@@ -319,8 +363,19 @@ class SessionLifecycleActions:
             archived_export_dir = archive_root / (
                 f"{export_dir.name}_{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}_{suffix}"
             )
-        shutil.move(str(export_dir), str(archived_export_dir))
-        return summary, archived_export_dir, zip_path
+        archived_export_dir.mkdir(parents=True, exist_ok=False)
+        archived_measurements_root = archived_export_dir / "measurements"
+        archived_measurements_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(export_dir), str(archived_measurements_root / export_dir.name))
+        if calibration_export_dir is not None:
+            calibration_root = calibration_export_dir / "calibration"
+            if calibration_root.exists():
+                shutil.copytree(
+                    calibration_root,
+                    archived_export_dir / "calibration",
+                    dirs_exist_ok=True,
+                )
+        return summary, archived_export_dir, zip_path, calibration_zip_paths
 
     @classmethod
     def _read_matador_session_metadata(
@@ -465,6 +520,7 @@ class SessionLifecycleActions:
         archived_path: Path,
         *,
         old_format_zip_path: Path,
+        calibration_zip_paths: Optional[List[Path]] = None,
         uploader_id: Optional[str] = None,
         upload_api: Optional[Any] = None,
         config: Optional[Dict[str, Any]] = None,
@@ -503,6 +559,9 @@ class SessionLifecycleActions:
             config=config,
             uploader_id=uploader_id,
         )
+        calibration_zip_paths = [
+            Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
+        ]
         specimen_text = str(session_metadata.get("specimen_text") or "").strip()
         if (
             specimen_text
@@ -551,6 +610,76 @@ class SessionLifecycleActions:
                 initiated_by=str(session_metadata["initiated_by"]),
             )
         )
+
+        for calibration_zip_path in calibration_zip_paths:
+            calibration_checksum = sha256_file(Path(calibration_zip_path))
+            cls._notify_progress(
+                progress_callback,
+                message=(
+                    f"{Path(archived_path).name}: Now registering calibration ZIP "
+                    f"{calibration_zip_path.name}..."
+                ),
+                current=current,
+                total=total,
+                kind="register_calibration_zip",
+                container_path=Path(archived_path),
+            )
+            calibration_registered = upload_backend.register_file(
+                MatadorRegisterFileRequest(
+                    ingest_session_id=int(ingest_session.id),
+                    file_name=Path(calibration_zip_path).name,
+                    file_type="ZIP_PAYLOAD",
+                    ingest_kind="CALIBRATION",
+                    detector_scope=str(session_metadata["detector_scope"]),
+                    expected_sha256=calibration_checksum,
+                    expected_size_bytes=int(Path(calibration_zip_path).stat().st_size),
+                )
+            )
+            cls._notify_progress(
+                progress_callback,
+                message=(
+                    f"{Path(archived_path).name}: Now uploading calibration ZIP "
+                    f"{calibration_zip_path.name}..."
+                ),
+                current=current,
+                total=total,
+                kind="upload_calibration_zip",
+                container_path=Path(archived_path),
+            )
+            upload_backend.upload_file_bytes(
+                calibration_registered.presigned_url,
+                Path(calibration_zip_path),
+            )
+            calibration_status = cls._poll_until_hash_verified(
+                upload_backend,
+                file_id=int(calibration_registered.id),
+                attempts=int((config or {}).get("matador_poll_attempts", 6)),
+                delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
+                progress_callback=progress_callback,
+                status_label=f"{Path(archived_path).name}: CALIBRATION",
+                current=current,
+                total=total,
+                container_path=Path(archived_path),
+            )
+            if calibration_status is None or str(calibration_status.upload_status or "").upper() != "HASH_VERIFIED":
+                calibration_state = (
+                    "" if calibration_status is None else str(calibration_status.upload_status or "")
+                )
+                return UploadStubResult(
+                    success=False,
+                    upload_session_id=str(ingest_session.id),
+                    message=(
+                        "Matador upload incomplete: "
+                        f"calibration={calibration_state or 'unknown'}"
+                    ),
+                    bytes_uploaded=int(Path(archived_path).stat().st_size),
+                    local_checksum_sha256=sha256_file(Path(archived_path)),
+                    response_checksum_sha256="",
+                    remote_container_id=f"matador://ingest-session/{ingest_session.id}",
+                    zip_checksum_sha256=sha256_file(Path(old_format_zip_path)),
+                    zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
+                    zip_path=str(old_format_zip_path),
+                )
 
         zip_checksum = sha256_file(Path(old_format_zip_path))
         cls._notify_progress(
@@ -1307,6 +1436,7 @@ class SessionLifecycleActions:
                     )
 
                 old_format_zip_path = None
+                calibration_zip_paths: List[Path] = []
                 if not use_stub_h5_only:
                     try:
                         cls._notify_progress(
@@ -1317,7 +1447,7 @@ class SessionLifecycleActions:
                             kind="prepare_old_format",
                             container_path=candidate,
                         )
-                        _summary, archived_old_format_dir, old_format_zip_path = (
+                        _summary, archived_old_format_dir, old_format_zip_path, calibration_zip_paths = (
                             cls._prepare_old_format_payload(
                                 candidate,
                                 archive_folder=archive_folder,
@@ -1336,6 +1466,7 @@ class SessionLifecycleActions:
                     except Exception as exc:
                         result.old_format_failed.append(f"{candidate.name}: {exc}")
                         old_format_zip_path = None
+                        calibration_zip_paths = []
 
                 explicit_session_id = session_id_by_path.get(str(candidate))
                 try:
@@ -1403,6 +1534,7 @@ class SessionLifecycleActions:
                     upload_result = cls._execute_matador_upload(
                         Path(archived_path),
                         old_format_zip_path=Path(old_format_zip_path),
+                        calibration_zip_paths=calibration_zip_paths,
                         uploader_id=resolved_uploader_id,
                         upload_api=upload_api,
                         config=config,
@@ -1612,6 +1744,7 @@ class SessionLifecycleActions:
                 )
 
                 old_format_zip_path = None
+                calibration_zip_paths: List[Path] = []
                 if not use_stub_h5_only:
                     try:
                         cls._notify_progress(
@@ -1622,7 +1755,7 @@ class SessionLifecycleActions:
                             kind="prepare_old_format",
                             container_path=candidate,
                         )
-                        _summary, archived_old_format_dir, old_format_zip_path = (
+                        _summary, archived_old_format_dir, old_format_zip_path, calibration_zip_paths = (
                             cls._prepare_old_format_payload(
                                 candidate,
                                 archive_folder=candidate.parent,
@@ -1633,6 +1766,7 @@ class SessionLifecycleActions:
                     except Exception as exc:
                         result.old_format_failed.append(f"{candidate.name}: {exc}")
                         old_format_zip_path = None
+                        calibration_zip_paths = []
 
                 if use_stub_h5_only:
                     upload_result = cls.execute_upload_stub(
@@ -1663,6 +1797,7 @@ class SessionLifecycleActions:
                     upload_result = cls._execute_matador_upload(
                         candidate,
                         old_format_zip_path=Path(old_format_zip_path),
+                        calibration_zip_paths=calibration_zip_paths,
                         uploader_id=resolved_uploader_id,
                         upload_api=upload_api,
                         config=config,

@@ -87,11 +87,23 @@ def test_session_manager_create_session(temp_dir, technical_container):
     assert manager.sample_id == "TEST_SAMPLE_001"
     assert manager.study_name == "UNSPECIFIED"
     assert manager.session_id == session_id
+    with h5py.File(technical_container, "r") as technical_file:
+        technical_id = str(technical_file.attrs.get(schema.ATTR_CONTAINER_ID))
     with h5py.File(session_path, "r") as session_file:
         assert session_file.attrs.get(schema.ATTR_PRODUCER_SOFTWARE) == "difra"
         assert schema.ATTR_PRODUCER_VERSION in session_file.attrs
         log_ds = f"{schema.GROUP_RUNTIME}/{schema.DATASET_SESSION_LOG}"
         assert log_ds in session_file
+        assert (
+            str(
+                session_file[schema.GROUP_CALIBRATION_SNAPSHOT].attrs.get(
+                    "source_container_id", ""
+                )
+            )
+            == technical_id
+        )
+    assert manager.technical_container_id == technical_id
+    assert manager.get_session_info()["technical_container_id"] == technical_id
 
 
 def test_session_manager_create_session_with_study(temp_dir, technical_container):
@@ -711,7 +723,10 @@ def test_session_manager_replace_technical_container(temp_dir, technical_contain
 
     manager.replace_technical_container(Path(new_tech_path))
 
+    with h5py.File(new_tech_path, "r") as technical_file:
+        new_tech_id = str(technical_file.attrs.get(schema.ATTR_CONTAINER_ID))
     assert manager.technical_container_path == Path(new_tech_path)
+    assert manager.technical_container_id == new_tech_id
     with h5py.File(session_path, "r") as session_file:
         source_file = session_file[schema.GROUP_CALIBRATION_SNAPSHOT].attrs.get(
             "source_file", ""
@@ -719,6 +734,14 @@ def test_session_manager_replace_technical_container(temp_dir, technical_contain
         if isinstance(source_file, bytes):
             source_file = source_file.decode("utf-8")
         assert source_file == str(new_tech_path)
+        assert (
+            str(
+                session_file[schema.GROUP_CALIBRATION_SNAPSHOT].attrs.get(
+                    "source_container_id", ""
+                )
+            )
+            == new_tech_id
+        )
 
 
 def test_session_manager_reset_for_image_reform_clears_points_and_attenuation(

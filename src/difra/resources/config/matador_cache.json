@@ -1,0 +1,95 @@
+{
+  "savedAt": "2026-04-02T15:31:49Z",
+  "studies": [
+    {
+      "id": 1101,
+      "name": "Horizon_Grant1",
+      "projectId": 1051,
+      "projectName": "Mouse Prostate Cancer research program "
+    },
+    {
+      "id": 1701,
+      "name": "Keele_Grant2",
+      "projectId": 1051,
+      "projectName": "Mouse Prostate Cancer research program "
+    },
+    {
+      "id": 1702,
+      "name": "Ulster_Grant3",
+      "projectId": 1051,
+      "projectName": "Mouse Prostate Cancer research program "
+    },
+    {
+      "id": 6751,
+      "name": "NewStudy",
+      "projectId": 6701,
+      "projectName": "NewProject"
+    },
+    {
+      "id": 9951,
+      "name": "Human Pancreas",
+      "projectId": 12151,
+      "projectName": "NISTA: a novel non-invasive ML tool enabling "
+    },
+    {
+      "id": 12301,
+      "name": "Sheep Pancreas",
+      "projectId": 12151,
+      "projectName": "NISTA: a novel non-invasive ML tool enabling "
+    },
+    {
+      "id": 15151,
+      "name": "Mouse Liver",
+      "projectId": 12151,
+      "projectName": "NISTA: a novel non-invasive ML tool enabling "
+    },
+    {
+      "id": 42851,
+      "name": "Human One Breasts K-Beta",
+      "projectId": 42801,
+      "projectName": "Human One"
+    },
+    {
+      "id": 43951,
+      "name": "test",
+      "projectId": 12151,
+      "projectName": "NISTA: a novel non-invasive ML tool enabling "
+    },
+    {
+      "id": 43952,
+      "name": "Lev's Keele",
+      "projectId": 6701,
+      "projectName": "NewProject"
+    },
+    {
+      "id": 64601,
+      "name": "Human-1 K-Alpha",
+      "projectId": 64551,
+      "projectName": "In-Vivo"
+    },
+    {
+      "id": 71051,
+      "name": "test_upload",
+      "projectId": 71001,
+      "projectName": "Difra"
+    }
+  ],
+  "machines": [
+    {
+      "id": 1151,
+      "name": "XENA"
+    },
+    {
+      "id": 1751,
+      "name": "MOLI"
+    },
+    {
+      "id": 1752,
+      "name": "SILVER_1"
+    },
+    {
+      "id": 6801,
+      "name": "XENA"
+    }
+  ]
+}

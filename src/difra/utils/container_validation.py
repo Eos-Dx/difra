@@ -8,6 +8,7 @@ import h5py
 
 from container import loader
 from container.registry import load_version_module
+from difra.gui.container_api import get_schema
 
 
 VALID_KINDS = {"session", "technical"}
@@ -52,10 +53,17 @@ def detect_container_type(file_path: Union[str, Path]) -> str:
         if container_type in VALID_KINDS:
             return container_type
 
+        try:
+            resolved_version = loader.detect_version(file_path)
+            version_module = load_version_module(resolved_version.replace(".", "_"))
+            schema = version_module.schema
+        except Exception:
+            schema = get_schema(None)
+
         # Fallback for partially populated files.
-        if "/entry/measurements" in file_handle or "/measurements" in file_handle:
+        if getattr(schema, "GROUP_MEASUREMENTS", "/entry/measurements") in file_handle:
             return "session"
-        if "/entry/technical" in file_handle or "/technical" in file_handle:
+        if getattr(schema, "GROUP_TECHNICAL", "/entry/technical") in file_handle:
             return "technical"
 
     raise ValueError("Cannot detect container type; specify --kind explicitly")
