@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import h5py
-
 from container.v0_2 import writer as session_writer
 from difra.gui.main_window_ext import session_mixin as session_mixin_module
 from difra.gui.main_window_ext import session_flow_actions as module
@@ -70,6 +69,106 @@ def test_prompt_and_attach_sample_image_can_import_workspace_from_previous_sessi
     result = module.prompt_and_attach_sample_image(owner)
 
     assert result == "Session: session_old.nxs.h5"
+
+
+def test_clear_session_workspace_resets_state_and_refreshes_tables():
+    calls = []
+    owner = SimpleNamespace(
+        state={
+            "shapes": [{"id": 1}],
+            "zone_points": [{"id": 2}],
+            "measurement_points": [{"id": 3}],
+            "skipped_points": [{"id": 4}],
+        },
+        state_measurements={
+            "measurement_points": [{"id": 5}],
+            "skipped_points": [{"id": 6}],
+        },
+        measurement_widgets=[],
+        delete_all_shapes_from_table=lambda force=True: calls.append(("shapes", force)),
+        delete_all_points=lambda: calls.append(("points", None)),
+        update_shape_table=lambda: calls.append(("shape_table", None)),
+        update_points_table=lambda: calls.append(("points_table", None)),
+    )
+
+    module.clear_session_workspace(owner)
+
+    assert calls == [
+        ("shapes", True),
+        ("points", None),
+        ("shape_table", None),
+        ("points_table", None),
+    ]
+    assert owner.state["shapes"] == []
+    assert owner.state["zone_points"] == []
+    assert owner.state["measurement_points"] == []
+    assert owner.state["skipped_points"] == []
+    assert owner.state_measurements["measurement_points"] == []
+    assert owner.state_measurements["skipped_points"] == []
+    assert owner.measurement_widgets == {}
+
+
+def test_on_new_session_clears_workspace_before_prompt(monkeypatch, tmp_path):
+    order = []
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec_(self):
+            return session_mixin_module.QDialog.Accepted
+
+        def get_parameters(self):
+            return {
+                "sample_id": "SPEC_001",
+                "study_name": "STUDY_A",
+                "operator_id": "sad",
+                "distance_cm": 17.0,
+            }
+
+    class _FakeSessionManager:
+        def __init__(self):
+            self.sample_id = None
+            self.session_path = None
+
+        def is_session_active(self):
+            return False
+
+        def create_session(self, folder, **kwargs):
+            self.sample_id = kwargs["sample_id"]
+            self.session_path = Path(folder) / "session_new.nxs.h5"
+            return "session_new", self.session_path
+
+    monkeypatch.setattr(session_mixin_module, "NewSessionDialog", _FakeDialog)
+    monkeypatch.setattr(
+        session_mixin_module.session_flow_actions,
+        "clear_session_workspace",
+        lambda owner: order.append("clear"),
+    )
+    monkeypatch.setattr(
+        session_mixin_module.session_flow_actions,
+        "prompt_and_attach_sample_image",
+        lambda owner: order.append("prompt") or None,
+    )
+    monkeypatch.setattr(
+        session_mixin_module.QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: session_mixin_module.QMessageBox.Ok),
+    )
+
+    owner = SimpleNamespace(
+        operator_manager=object(),
+        session_manager=_FakeSessionManager(),
+        _default_session_distance_cm=lambda: 17.0,
+        get_session_folder=lambda: tmp_path,
+        _append_session_log=lambda message: None,
+        update_session_status=lambda: order.append("status"),
+    )
+
+    session_mixin_module.SessionMixin.on_new_session(owner)
+
+    assert order[:2] == ["clear", "prompt"]
+    assert "status" in order
 
 
 def test_find_archived_session_candidates_filters_by_exact_specimen_id(tmp_path):

@@ -482,6 +482,42 @@ def test_open_image_requires_manual_session_container(qapp, tmp_path, monkeypatc
     assert harness.opened_paths == []
 
 
+def test_open_image_clears_workspace_before_setting_new_image(qapp, tmp_path, monkeypatch):
+    harness = _MainWindowBasicHarness()
+    harness.show()
+    qapp.processEvents()
+
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"not-a-real-png")
+
+    order = []
+    monkeypatch.setattr(harness, "_can_load_or_capture_sample_image", lambda: True)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (str(image_path), "Image Files (*.png *.jpg *.jpeg)")),
+    )
+    monkeypatch.setattr(
+        session_flow_actions,
+        "clear_session_workspace",
+        lambda owner: order.append("clear"),
+    )
+    monkeypatch.setattr(
+        harness.image_view,
+        "set_image",
+        lambda pixmap, image_path=None: order.append("set_image"),
+    )
+    monkeypatch.setattr(
+        harness,
+        "_handle_new_sample_image",
+        lambda image_path: order.append("attach"),
+    )
+
+    harness.open_image()
+
+    assert order == ["clear", "set_image", "attach"]
+
+
 def test_handle_new_sample_image_attaches_only_to_active_session(tmp_path, monkeypatch):
     technical_path = _make_technical_container(tmp_path / "technical_attach")
     lock_container(technical_path, user_id="sad")

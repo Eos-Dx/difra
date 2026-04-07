@@ -359,6 +359,8 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                     **{k: v for k, v in params.items() if k not in ['sample_id', 'operator_id', 'distance_cm']},
                 )
 
+                session_flow_actions.clear_session_workspace(self)
+
                 attached_image_source = None
                 try:
                     attached_image_source = session_flow_actions.prompt_and_attach_sample_image(
