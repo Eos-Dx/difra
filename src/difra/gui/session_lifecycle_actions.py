@@ -136,6 +136,59 @@ class SessionLifecycleActions:
             logger.debug("Suppressed session send progress callback exception", exc_info=True)
 
     @classmethod
+    def _read_upload_payload_names(cls, session_path: Path) -> Dict[str, str]:
+        session_path = Path(session_path)
+        measurement_zip_name = f"{session_path.stem}.zip"
+        calibration_zip_name = "calibration.zip"
+
+        try:
+            with h5py.File(session_path, "r") as h5f:
+                specimen_text = str(
+                    h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", "UNKNOWN"))
+                    or "UNKNOWN"
+                ).strip()
+                distance_value = h5f.attrs.get("distance_cm", h5f.attrs.get("distanceCm"))
+                try:
+                    distance_token = f"{max(1, int(round(float(distance_value))))}cm"
+                except Exception:
+                    distance_token = "unknown_distance"
+
+                session_id = cls._safe_token(
+                    str(h5f.attrs.get("session_id", "") or "").strip(),
+                    session_path.stem,
+                )
+                specimen_token = cls._safe_token(specimen_text, "UNKNOWN")
+
+                technical_container_id = ""
+                calibration_snapshot = h5f.get("/entry/calibration_snapshot")
+                if calibration_snapshot is not None:
+                    technical_container_id = str(
+                        calibration_snapshot.attrs.get("source_container_id", "") or ""
+                    ).strip()
+                technical_token = cls._safe_token(
+                    technical_container_id,
+                    "unknown_technical",
+                )
+
+                measurement_zip_name = (
+                    f"measurement_{specimen_token}_{distance_token}_{session_id}.zip"
+                )
+                calibration_zip_name = (
+                    f"calibration_{distance_token}_{technical_token}.zip"
+                )
+        except Exception:
+            logger.warning(
+                "Failed to derive Matador payload filenames for %s; falling back to defaults",
+                str(session_path),
+                exc_info=True,
+            )
+
+        return {
+            "measurement_zip_name": measurement_zip_name,
+            "calibration_zip_name": calibration_zip_name,
+        }
+
+    @classmethod
     def _write_container_attrs(cls, container_path: Path, attrs: Dict[str, Any]) -> bool:
         """Write attrs to a possibly locked HDF5 container (best effort)."""
         path = Path(container_path)
@@ -302,6 +355,7 @@ class SessionLifecycleActions:
         config: Optional[Dict[str, Any]] = None,
     ):
         stamp = time.strftime("%Y%m%d_%H%M%S")
+        payload_names = cls._read_upload_payload_names(Path(session_path))
         temp_root = Path(archive_folder) / ".matador_old_format_tmp" / (
             f"{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}"
         )
@@ -316,7 +370,7 @@ class SessionLifecycleActions:
         export_dir.mkdir(parents=True, exist_ok=True)
         zip_path = cls._zip_directory(
             export_dir,
-            export_dir.with_suffix(".zip"),
+            export_dir.parent / str(payload_names.get("measurement_zip_name") or export_dir.with_suffix(".zip").name),
             include_root=False,
         )
 
@@ -335,7 +389,10 @@ class SessionLifecycleActions:
                 for distance_dir in sorted(calibration_root.iterdir()):
                     if not distance_dir.is_dir():
                         continue
-                    calibration_zip = distance_dir.with_suffix(".zip")
+                    calibration_zip = distance_dir.parent / str(
+                        payload_names.get("calibration_zip_name")
+                        or distance_dir.with_suffix(".zip").name
+                    )
                     cls._zip_directory(
                         distance_dir,
                         calibration_zip,
