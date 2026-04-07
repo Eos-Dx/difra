@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 )
 
 from difra.hardware.camera_capture_dialog import CameraCaptureDialog
+from difra.gui.main_window_ext import session_flow_actions
 from difra.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -217,15 +218,9 @@ class MainWindowBasic(QMainWindow):
             "Image Files (*.png *.jpg *.jpeg);;All Files (*)",
         )
         if path:
+            session_flow_actions.clear_session_workspace(self)
             pixmap = QPixmap(path)
             self.image_view.set_image(pixmap, image_path=path)
-            try:
-                self.delete_all_shapes_from_table()
-                self.delete_all_points()
-            except Exception as e:
-                logger.warning(
-                    "Error clearing shapes/points after image load", error=str(e)
-                )
             if hasattr(self, '_handle_new_sample_image'):
                 self._handle_new_sample_image(path)
 
@@ -237,16 +232,9 @@ class MainWindowBasic(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             image_path = getattr(dialog, "selected_image_path", None)
             if image_path and os.path.exists(image_path):
+                session_flow_actions.clear_session_workspace(self)
                 pixmap = QPixmap(image_path)
                 self.image_view.set_image(pixmap, image_path=image_path)
-                try:
-                    self.delete_all_shapes_from_table()
-                    self.delete_all_points()
-                except Exception as e:
-                    logger.warning(
-                        "Error clearing shapes/points after camera capture",
-                        error=str(e),
-                    )
                 if hasattr(self, '_handle_new_sample_image'):
                     self._handle_new_sample_image(image_path)
             else:

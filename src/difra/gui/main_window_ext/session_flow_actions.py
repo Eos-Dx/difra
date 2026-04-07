@@ -167,6 +167,57 @@ def _pick_archived_session_candidate(owner, candidates: list[dict]) -> Path | No
     return path_by_label.get(str(selected_label))
 
 
+def clear_session_workspace(owner) -> None:
+    """Clear zones, points, and cached workspace state before loading a new session image."""
+    clear_shapes = getattr(owner, "delete_all_shapes_from_table", None)
+    if callable(clear_shapes):
+        try:
+            clear_shapes(force=True)
+        except TypeError:
+            try:
+                clear_shapes()
+            except Exception:
+                logger.warning("Failed to clear workspace shapes", exc_info=True)
+        except Exception:
+            logger.warning("Failed to clear workspace shapes", exc_info=True)
+
+    clear_points = getattr(owner, "delete_all_points", None)
+    if callable(clear_points):
+        try:
+            clear_points()
+        except Exception:
+            logger.warning("Failed to clear workspace points", exc_info=True)
+
+    state = getattr(owner, "state", None)
+    if isinstance(state, dict):
+        state["shapes"] = []
+        state["zone_points"] = []
+        state["measurement_points"] = []
+        state["skipped_points"] = []
+
+    state_measurements = getattr(owner, "state_measurements", None)
+    if isinstance(state_measurements, dict):
+        state_measurements["measurement_points"] = []
+        state_measurements["skipped_points"] = []
+
+    measurement_widgets = getattr(owner, "measurement_widgets", None)
+    if measurement_widgets is not None and not isinstance(measurement_widgets, dict):
+        owner.measurement_widgets = {}
+
+    update_shape_table = getattr(owner, "update_shape_table", None)
+    if callable(update_shape_table):
+        try:
+            update_shape_table()
+        except Exception:
+            logger.debug("Failed to refresh shape table after workspace clear", exc_info=True)
+    update_points_table = getattr(owner, "update_points_table", None)
+    if callable(update_points_table):
+        try:
+            update_points_table()
+        except Exception:
+            logger.debug("Failed to refresh points table after workspace clear", exc_info=True)
+
+
 def _import_workspace_from_previous_session(owner) -> str | None:
     specimen_id = _current_session_specimen_id(owner)
     candidates = _find_archived_session_candidates(owner, specimen_id)
@@ -237,12 +288,7 @@ def _load_sample_image_from_disk(owner) -> str | None:
     if callable(prompt_rotation):
         prompt_rotation()
 
-    clear_shapes = getattr(owner, "delete_all_shapes_from_table", None)
-    if callable(clear_shapes):
-        clear_shapes()
-    clear_points = getattr(owner, "delete_all_points", None)
-    if callable(clear_points):
-        clear_points()
+    clear_session_workspace(owner)
 
     if hasattr(owner, "_append_session_log"):
         owner._append_session_log(
