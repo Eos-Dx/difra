@@ -31,6 +31,12 @@ class SessionManagerMeasurementOpsMixin:
             auto_lock=auto_lock_source,
         )
         self.technical_container_path = Path(technical_file)
+        read_attr = getattr(self, "_read_h5_text_attr", None)
+        attr_name = getattr(getattr(self, "schema", None), "ATTR_CONTAINER_ID", "container_id")
+        technical_container_id = ""
+        if callable(read_attr):
+            technical_container_id = str(read_attr(Path(technical_file), attr_name, "") or "").strip()
+        self.technical_container_id = technical_container_id or None
 
     def add_sample_image(
         self,

@@ -1,5 +1,6 @@
 """Unit tests for Session tab presenter helpers."""
 
+from datetime import datetime
 import os
 from pathlib import Path
 
@@ -167,6 +168,8 @@ def test_read_session_container_metadata_includes_uploaded_by(tmp_path):
         h5f.attrs["upload_session_id"] = "upload_matador_user_20260309_120000"
         h5f.attrs["upload_status"] = "success"
         h5f.attrs["upload_response_checksum_sha256"] = "abc123"
+        h5f[schema.GROUP_CALIBRATION_SNAPSHOT].attrs["source_container_id"] = "tech_abc123"
+        h5f[schema.GROUP_CALIBRATION_SNAPSHOT].attrs["source_file"] = "/tmp/technical_abc123.nxs.h5"
 
     row = SessionTabPresenter.read_session_container_metadata(
         session_path,
@@ -180,6 +183,8 @@ def test_read_session_container_metadata_includes_uploaded_by(tmp_path):
     assert row["upload_session_id"] == "upload_matador_user_20260309_120000"
     assert row["upload_status"] == "success"
     assert row["upload_response_checksum_sha256"] == "abc123"
+    assert row["technical_container_id"] == "tech_abc123"
+    assert row["technical_container_path"] == "/tmp/technical_abc123.nxs.h5"
 
 
 def test_read_session_container_metadata_prefers_explicit_not_complete_status(tmp_path):
@@ -235,3 +240,69 @@ def test_build_active_session_view_state():
     assert active_locked.close_enabled is False
     assert active_locked.upload_enabled is True
     assert "SENT" in active_locked.info_text
+
+
+def test_filter_archived_rows_can_filter_unsent_today_and_sort():
+    rows = [
+        {
+            "file_name": "session_sent_old.nxs.h5",
+            "sample_id": "SPEC_A",
+            "project_id": "PROJECT_A",
+            "study_name": "STUDY_A",
+            "operator_id": "alice",
+            "uploaded_by": "alice",
+            "created": "2026-04-04 09:00:00",
+            "archived": "20260404_090000",
+            "status": "LOCKED / SENT",
+            "transfer_status": "SENT",
+        },
+        {
+            "file_name": "session_unsent_today_1.nxs.h5",
+            "sample_id": "SPEC_B",
+            "project_id": "PROJECT_B",
+            "study_name": "STUDY_B",
+            "operator_id": "bob",
+            "uploaded_by": "",
+            "created": "2026-04-06 08:00:00",
+            "archived": "20260406_080000",
+            "status": "LOCKED / UNSENT",
+            "transfer_status": "UNSENT",
+        },
+        {
+            "file_name": "session_unsent_today_2.nxs.h5",
+            "sample_id": "SPEC_C",
+            "project_id": "PROJECT_B",
+            "study_name": "STUDY_C",
+            "operator_id": "bob",
+            "uploaded_by": "",
+            "created": "2026-04-06 11:00:00",
+            "archived": "20260406_110000",
+            "status": "LOCKED / UNSENT",
+            "transfer_status": "UNSENT",
+        },
+        {
+            "file_name": "session_not_complete_today.nxs.h5",
+            "sample_id": "SPEC_D",
+            "project_id": "PROJECT_D",
+            "study_name": "STUDY_D",
+            "operator_id": "dana",
+            "uploaded_by": "",
+            "created": "2026-04-06 12:00:00",
+            "archived": "20260406_120000",
+            "status": "LOCKED / NOT_COMPLETE",
+            "transfer_status": "NOT_COMPLETE",
+        },
+    ]
+
+    filtered = SessionTabPresenter.filter_archived_rows(
+        rows,
+        date_mode="Today",
+        transfer_status_filter="Unsent",
+        project_filter="project_b",
+        operator_filter="bob",
+        search_filter="spec",
+        sort_mode="Archived: newest first",
+        now=datetime(2026, 4, 6, 18, 0, 0),
+    )
+
+    assert [row["sample_id"] for row in filtered] == ["SPEC_C", "SPEC_B"]

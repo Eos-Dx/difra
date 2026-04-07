@@ -284,3 +284,89 @@ def test_export_session_to_old_format_creates_new_distance_folder_when_payload_c
     calibration_root = summary_second.export_dir / "calibration"
     distance_dirs = sorted(path.name for path in calibration_root.iterdir() if path.is_dir())
     assert distance_dirs == ["17cm", "18cm"]
+
+
+def test_export_session_to_old_format_rebuilds_attenuation_files_from_session_container(tmp_path):
+    session_path = _create_session_with_technical_and_measurement(tmp_path, tag="attenuation")
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    i0_signal = np.full((4, 4), 7, dtype=np.float32)
+    i_signal = np.full((4, 4), 3, dtype=np.float32)
+
+    i0_path = session_writer.add_analytical_measurement(
+        file_path=session_path,
+        measurement_data={"DET-PRIMARY": i0_signal},
+        detector_metadata={"DET-PRIMARY": {"detector_id": "DET-PRIMARY", "integration_time_ms": 5000.0}},
+        poni_alias_map={"PRIMARY": "DET-PRIMARY"},
+        analysis_type="attenuation",
+        analysis_role="i0",
+        timestamp_start="2026-02-24 10:10:00",
+    )
+    i_path = session_writer.add_analytical_measurement(
+        file_path=session_path,
+        measurement_data={"DET-PRIMARY": i_signal},
+        detector_metadata={
+            "DET-PRIMARY": {
+                "detector_id": "DET-PRIMARY",
+                "integration_time_ms": 5000.0,
+                "point_position_mm": [1.25, 2.5],
+            }
+        },
+        poni_alias_map={"PRIMARY": "DET-PRIMARY"},
+        analysis_type="attenuation",
+        analysis_role="i",
+        timestamp_start="2026-02-24 10:11:00",
+    )
+
+    session_writer.link_analytical_measurement_to_point(
+        file_path=session_path,
+        point_index=1,
+        analytical_measurement_index=int(str(i0_path).split("_")[-1]),
+    )
+    session_writer.link_analytical_measurement_to_point(
+        file_path=session_path,
+        point_index=1,
+        analytical_measurement_index=int(str(i_path).split("_")[-1]),
+    )
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["meta_json"] = json.dumps(
+            {
+                "from_state_file": True,
+                "measurement_points": [
+                    {
+                        "point_index": 1,
+                        "unique_id": "1_deadbeef",
+                        "x": 1.25,
+                        "y": 2.5,
+                    }
+                ],
+                "attenuation_files": {
+                    "1_deadbeef": {
+                        "without_sample": {"PRIMARY": str(tmp_path / "missing_i0.npy")},
+                        "with_sample": {"PRIMARY": str(tmp_path / "missing_i.npy")},
+                    }
+                },
+            }
+        )
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    state = json.loads(summary.state_path.read_text(encoding="utf-8"))
+    attenuation_files = state["attenuation_files"]["1_deadbeef"]
+
+    exported_i0 = Path(attenuation_files["without_sample"]["PRIMARY"])
+    exported_i = Path(attenuation_files["with_sample"]["PRIMARY"])
+
+    assert exported_i0.exists() is True
+    assert exported_i.exists() is True
+    assert exported_i0.parent == summary.state_path.parent
+    assert exported_i.parent == summary.state_path.parent
+    assert "ATTENUATION0" in exported_i0.name
+    assert "ATTENUATION" in exported_i.name
+
+    np.testing.assert_array_equal(np.load(exported_i0), i0_signal)
+    np.testing.assert_array_equal(np.load(exported_i), i_signal)

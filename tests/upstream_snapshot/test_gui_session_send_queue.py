@@ -9,7 +9,16 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from container.v0_2 import schema, writer as session_writer
 from container.v0_2.container_manager import is_container_locked
@@ -152,15 +161,15 @@ def test_session_queue_send_single_container(qapp, tmp_path, monkeypatch):
 
     harness._refresh_session_container_lists()
     assert harness._selected_pending_container() == first_session
-    assert "File: session_" in harness.pending_session_summary_label.text()
-    assert "Specimen: SAMPLE_A" in harness.pending_session_summary_label.text()
+    assert "File: session_" in harness._pending_session_summary_text
+    assert "Specimen: SAMPLE_A" in harness._pending_session_summary_text
     assert harness.archived_sessions_table.rowCount() == 0
 
     harness._on_send_pending_session()
     qapp.processEvents()
 
     assert harness._selected_pending_container() is None
-    assert harness.pending_session_summary_label.text() == "No session container in measurements folder."
+    assert harness._pending_session_summary_text == "No session container in measurements folder."
     assert harness.archived_sessions_table.rowCount() == 1
     old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
     assert len(old_dirs) == 1
@@ -212,10 +221,35 @@ def test_session_queue_multiple_pending_containers_disables_actions(qapp, tmp_pa
     harness._refresh_session_container_lists()
 
     assert harness._selected_pending_container() is None
-    assert "Multiple session containers found" in harness.pending_session_summary_label.text()
+    assert "Multiple session containers found" in harness._pending_session_summary_text
     assert harness.load_session_btn.isEnabled() is True
     assert harness.close_session_btn.isEnabled() is False
     assert harness.send_session_btn.isEnabled() is False
+
+
+def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+
+    harness = _SessionQueueHarness(
+        config={"measurements_folder": str(measurements_folder)},
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+
+    session_tab = harness.tabs.widget(0)
+    group_titles = [group.title() for group in session_tab.findChildren(QGroupBox)]
+    button_texts = {button.text() for button in session_tab.findChildren(QPushButton)}
+
+    assert group_titles == ["Active Session Information"]
+    assert button_texts == {
+        "Create Session",
+        "Load Container",
+        "Close",
+        "Close and Send",
+        "Refresh",
+    }
 
 
 def test_session_queue_load_button_falls_back_to_file_dialog_when_measurements_folder_is_empty(
@@ -442,7 +476,7 @@ def test_session_queue_close_archives_and_marks_incomplete(qapp, tmp_path, monke
     harness._archive_sessions([complete_session, incomplete_session])
     qapp.processEvents()
     assert harness._selected_pending_container() is None
-    assert harness.pending_session_summary_label.text() == "No session container in measurements folder."
+    assert harness._pending_session_summary_text == "No session container in measurements folder."
     assert harness.archived_sessions_table.rowCount() == 2
 
     archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))

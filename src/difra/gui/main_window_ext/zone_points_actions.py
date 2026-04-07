@@ -1,11 +1,15 @@
 """Procedural table/update helpers extracted from ZonePointsMixin."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def update_points_table_safe(owner):
     """Minimal safe table update for restore operations (no widgets)."""
     try:
         if not hasattr(owner, "pointsTable") or owner.pointsTable is None:
-            print("Info: pointsTable not available for safe update")
+            logger.debug("pointsTable not available for safe update")
             return
 
         owner._updating_points_table = True
@@ -40,20 +44,20 @@ def update_points_table_safe(owner):
             owner.pointsTable.blockSignals(False)
             owner._updating_points_table = False
 
-        print(f"Safe table update completed with {len(points)} points")
+        logger.debug("Safe table update completed with %d points", len(points))
     except Exception as exc:
-        print(f"Error in safe table update: {exc}")
+        logger.warning("Error in safe table update: %s", exc, exc_info=True)
 
 
 def update_points_table(owner):
     """Update the points table with current point data and measurement widgets."""
     try:
         if not hasattr(owner, "pointsTable") or owner.pointsTable is None:
-            print("Info: pointsTable is not initialized, skipping table update")
+            logger.debug("pointsTable is not initialized, skipping table update")
             return
 
         if not hasattr(owner, "zonePointsDock"):
-            print("Info: Zone points widget not created yet, using safe update")
+            logger.debug("Zone points widget not created yet, using safe update")
             owner.update_points_table_safe()
             return
 
@@ -71,14 +75,13 @@ def update_points_table(owner):
             owner.pointsTable.blockSignals(False)
             owner._updating_points_table = False
 
-        print(
-            f"Updated table with {len(points)} points. Widget keys: {list(owner.measurement_widgets.keys())}"
+        logger.debug(
+            "Updated table with %d points. Widget keys: %s",
+            len(points),
+            list(owner.measurement_widgets.keys()),
         )
     except Exception as exc:
-        print(f"Error updating points table: {exc}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning("Error updating points table: %s", exc, exc_info=True)
 
 
 def delete_selected_points(owner):

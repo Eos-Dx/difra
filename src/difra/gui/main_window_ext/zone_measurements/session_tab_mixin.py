@@ -1,6 +1,6 @@
 """Session management tab for Zone Measurements."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
@@ -185,7 +186,7 @@ class SessionTabMixin:
         info_group = QGroupBox("Active Session Information")
         info_layout = QVBoxLayout(info_group)
         info_btn_row = QHBoxLayout()
-        self.new_session_btn = QPushButton("Create Session...")
+        self.new_session_btn = QPushButton("Create Session")
         on_new_session = getattr(self, "on_new_session", None)
         if callable(on_new_session):
             self.new_session_btn.clicked.connect(on_new_session)
@@ -193,13 +194,21 @@ class SessionTabMixin:
             self.new_session_btn.setEnabled(False)
         info_btn_row.addWidget(self.new_session_btn)
 
-        self.new_technical_btn = QPushButton("Create Technical...")
-        on_new_technical_container = getattr(self, "on_new_technical_container", None)
-        if callable(on_new_technical_container):
-            self.new_technical_btn.clicked.connect(on_new_technical_container)
-        else:
-            self.new_technical_btn.setEnabled(False)
-        info_btn_row.addWidget(self.new_technical_btn)
+        self.load_session_btn = QPushButton("Load Container")
+        self.load_session_btn.clicked.connect(self._on_load_selected_session_container)
+        info_btn_row.addWidget(self.load_session_btn)
+
+        self.close_session_btn = QPushButton("Close")
+        self.close_session_btn.clicked.connect(self._on_close_pending_session)
+        info_btn_row.addWidget(self.close_session_btn)
+
+        self.send_session_btn = QPushButton("Close and Send")
+        self.send_session_btn.clicked.connect(self._on_send_pending_session)
+        info_btn_row.addWidget(self.send_session_btn)
+
+        self.refresh_sessions_btn = QPushButton("Refresh")
+        self.refresh_sessions_btn.clicked.connect(self._refresh_session_container_lists)
+        info_btn_row.addWidget(self.refresh_sessions_btn)
         info_btn_row.addStretch()
         info_layout.addLayout(info_btn_row)
 
@@ -208,37 +217,7 @@ class SessionTabMixin:
         info_layout.addWidget(self.session_info_label)
         layout.addWidget(info_group)
 
-        queue_group = QGroupBox("Session Containers Ready To Close/Send")
-        queue_layout = QVBoxLayout(queue_group)
-
-        queue_btn_layout = QHBoxLayout()
-        queue_btn_layout.setSpacing(4)
-        self.refresh_sessions_btn = QPushButton("Refresh")
-        self.refresh_sessions_btn.clicked.connect(self._refresh_session_container_lists)
-        queue_btn_layout.addWidget(self.refresh_sessions_btn)
-
-        self.load_session_btn = QPushButton("Load Container")
-        self.load_session_btn.clicked.connect(self._on_load_selected_session_container)
-        queue_btn_layout.addWidget(self.load_session_btn)
-
-        self.close_session_btn = QPushButton("Close")
-        self.close_session_btn.clicked.connect(self._on_close_pending_session)
-        queue_btn_layout.addWidget(self.close_session_btn)
-
-        self.send_session_btn = QPushButton("Close and Send")
-        self.send_session_btn.clicked.connect(self._on_send_pending_session)
-        queue_btn_layout.addWidget(self.send_session_btn)
-        queue_btn_layout.addStretch()
-        queue_layout.addLayout(queue_btn_layout)
-
-        self.pending_session_summary_label = QLabel("No session container in measurements folder.")
-        self.pending_session_summary_label.setWordWrap(True)
-        self.pending_session_summary_label.setStyleSheet(
-            "padding: 10px; border: 1px solid #d0d0d0; border-radius: 4px;"
-        )
-        queue_layout.addWidget(self.pending_session_summary_label)
-
-        layout.addWidget(queue_group)
+        self._pending_session_summary_text = "No session container in measurements folder."
 
         layout.addStretch()
 
@@ -272,6 +251,15 @@ class SessionTabMixin:
             self._apply_archive_filters
         )
         filter_row.addWidget(self.archive_date_filter_combo)
+
+        self.archive_status_filter_combo = QComboBox()
+        self.archive_status_filter_combo.addItems(
+            ["All statuses", "Unsent", "Sent", "Not complete"]
+        )
+        self.archive_status_filter_combo.currentIndexChanged.connect(
+            self._apply_archive_filters
+        )
+        filter_row.addWidget(self.archive_status_filter_combo)
 
         self.archive_project_filter_edit = QLineEdit()
         self.archive_project_filter_edit.setPlaceholderText("Project filter")
@@ -322,12 +310,29 @@ class SessionTabMixin:
             ]
         )
         self.archived_sessions_table.setColumnHidden(9, True)
+        self.archived_sessions_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.archived_sessions_table.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+        )
         self.archived_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.archived_sessions_table.customContextMenuRequested.connect(
             self._show_archived_sessions_context_menu
         )
+        self.archived_sessions_table.itemSelectionChanged.connect(
+            self._update_archive_action_buttons
+        )
         self.archived_sessions_table.setSortingEnabled(True)
         layout.addWidget(self.archived_sessions_table)
+
+        archive_actions_row = QHBoxLayout()
+        self.send_archived_btn = QPushButton("Send Selected")
+        self.send_archived_btn.clicked.connect(
+            self._on_send_selected_archived_sessions
+        )
+        self.send_archived_btn.setEnabled(False)
+        archive_actions_row.addWidget(self.send_archived_btn)
+        archive_actions_row.addStretch()
+        layout.addLayout(archive_actions_row)
         layout.addStretch()
 
         self.tabs.addTab(tab, "Archive")
@@ -362,7 +367,7 @@ class SessionTabMixin:
         )
 
     def _refresh_session_container_lists(self):
-        if not hasattr(self, "pending_session_summary_label"):
+        if not hasattr(self, "_pending_session_summary_text"):
             return
 
         schema = self._container_schema()
@@ -402,9 +407,7 @@ class SessionTabMixin:
         self._current_pending_container_path = None
 
         if not rows:
-            self.pending_session_summary_label.setText(
-                "No session container in measurements folder."
-            )
+            self._pending_session_summary_text = "No session container in measurements folder."
             self._set_pending_session_actions_enabled(False)
             return
 
@@ -417,7 +420,7 @@ class SessionTabMixin:
             if file_names:
                 summary.append("")
                 summary.extend(file_names)
-            self.pending_session_summary_label.setText("\n".join(summary))
+            self._pending_session_summary_text = "\n".join(summary)
             self._set_pending_session_actions_enabled(False)
             return
 
@@ -432,34 +435,8 @@ class SessionTabMixin:
             f"Created: {row.get('created', '')}",
             f"Status: {row.get('status', '')}",
         ]
-        self.pending_session_summary_label.setText("\n".join(summary))
+        self._pending_session_summary_text = "\n".join(summary)
         self._set_pending_session_actions_enabled(self._current_pending_container_path is not None)
-
-    @staticmethod
-    def _parse_archive_datetime(value: str):
-        raw = str(value or "").strip()
-        if not raw:
-            return None
-        for fmt in (
-            "%Y%m%d_%H%M%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d",
-            "%Y%m%d",
-        ):
-            try:
-                return datetime.strptime(raw, fmt)
-            except Exception:
-                continue
-        return None
-
-    def _row_sort_datetime(self, row):
-        archived_dt = self._parse_archive_datetime(row.get("archived", ""))
-        if archived_dt is not None:
-            return archived_dt
-        created_dt = self._parse_archive_datetime(row.get("created", ""))
-        if created_dt is not None:
-            return created_dt
-        return datetime.min
 
     def _apply_archive_filters(self):
         if not hasattr(self, "archived_sessions_table"):
@@ -470,6 +447,11 @@ class SessionTabMixin:
             self.archive_date_filter_combo.currentText()
             if hasattr(self, "archive_date_filter_combo")
             else "All dates"
+        )
+        transfer_status_filter = (
+            self.archive_status_filter_combo.currentText()
+            if hasattr(self, "archive_status_filter_combo")
+            else "All statuses"
         )
         project_filter = (
             str(self.archive_project_filter_edit.text() or "").strip().lower()
@@ -487,57 +469,24 @@ class SessionTabMixin:
             else ""
         )
 
-        now = datetime.now()
-        filtered = []
-        for row in rows:
-            row_dt = self._row_sort_datetime(row)
-
-            if date_mode == "Today" and row_dt.date() != now.date():
-                continue
-            if date_mode == "Last 7 days" and row_dt < (now - timedelta(days=7)):
-                continue
-            if date_mode == "Last 30 days" and row_dt < (now - timedelta(days=30)):
-                continue
-
-            project_value = str(row.get("project_id") or row.get("study_name") or "")
-            operator_value = str(row.get("operator_id") or "")
-            if project_filter and project_filter not in project_value.lower():
-                continue
-            if operator_filter and operator_filter not in operator_value.lower():
-                continue
-
-            if search_filter:
-                haystack = " ".join(
-                    [
-                        str(row.get("file_name", "")),
-                        str(row.get("sample_id", "")),
-                        str(row.get("project_id", "")),
-                        str(row.get("study_name", "")),
-                        str(row.get("operator_id", "")),
-                        str(row.get("uploaded_by", "")),
-                        str(row.get("status", "")),
-                    ]
-                ).lower()
-                if search_filter not in haystack:
-                    continue
-
-            filtered.append(row)
-
         sort_mode = (
             self.archive_sort_combo.currentText()
             if hasattr(self, "archive_sort_combo")
             else "Archived: newest first"
         )
-        if sort_mode == "Archived: oldest first":
-            filtered.sort(key=self._row_sort_datetime)
-        elif sort_mode == "Project: A-Z":
-            filtered.sort(key=lambda row: str(row.get("project_id") or row.get("study_name") or "").lower())
-        elif sort_mode == "Operator: A-Z":
-            filtered.sort(key=lambda row: str(row.get("operator_id") or "").lower())
-        else:
-            filtered.sort(key=self._row_sort_datetime, reverse=True)
+        filtered = SessionTabPresenter.filter_archived_rows(
+            rows,
+            date_mode=date_mode,
+            transfer_status_filter=transfer_status_filter,
+            project_filter=project_filter,
+            operator_filter=operator_filter,
+            search_filter=search_filter,
+            sort_mode=sort_mode,
+            now=datetime.now(),
+        )
 
         SessionTabPresenter.populate_archive_table(self.archived_sessions_table, filtered)
+        self._update_archive_action_buttons()
 
     def _selected_pending_container(self) -> Optional[Path]:
         return getattr(self, "_current_pending_container_path", None)
@@ -559,6 +508,35 @@ class SessionTabMixin:
         if not raw:
             return None
         return Path(raw)
+
+    def _selected_archived_containers(
+        self, *, fallback_path: Optional[Path] = None
+    ) -> List[Path]:
+        table = getattr(self, "archived_sessions_table", None)
+        if table is None:
+            return [Path(fallback_path)] if fallback_path is not None else []
+
+        selected_rows = sorted({index.row() for index in table.selectedIndexes()})
+        selected_paths: List[Path] = []
+        for row in selected_rows:
+            path = self._path_from_table_row(table, row, 9)
+            if path is not None:
+                selected_paths.append(Path(path))
+
+        if fallback_path is None:
+            return selected_paths
+
+        fallback_resolved = str(Path(fallback_path))
+        if not selected_paths:
+            return [Path(fallback_path)]
+        if fallback_resolved not in {str(path) for path in selected_paths}:
+            return [Path(fallback_path)]
+        return selected_paths
+
+    def _update_archive_action_buttons(self):
+        send_button = getattr(self, "send_archived_btn", None)
+        if send_button is not None:
+            send_button.setEnabled(bool(self._selected_archived_containers()))
 
     def _open_session_container_path(self, container_path: Path):
         if container_path is None:
@@ -684,9 +662,22 @@ class SessionTabMixin:
         if selected == load_action:
             self._open_session_container_path(container_path)
         elif selected == send_action:
-            self._send_archived_sessions([container_path])
+            self._send_archived_sessions(
+                self._selected_archived_containers(fallback_path=container_path)
+            )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
+
+    def _on_send_selected_archived_sessions(self):
+        container_paths = self._selected_archived_containers()
+        if not container_paths:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "Select archived session container(s) to send.",
+            )
+            return
+        self._send_archived_sessions(container_paths)
 
     def _on_load_session_container_from_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(

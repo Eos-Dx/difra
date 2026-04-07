@@ -1,10 +1,11 @@
 """Presenter/service helpers for Session tab data and rendering."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import h5py
 from PyQt5.QtCore import Qt
@@ -77,6 +78,8 @@ class SessionTabPresenter:
             "study_name": "UNSPECIFIED",
             "project_id": "UNSPECIFIED",
             "operator_id": "UNKNOWN",
+            "technical_container_id": "",
+            "technical_container_path": "",
             "uploaded_by": "",
             "upload_timestamp": "",
             "upload_session_id": "",
@@ -114,6 +117,18 @@ class SessionTabPresenter:
                 info["operator_id"] = str(
                     cls.decode_attr(h5f.attrs.get(schema.ATTR_OPERATOR_ID, "UNKNOWN"))
                 )
+                calibration_snapshot = h5f.get(getattr(schema, "GROUP_CALIBRATION_SNAPSHOT", "/entry/technical"))
+                if calibration_snapshot is not None:
+                    info["technical_container_id"] = str(
+                        cls.decode_attr(
+                            calibration_snapshot.attrs.get("source_container_id", "")
+                        )
+                    )
+                    info["technical_container_path"] = str(
+                        cls.decode_attr(
+                            calibration_snapshot.attrs.get("source_file", "")
+                        )
+                    )
                 info["uploaded_by"] = str(
                     cls.decode_attr(
                         h5f.attrs.get(
@@ -244,6 +259,129 @@ class SessionTabPresenter:
             )
             for container_path in cls.scan_archived_session_containers(archive_folder)
         ]
+
+    @staticmethod
+    def parse_archive_datetime(value: str) -> Optional[datetime]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        for fmt in (
+            "%Y%m%d_%H%M%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y%m%d",
+        ):
+            try:
+                return datetime.strptime(raw, fmt)
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def row_sort_datetime(cls, row: Dict[str, str]) -> datetime:
+        archived_dt = cls.parse_archive_datetime(str(row.get("archived", "")))
+        if archived_dt is not None:
+            return archived_dt
+        created_dt = cls.parse_archive_datetime(str(row.get("created", "")))
+        if created_dt is not None:
+            return created_dt
+        return datetime.min
+
+    @staticmethod
+    def _normalize_status_filter(value: str) -> str:
+        return str(value or "").strip().lower().replace("_", " ")
+
+    @classmethod
+    def _row_transfer_status(cls, row: Dict[str, str]) -> str:
+        explicit = str(row.get("transfer_status") or "").strip().upper()
+        if explicit:
+            return explicit
+        status_text = str(row.get("status") or "").strip().upper()
+        if "NOT_COMPLETE" in status_text:
+            return "NOT_COMPLETE"
+        if "SENT" in status_text:
+            return "SENT"
+        if "UNSENT" in status_text:
+            return "UNSENT"
+        return ""
+
+    @classmethod
+    def filter_archived_rows(
+        cls,
+        rows: Sequence[Dict[str, str]],
+        *,
+        date_mode: str = "All dates",
+        transfer_status_filter: str = "All statuses",
+        project_filter: str = "",
+        operator_filter: str = "",
+        search_filter: str = "",
+        sort_mode: str = "Archived: newest first",
+        now: Optional[datetime] = None,
+    ) -> List[Dict[str, str]]:
+        current_time = now or datetime.now()
+        status_filter = cls._normalize_status_filter(transfer_status_filter)
+        project_filter = str(project_filter or "").strip().lower()
+        operator_filter = str(operator_filter or "").strip().lower()
+        search_filter = str(search_filter or "").strip().lower()
+
+        filtered: List[Dict[str, str]] = []
+        for row in rows:
+            row_dt = cls.row_sort_datetime(row)
+
+            if date_mode == "Today" and row_dt.date() != current_time.date():
+                continue
+            if date_mode == "Last 7 days" and row_dt < (current_time - timedelta(days=7)):
+                continue
+            if date_mode == "Last 30 days" and row_dt < (current_time - timedelta(days=30)):
+                continue
+
+            transfer_status = cls._row_transfer_status(row)
+            if status_filter == "unsent" and transfer_status != "UNSENT":
+                continue
+            if status_filter == "sent" and transfer_status != "SENT":
+                continue
+            if status_filter == "not complete" and transfer_status != "NOT_COMPLETE":
+                continue
+
+            project_value = str(row.get("project_id") or row.get("study_name") or "")
+            operator_value = str(row.get("operator_id") or "")
+            if project_filter and project_filter not in project_value.lower():
+                continue
+            if operator_filter and operator_filter not in operator_value.lower():
+                continue
+
+            if search_filter:
+                haystack = " ".join(
+                    [
+                        str(row.get("file_name", "")),
+                        str(row.get("sample_id", "")),
+                        str(row.get("project_id", "")),
+                        str(row.get("study_name", "")),
+                        str(row.get("operator_id", "")),
+                        str(row.get("uploaded_by", "")),
+                        str(row.get("status", "")),
+                        transfer_status,
+                    ]
+                ).lower()
+                if search_filter not in haystack:
+                    continue
+
+            filtered.append(dict(row))
+
+        if sort_mode == "Archived: oldest first":
+            filtered.sort(key=cls.row_sort_datetime)
+        elif sort_mode == "Project: A-Z":
+            filtered.sort(
+                key=lambda row: str(
+                    row.get("project_id") or row.get("study_name") or ""
+                ).lower()
+            )
+        elif sort_mode == "Operator: A-Z":
+            filtered.sort(key=lambda row: str(row.get("operator_id") or "").lower())
+        else:
+            filtered.sort(key=cls.row_sort_datetime, reverse=True)
+
+        return filtered
 
     @staticmethod
     def _readonly_item(value: Any) -> QTableWidgetItem:
