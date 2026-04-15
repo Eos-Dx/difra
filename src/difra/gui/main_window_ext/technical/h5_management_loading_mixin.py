@@ -1071,7 +1071,7 @@ class H5ManagementLoadingMixin:
             for alias, evt_idx in agbh_event_indices.items():
                 try:
                     technical_container.link_poni_to_event(active_path, alias, evt_idx)
-                except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
                     logger.warning(
                         "Failed to link PONI dataset to event alias=%s event=%s: %s",
                         alias,
@@ -1152,6 +1152,7 @@ class H5ManagementLoadingMixin:
             None,
         )
         normalize_technical_type = getattr(self, "_normalize_technical_type", None)
+        infer_type_from_filename = getattr(self, "_infer_type_from_filename", None)
         capture_metadata_from_path = getattr(self, "_extract_capture_metadata_from_path", None)
         pending_metadata = getattr(self, "_pending_aux_capture_metadata", None)
 
@@ -1169,7 +1170,20 @@ class H5ManagementLoadingMixin:
                     return bool(left_tokens & right_tokens)
             return str(left or "").strip().upper() == str(right or "").strip().upper()
 
-        normalized_type = _normalized_type(technical_type)
+        valid_technical_types = {
+            _normalized_type(option) for option in getattr(self, "TYPE_OPTIONS", []) if option
+        }
+
+        def _resolve_technical_type(source_path: str):
+            normalized = _normalized_type(technical_type)
+            if normalized in valid_technical_types:
+                return normalized
+            if callable(infer_type_from_filename):
+                inferred = _normalized_type(infer_type_from_filename(source_path))
+                if inferred in valid_technical_types:
+                    return inferred
+            return normalized
+
         appended_rows = []
         for alias, file_path in sorted((result_files or {}).items()):
             source_path = str(file_path or "").strip()
@@ -1208,7 +1222,7 @@ class H5ManagementLoadingMixin:
                 {
                     "index": len(runtime_rows) + len(appended_rows),
                     "alias": str(alias or "").strip() or None,
-                    "technical_type": normalized_type,
+                    "technical_type": _resolve_technical_type(source_path),
                     "is_primary": True,
                     "data": data,
                     "source_ref": source_path,
@@ -1222,8 +1236,9 @@ class H5ManagementLoadingMixin:
             return False
 
         for new_entry in appended_rows:
+            new_entry_type = _normalized_type(new_entry.get("technical_type"))
             for existing in runtime_rows:
-                if _normalized_type(existing.get("technical_type")) != normalized_type:
+                if _normalized_type(existing.get("technical_type")) != new_entry_type:
                     continue
                 if not _same_alias(existing.get("alias"), new_entry.get("alias")):
                     continue

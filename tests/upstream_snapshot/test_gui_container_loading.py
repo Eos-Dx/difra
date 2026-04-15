@@ -2258,6 +2258,50 @@ def test_capture_append_writes_new_measurements_to_container_before_table_refres
         assert str(row_group.attrs.get("source_file", "")) == str(new_file)
 
 
+def test_capture_append_infers_technical_type_from_filename_for_generic_aux_capture(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_capture_aux_infer"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={"operator_id": "sad"}, work_dir=technical_folder)
+
+    harness._populate_aux_table_from_h5(str(tech_path))
+    harness._set_active_technical_container(str(tech_path))
+    initial_rows = harness.auxTable.rowCount()
+
+    new_file = technical_folder / "background_capture_002_20260213_130000_1.000000s_1frames_PRIMARY.npy"
+    expected = np.full((8, 8), 321.0, dtype=np.float32)
+    np.save(new_file, expected)
+    harness._pending_aux_capture_metadata = {
+        "integration_time_ms": 1000.0,
+        "n_frames": 1,
+    }
+
+    appended = harness._append_captured_result_files_to_active_container(
+        {"PRIMARY": str(new_file)},
+        "Aux",
+        show_errors=True,
+    )
+
+    assert appended is True
+    assert harness.auxTable.rowCount() == initial_rows + 1
+
+    type_cb = harness.auxTable.cellWidget(harness.auxTable.rowCount() - 1, 2)
+    assert type_cb is not None
+    assert type_cb.currentText() == "BACKGROUND"
+
+    with h5py.File(tech_path, "r") as h5f:
+        row_group = h5f[
+            f"/entry/difra_runtime/technical_aux_rows/row_{initial_rows + 1:06d}"
+        ]
+        assert np.array_equal(np.asarray(row_group["processed_signal"][()]), expected)
+        assert str(row_group.attrs.get("type", "")) == "BACKGROUND"
+        assert bool(row_group.attrs.get("is_primary", False)) is True
+        assert str(row_group.attrs.get("source_file", "")) == str(new_file)
+
+
 def test_load_technical_container_prefers_canonical_h5refs_when_runtime_paths_are_off_machine(
     qapp, tmp_path
 ):
