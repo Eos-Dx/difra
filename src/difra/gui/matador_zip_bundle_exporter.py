@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -360,13 +361,15 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
                         det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id")),
                         detector_alias,
                     )
-                    alias_token = cls._safe_token(detector_alias, "DETECTOR").upper()
-                    base = (
-                        f"{bundle_base}_"
-                        f"{cls._format_coord_token(x_mm)}_"
-                        f"{cls._format_coord_token(y_mm)}_"
-                        f"{ts_token}_"
-                        f"{alias_token}"
+                    base = cls._measurement_file_base(
+                        bundle_base=bundle_base,
+                        point_name=str(point_name),
+                        point_unique_id=str(unique_id),
+                        measurement_name=str(meas_name),
+                        x_mm=x_mm,
+                        y_mm=y_mm,
+                        timestamp_token=ts_token,
+                        detector_alias=detector_alias,
                     )
 
                     integration_s = None
@@ -510,6 +513,42 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
             cleaned["attenuation_files"] = sanitized_attenuation
 
         return cleaned
+
+    @classmethod
+    def _resolve_embedded_image_base64(
+        cls,
+        *,
+        state_payload: Dict[str, Any],
+        h5f: h5py.File,
+    ) -> str:
+        payload = cls._as_text(
+            state_payload.get("image_base64") or state_payload.get("image_b64"),
+            "",
+        ).strip()
+        if payload:
+            if "," in payload and "base64" in payload[:40].lower():
+                payload = payload.split(",", 1)[1]
+            return payload
+
+        image_ref = cls._as_text(state_payload.get("image"), "").strip()
+        candidate_sources: List[Path] = []
+        if image_ref:
+            candidate_sources.append(Path(image_ref))
+            image_ref_posix = image_ref.replace("\\", "/")
+            if image_ref_posix != image_ref:
+                candidate_sources.append(Path(image_ref_posix))
+
+        for source_path in candidate_sources:
+            try:
+                if source_path.exists() and source_path.is_file():
+                    return base64.b64encode(source_path.read_bytes()).decode("ascii")
+            except Exception:
+                continue
+
+        image_bytes = cls._extract_image_bytes_from_container(h5f)
+        if image_bytes:
+            return base64.b64encode(image_bytes).decode("ascii")
+        return ""
 
     @classmethod
     def _measurement_data_payload(
@@ -799,7 +838,13 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
                 "shapes": state_payload.get("shapes", []),
                 "zone_points": state_payload.get("zone_points", []),
             }
+            image_base64 = cls._resolve_embedded_image_base64(
+                state_payload=state_payload,
+                h5f=h5f,
+            )
             state_payload = cls._strip_machine_local_state(state_payload=state_payload)
+            if image_base64:
+                state_payload["image_base64"] = image_base64
 
             state_name = f"{bundle_base}_state.json"
             state_path = export_dir / state_name

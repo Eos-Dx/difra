@@ -18,6 +18,8 @@ def _create_session_with_technical_and_measurement(
     technical_timestamp: str = "2026-02-24 10:00:00",
     sample_id: str = "SAMPLE_OLD_FMT",
     tag: str = "a",
+    duplicate_measurement_same_second: bool = False,
+    duplicate_agbh_with_rejected: bool = False,
 ) -> Path:
     technical_dir = tmp_path / f"technical_{tag}"
     measurements_dir = tmp_path / f"measurements_{tag}"
@@ -59,6 +61,21 @@ def _create_session_with_technical_and_measurement(
         timestamp=technical_timestamp,
         distances_cm={"PRIMARY": 17.0},
     )
+    if duplicate_agbh_with_rejected:
+        technical_container.add_technical_event(
+            file_path=tech_path,
+            event_index=2,
+            technical_type="AGBH",
+            measurements={
+                "PRIMARY": {
+                    "data": np.full((4, 4), technical_value + 5.0, dtype=np.float32),
+                    "detector_id": "DET-PRIMARY",
+                    "integration_time_ms": 7000.0,
+                }
+            },
+            timestamp="2026-02-24 10:05:00",
+            distances_cm={"PRIMARY": 17.0},
+        )
 
     _sid, session_path = session_writer.create_session_container(
         folder=measurements_dir,
@@ -78,6 +95,13 @@ def _create_session_with_technical_and_measurement(
         pixel_coordinates=[123.0, 456.0],
         physical_coordinates_mm=[1.25, 2.5],
     )
+    shared_timestamps = {}
+    if duplicate_measurement_same_second:
+        shared_timestamps = {
+            "timestamp_start": "2026-02-24 11:00:00",
+            "timestamp_end": "2026-02-24 11:00:00",
+        }
+
     session_writer.add_measurement(
         file_path=session_path,
         point_index=1,
@@ -90,9 +114,31 @@ def _create_session_with_technical_and_measurement(
                 "raw_dsc": b"[F0]\nType=i16\n",
             }
         },
+        **shared_timestamps,
     )
 
+    if duplicate_measurement_same_second:
+        session_writer.add_measurement(
+            file_path=session_path,
+            point_index=1,
+            measurement_data={"DET-PRIMARY": np.full((4, 4), 9.0, dtype=np.float32)},
+            detector_metadata={"DET-PRIMARY": {"integration_time_ms": 5000.0}},
+            poni_alias_map={"PRIMARY": "DET-PRIMARY"},
+            raw_files={
+                "DET-PRIMARY": {
+                    "raw_txt": b"7 8 9\n10 11 12\n",
+                    "raw_dsc": b"[F0]\nType=i16\n",
+                }
+            },
+            **shared_timestamps,
+        )
+
     with h5py.File(session_path, "a") as h5f:
+        if duplicate_agbh_with_rejected:
+            tech_group = h5f["/entry/technical"]
+            tech_group["tech_evt_000001"].attrs["is_primary"] = True
+            tech_group["tech_evt_000002"].attrs["is_primary"] = False
+            tech_group["tech_evt_000002"].attrs["supplementary_note"] = "operator_rejected"
         h5f.attrs["meta_json"] = json.dumps({"from_state_file": True})
 
     return Path(session_path)
@@ -134,6 +180,87 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert any(name.endswith(".poni") for name in tech_files)
     assert any(name.endswith(".npy") for name in tech_files)
     assert any(name.startswith("technical_meta_") and name.endswith(".json") for name in tech_files)
+    assert "calibrationData.json" in tech_files
+    assert "metadata.json" in tech_files
+
+    calibration_data = json.loads(
+        (technical_dir / "calibrationData.json").read_text(encoding="utf-8")
+    )
+    assert calibration_data["distance"] == "17cm"
+    assert calibration_data["entries"]
+    assert calibration_data["entries"][0]["scanType"] == "AgBH"
+    assert calibration_data["entries"][0]["detectorAlias"] == "PRIMARY"
+    assert any(name.endswith(".poni") for name in calibration_data["entries"][0]["frameFiles"])
+    agbh_entry = calibration_data["entries"][0]
+    agbh_npy = next(name for name in agbh_entry["frameFiles"] if name.endswith(".npy"))
+    agbh_poni = next(name for name in agbh_entry["frameFiles"] if name.endswith(".poni"))
+    assert agbh_poni == f"{Path(agbh_npy).stem}.poni"
+
+    calibration_manifest = json.loads(
+        (technical_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert len(set(calibration_manifest["fileNames"])) == len(calibration_manifest["fileNames"])
+    assert "calibrationData.json" in calibration_manifest["fileNames"]
+    assert any(name.startswith("technical_meta_") for name in calibration_manifest["fileNames"])
+
+
+def test_export_session_to_old_format_keeps_measurement_filenames_unique(tmp_path):
+    session_path = _create_session_with_technical_and_measurement(
+        tmp_path,
+        tag="unique_names",
+        duplicate_measurement_same_second=True,
+    )
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    sample_files = [path.name for path in summary.state_path.parent.iterdir() if path.is_file()]
+    txt_files = sorted(name for name in sample_files if name.endswith(".txt"))
+    npy_files = sorted(name for name in sample_files if name.endswith(".npy"))
+
+    assert len(txt_files) == 2
+    assert len(set(txt_files)) == 2
+    assert len(npy_files) == 2
+    assert len(set(npy_files)) == 2
+    assert any("_meas_" in name for name in txt_files)
+
+
+def test_calibration_data_marks_selected_and_rejected_entries(tmp_path):
+    session_path = _create_session_with_technical_and_measurement(
+        tmp_path,
+        tag="calib_selection",
+        duplicate_agbh_with_rejected=True,
+    )
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    technical_dir = next(path for path in (summary.export_dir / "calibration").iterdir() if path.is_dir())
+    calibration_data = json.loads(
+        (technical_dir / "calibrationData.json").read_text(encoding="utf-8")
+    )
+
+    agbh_entries = [
+        entry
+        for entry in calibration_data["entries"]
+        if entry.get("scanType") == "AgBH" and entry.get("detectorAlias") == "PRIMARY"
+    ]
+    assert len(agbh_entries) == 2
+    assert sum(1 for entry in agbh_entries if entry.get("usedForCalibration") is True) == 1
+    assert sum(1 for entry in agbh_entries if entry.get("usedForCalibration") is False) == 1
+
+    selected_entry = next(entry for entry in agbh_entries if entry["usedForCalibration"] is True)
+    rejected_entry = next(entry for entry in agbh_entries if entry["usedForCalibration"] is False)
+
+    assert selected_entry["operatorDecision"] == "accepted_for_calibration"
+    assert rejected_entry["operatorDecision"] == "rejected_for_calibration"
+    assert rejected_entry["selectionNote"] == "operator_rejected"
 
 
 def test_export_session_to_old_format_copies_jpg_from_state_image_path(tmp_path):
