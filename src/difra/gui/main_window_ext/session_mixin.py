@@ -208,6 +208,63 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                         f"Folder: {locked_folder}",
                     )
         return True
+
+    def _is_active_session_loaded_from_archive(self) -> bool:
+        """Return True when the active session path points inside the archive tree."""
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            return False
+        if not self.session_manager.is_session_active():
+            return False
+
+        session_path = getattr(self.session_manager, "session_path", None)
+        if not session_path:
+            return False
+
+        try:
+            from difra.gui.session_lifecycle_service import SessionLifecycleService
+
+            measurements_folder = None
+            get_session_folder = getattr(self, "get_session_folder", None)
+            if callable(get_session_folder):
+                measurements_folder = get_session_folder()
+
+            archive_root = SessionLifecycleService.resolve_archive_folder(
+                config=self.config if hasattr(self, "config") else None,
+                measurements_folder=measurements_folder,
+            )
+            archive_root = Path(archive_root).resolve()
+            session_resolved = Path(session_path).resolve()
+            return archive_root == session_resolved or archive_root in session_resolved.parents
+        except Exception as exc:
+            logger.debug(
+                "Failed to determine whether active session came from archive: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
+    def _can_replace_active_session_for_new_session(self) -> bool:
+        """Allow new-session flow to replace an archived read-only session."""
+        if not hasattr(self, "session_manager") or self.session_manager is None:
+            return False
+        if not self.session_manager.is_session_active():
+            return False
+
+        is_locked = getattr(self.session_manager, "is_locked", None)
+        if not callable(is_locked):
+            return False
+
+        try:
+            return bool(is_locked()) and SessionMixin._is_active_session_loaded_from_archive(
+                self
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to evaluate active-session replacement policy: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
     
     def init_session_manager(self):
         """Initialize SessionManager and add UI actions."""
@@ -317,7 +374,9 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         """Handle New Session action."""
         self._append_session_log("New session requested")
         # Check if session already active
-        if self.session_manager.is_session_active():
+        if self.session_manager.is_session_active() and not SessionMixin._can_replace_active_session_for_new_session(
+            self
+        ):
             QMessageBox.warning(
                 self,
                 "Session Already Open",
@@ -328,7 +387,11 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             )
             self._append_session_log("New session blocked: active session is still open")
             return
-        
+        if self.session_manager.is_session_active():
+            self._append_session_log(
+                "Archived locked session is open read-only; allowing new session creation"
+            )
+
         # Show dialog to get session parameters
         dialog = NewSessionDialog(
             self.operator_manager,
