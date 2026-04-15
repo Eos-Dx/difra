@@ -6,6 +6,7 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 from container.v0_2 import container_manager, writer as session_writer
+from difra.gui.matador_upload_api import RealMatadorUploadApi
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 
 
@@ -85,6 +86,33 @@ def test_read_matador_metadata_uses_leading_specimen_id_from_container(tmp_path)
     assert metadata["specimen_id"] == 326111
 
 
+def test_read_matador_metadata_uses_acquisition_date_as_session_date(tmp_path):
+    _sid, session_path = _create_session_file(tmp_path / "measurements", "326111__326169")
+
+    metadata = SessionLifecycleActions._read_matador_session_metadata(session_path)
+
+    assert metadata["session_date"] == "2026-02-16"
+
+
+def test_execute_matador_upload_rejects_real_upload_without_numeric_specimen(tmp_path):
+    _sid, session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A")
+    zip_path = tmp_path / "payload.zip"
+    zip_path.write_text("payload", encoding="utf-8")
+
+    result = SessionLifecycleActions._execute_matador_upload(
+        session_path,
+        old_format_zip_path=zip_path,
+        upload_api=RealMatadorUploadApi(
+            base_url="https://dev-gamma.matur.co.uk",
+            token="token-value",
+        ),
+        config={},
+    )
+
+    assert result.success is False
+    assert "specimen ID is required" in result.message
+
+
 def test_upload_payload_names_include_specimen_distance_and_session_ids(tmp_path):
     sid, session_path = _create_session_file(tmp_path / "measurements", "9907__9856")
 
@@ -98,6 +126,21 @@ def test_upload_payload_names_include_specimen_distance_and_session_ids(tmp_path
 
     assert names["measurement_zip_name"] == f"measurement_9907__9856_17cm_{sid}.zip"
     assert names["calibration_zip_name"] == "calibration_17cm_tech_abc123.zip"
+
+
+def test_upload_payload_names_accept_technical_snapshot_path_used_by_current_schema(tmp_path):
+    sid, session_path = _create_session_file(tmp_path / "measurements", "9907__9856")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["specimenId"] = "9907__9856"
+        h5f.attrs["distance_cm"] = 2.0
+        h5f.attrs["session_id"] = sid
+        h5f.require_group("/entry/technical").attrs["source_container_id"] = "0664bb96181e4206"
+
+    names = SessionLifecycleActions._read_upload_payload_names(session_path)
+
+    assert names["measurement_zip_name"] == f"measurement_9907__9856_2cm_{sid}.zip"
+    assert names["calibration_zip_name"] == "calibration_2cm_0664bb96181e4206.zip"
 
 
 def test_prepare_old_format_payload_uses_descriptive_zip_filenames(tmp_path):

@@ -73,6 +73,18 @@ def normalize_matador_token(value: str) -> str:
     return text
 
 
+def _normalize_iso_date(value: Any) -> str:
+    text = _strip_wrapping_quotes(value)
+    if not text:
+        return ""
+    candidate = text[:10]
+    try:
+        time.strptime(candidate, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return candidate
+
+
 def _as_text(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -201,6 +213,7 @@ class MatadorFindOrCreateSessionRequest:
     distance_in_mm: int
     exposure_time_sec: float
     initiated_by: str
+    session_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -367,7 +380,7 @@ class StubMatadorUploadApi:
     def find_or_create_session(
         self, request: MatadorFindOrCreateSessionRequest
     ) -> MatadorIngestSessionResponse:
-        day_token = time.strftime("%Y%m%d")
+        day_token = _normalize_iso_date(request.session_date) or time.strftime("%Y-%m-%d")
         existing = None
         for session in self._sessions.values():
             if (
@@ -658,6 +671,7 @@ class RealMatadorUploadApi:
     def find_or_create_session(
         self, request: MatadorFindOrCreateSessionRequest
     ) -> MatadorIngestSessionResponse:
+        session_date = _normalize_iso_date(request.session_date)
         payload = {
             "studyId": int(request.study_id),
             "machineId": int(request.machine_id),
@@ -669,6 +683,7 @@ class RealMatadorUploadApi:
             method="POST",
             path="/api/ingest-sessions/find-or-create",
             payload=payload,
+            query={"sessionDate": session_date} if session_date else None,
         )
         return self._coerce_session(data)
 
@@ -737,9 +752,8 @@ class RealMatadorUploadApi:
                 "size": 100,
             },
         )
-        if not isinstance(data, list):
-            return []
-        return [self._coerce_status(item) for item in data if isinstance(item, dict)]
+        items = self._coerce_collection(data)
+        return [self._coerce_status(item) for item in items]
 
     def list_studies(self) -> List[Dict[str, Any]]:
         data = self._request_json(

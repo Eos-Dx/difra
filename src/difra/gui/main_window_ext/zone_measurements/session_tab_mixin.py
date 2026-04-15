@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -610,6 +610,11 @@ class SessionTabMixin:
         raw_specimen = str(specimen_text or "").strip()
         if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
             return None
+        detail_line = (
+            f"The stored specimen '{raw_specimen}' is not a valid Matador integer specimen ID."
+            if raw_specimen
+            else "No Matador integer specimen ID is stored in this container."
+        )
         value, accepted = QInputDialog.getText(
             self,
             "Matador Specimen ID Required",
@@ -617,7 +622,7 @@ class SessionTabMixin:
                 [
                     f"Container: {container_path.name}",
                     "",
-                    f"The stored specimen '{raw_specimen}' is not a valid Matador integer specimen ID.",
+                    detail_line,
                     "Enter the numeric Matador specimen ID to use for this upload:",
                 ]
             ),
@@ -634,6 +639,42 @@ class SessionTabMixin:
             )
             return None
         return int(text)
+
+    @staticmethod
+    def _real_matador_upload_enabled(runtime_config: Dict[str, object]) -> bool:
+        return bool(
+            str(runtime_config.get("matador_url") or "").strip()
+            and str(runtime_config.get("matador_token") or "").strip()
+            and not bool(runtime_config.get("matador_force_stub", False))
+        )
+
+    def _collect_matador_specimen_overrides(
+        self,
+        *,
+        container_paths: List[Path],
+        runtime_config: Dict[str, object],
+        uploader_id: str,
+    ) -> Optional[Dict[str, int]]:
+        if not self._real_matador_upload_enabled(runtime_config):
+            return {}
+
+        specimen_overrides: Dict[str, int] = {}
+        for container_path in container_paths:
+            metadata = SessionLifecycleActions._read_matador_session_metadata(
+                Path(container_path),
+                config=runtime_config,
+                uploader_id=uploader_id,
+            )
+            if metadata.get("specimen_id") is not None:
+                continue
+            override = self._request_matador_specimen_override(
+                container_path=Path(container_path),
+                specimen_text=str(metadata.get("specimen_text") or ""),
+            )
+            if override is None:
+                return None
+            specimen_overrides[str(Path(container_path))] = int(override)
+        return specimen_overrides
 
     def _show_archived_sessions_context_menu(self, pos):
         table = self.archived_sessions_table
@@ -770,6 +811,14 @@ class SessionTabMixin:
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = False
         simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
+        specimen_overrides = self._collect_matador_specimen_overrides(
+            container_paths=container_paths,
+            runtime_config=runtime_config,
+            uploader_id=uploader_id,
+        )
+        if specimen_overrides is None:
+            QMessageBox.information(self, "Upload Cancelled", "Upload was cancelled by operator.")
+            return
 
         progress_dialog, progress_label, progress_bar, progress_log, close_button = (
             self._create_matador_send_progress_dialog(len(container_paths))
@@ -819,6 +868,7 @@ class SessionTabMixin:
                 session_ids=batch_session_ids,
                 config=runtime_config,
                 progress_callback=_progress_update,
+                specimen_overrides=specimen_overrides,
             )
         finally:
             QApplication.processEvents()
@@ -935,32 +985,14 @@ class SessionTabMixin:
         runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
-
-        specimen_overrides = {}
-        for container_path in container_paths:
-            metadata = SessionLifecycleActions._read_matador_session_metadata(
-                Path(container_path),
-                config=runtime_config,
-                uploader_id=uploader_id,
-            )
-            specimen_text = str(metadata.get("specimen_text") or "").strip()
-            if (
-                specimen_text
-                and metadata.get("specimen_id") is None
-                and any(ch.isdigit() for ch in specimen_text)
-            ):
-                override = self._request_matador_specimen_override(
-                    container_path=Path(container_path),
-                    specimen_text=specimen_text,
-                )
-                if override is None:
-                    QMessageBox.information(
-                        self,
-                        "Upload Cancelled",
-                        f"Matador resend was cancelled for:\n{Path(container_path).name}",
-                    )
-                    return
-                specimen_overrides[str(Path(container_path))] = int(override)
+        specimen_overrides = self._collect_matador_specimen_overrides(
+            container_paths=container_paths,
+            runtime_config=runtime_config,
+            uploader_id=uploader_id,
+        )
+        if specimen_overrides is None:
+            QMessageBox.information(self, "Upload Cancelled", "Upload was cancelled by operator.")
+            return
 
         progress_dialog, progress_label, progress_bar, progress_log, close_button = (
             self._create_matador_send_progress_dialog(len(container_paths))
