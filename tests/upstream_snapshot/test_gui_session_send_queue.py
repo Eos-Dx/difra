@@ -150,6 +150,7 @@ def test_session_queue_send_single_container(qapp, tmp_path, monkeypatch):
             "measurements_archive_folder": str(archive_folder),
             "old_format_export_folder": str(old_format_folder),
             "enable_old_format_export": True,
+            "matador_logs_folder": str(tmp_path / "matador_logs"),
         },
         session_manager=session_manager,
     )
@@ -313,6 +314,7 @@ def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monke
             "measurements_archive_folder": str(archive_folder),
             "old_format_export_folder": str(old_format_folder),
             "enable_old_format_export": True,
+            "matador_logs_folder": str(tmp_path / "matador_logs"),
         },
         session_manager=session_manager,
     )
@@ -428,6 +430,7 @@ def test_archived_container_manual_generate_old_format(qapp, tmp_path, monkeypat
             "measurements_archive_folder": str(archive_folder),
             "old_format_export_folder": str(old_format_folder),
             "enable_old_format_export": False,
+            "matador_logs_folder": str(tmp_path / "matador_logs"),
         },
         session_manager=session_manager,
     )

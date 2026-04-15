@@ -29,6 +29,21 @@ from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 logger = logging.getLogger(__name__)
 
 
+def _normalize_iso_date(value: Any) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace").strip()
+    else:
+        text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = text[:10]
+    try:
+        time.strptime(candidate, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return candidate
+
+
 @dataclass
 class SendArchiveResult:
     """Result summary for batch send+archive workflow."""
@@ -160,7 +175,11 @@ class SessionLifecycleActions:
                 specimen_token = cls._safe_token(specimen_text, "UNKNOWN")
 
                 technical_container_id = ""
-                calibration_snapshot = h5f.get("/entry/calibration_snapshot")
+                calibration_snapshot = None
+                for snapshot_path in ("/entry/calibration_snapshot", "/entry/technical"):
+                    calibration_snapshot = h5f.get(snapshot_path)
+                    if calibration_snapshot is not None:
+                        break
                 if calibration_snapshot is not None:
                     technical_container_id = str(
                         calibration_snapshot.attrs.get("source_container_id", "") or ""
@@ -450,6 +469,7 @@ class SessionLifecycleActions:
             "machine_id": cfg.get("matador_machine_id", 100),
             "distance_mm": None,
             "exposure_time_sec": None,
+            "session_date": _normalize_iso_date(cfg.get("matador_session_date")),
             "detector_scope": "PRIMARY",
             "initiated_by": str(
                 cfg.get("matador_initiated_by")
@@ -478,6 +498,9 @@ class SessionLifecycleActions:
                     metadata["study_id"] = int(study)
                 if machine not in (None, ""):
                     metadata["machine_id"] = int(machine)
+                session_date = _normalize_iso_date(h5f.attrs.get("acquisition_date"))
+                if session_date:
+                    metadata["session_date"] = session_date
 
                 distance_cm = h5f.attrs.get("distance_cm", h5f.attrs.get("distanceCm"))
                 if distance_cm not in (None, ""):
@@ -533,6 +556,10 @@ class SessionLifecycleActions:
         if metadata["exposure_time_sec"] is None:
             metadata["exposure_time_sec"] = 0.5
         return metadata
+
+    @staticmethod
+    def _requires_strict_matador_contract(upload_api: Any) -> bool:
+        return upload_api.__class__.__name__ == "RealMatadorUploadApi"
 
     @staticmethod
     def _poll_until_hash_verified(
@@ -616,19 +643,12 @@ class SessionLifecycleActions:
             config=config,
             uploader_id=uploader_id,
         )
+        strict_matador_contract = cls._requires_strict_matador_contract(upload_backend)
         calibration_zip_paths = [
             Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
         ]
-        specimen_text = str(session_metadata.get("specimen_text") or "").strip()
-        if (
-            specimen_text
-            and session_metadata.get("specimen_id") is None
-            and any(ch.isdigit() for ch in specimen_text)
-        ):
-            message = (
-                "Matador specimen ID must be an integer, "
-                f"but container stores '{specimen_text}'."
-            )
+
+        def _blocked_result(message: str) -> UploadStubResult:
             cls._notify_progress(
                 progress_callback,
                 message=f"{Path(archived_path).name}: {message}",
@@ -650,6 +670,26 @@ class SessionLifecycleActions:
                 zip_path=str(old_format_zip_path),
             )
 
+        session_date = _normalize_iso_date(session_metadata.get("session_date"))
+        session_metadata["session_date"] = session_date
+        if strict_matador_contract and not session_date:
+            return _blocked_result(
+                "Matador sessionDate is required for real uploads, "
+                "but acquisition_date is missing or invalid."
+            )
+
+        specimen_text = str(session_metadata.get("specimen_text") or "").strip()
+        if strict_matador_contract and session_metadata.get("specimen_id") is None:
+            if specimen_text:
+                return _blocked_result(
+                    "Matador specimen ID is required for measurement uploads, "
+                    f"but container stores '{specimen_text}'."
+                )
+            return _blocked_result(
+                "Matador specimen ID is required for measurement uploads, "
+                "but none is stored in the container."
+            )
+
         cls._notify_progress(
             progress_callback,
             message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
@@ -665,6 +705,7 @@ class SessionLifecycleActions:
                 distance_in_mm=int(session_metadata["distance_mm"]),
                 exposure_time_sec=float(session_metadata["exposure_time_sec"]),
                 initiated_by=str(session_metadata["initiated_by"]),
+                session_date=str(session_metadata.get("session_date") or ""),
             )
         )
 
@@ -781,6 +822,23 @@ class SessionLifecycleActions:
             total=total,
             container_path=Path(archived_path),
         )
+        if zip_status is None or str(zip_status.upload_status or "").upper() != "HASH_VERIFIED":
+            zip_state = "" if zip_status is None else str(zip_status.upload_status or "")
+            return UploadStubResult(
+                success=False,
+                upload_session_id=str(ingest_session.id),
+                message=f"Matador upload incomplete: zip={zip_state or 'unknown'}",
+                bytes_uploaded=int(Path(archived_path).stat().st_size),
+                local_checksum_sha256=sha256_file(Path(archived_path)),
+                response_checksum_sha256="",
+                remote_container_id=f"matador://ingest-session/{ingest_session.id}",
+                zip_file_id=str(zip_registered.id),
+                zip_upload_status="" if zip_status is None else str(zip_status.upload_status),
+                zip_processing_status="" if zip_status is None else str(zip_status.processing_status),
+                zip_checksum_sha256=zip_checksum,
+                zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
+                zip_path=str(old_format_zip_path),
+            )
 
         h5_checksum = sha256_file(Path(archived_path))
         cls._notify_progress(
@@ -1422,6 +1480,7 @@ class SessionLifecycleActions:
         config: Optional[Dict[str, Any]] = None,
         export_old_format: Optional[bool] = None,
         progress_callback: Optional[Any] = None,
+        specimen_overrides: Optional[Dict[str, int]] = None,
     ) -> SendArchiveResult:
         """Lock (if needed) and archive selected session containers."""
         result = SendArchiveResult()
@@ -1443,6 +1502,11 @@ class SessionLifecycleActions:
             if active_session_path is not None
             else None
         )
+        overrides = {
+            str(Path(path)): int(value)
+            for path, value in (specimen_overrides or {}).items()
+            if value not in (None, "")
+        }
 
         session_id_by_path = session_ids or {}
         cleanup_folders = set()
@@ -1490,6 +1554,13 @@ class SessionLifecycleActions:
                     # Upload path must remain non-blocking even for invalid/broken containers.
                     result.failed.append(
                         f"{candidate.name}: lock/validation skipped ({type(exc).__name__}: {exc})"
+                    )
+
+                override_value = overrides.get(str(candidate))
+                if override_value is not None:
+                    cls._write_container_attrs(
+                        candidate,
+                        {"matadorSpecimenId": int(override_value)},
                     )
 
                 old_format_zip_path = None

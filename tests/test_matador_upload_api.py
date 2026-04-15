@@ -88,6 +88,85 @@ def test_stub_ingest_flow_hash_verifies_uploaded_file(tmp_path: Path):
     assert status.processing_status == "HASH_VERIFIED_PENDING_ACCEPT"
 
 
+def test_stub_find_or_create_session_uses_session_date_bucket():
+    api = StubMatadorUploadApi(force_failure=False, failure_probability=0.0)
+
+    first = api.find_or_create_session(
+        MatadorFindOrCreateSessionRequest(
+            study_id=1701,
+            machine_id=1751,
+            distance_in_mm=170,
+            exposure_time_sec=0.5,
+            initiated_by="sad",
+            session_date="2026-04-01",
+        )
+    )
+    same_bucket = api.find_or_create_session(
+        MatadorFindOrCreateSessionRequest(
+            study_id=1701,
+            machine_id=1751,
+            distance_in_mm=170,
+            exposure_time_sec=0.5,
+            initiated_by="sad",
+            session_date="2026-04-01",
+        )
+    )
+    different_day = api.find_or_create_session(
+        MatadorFindOrCreateSessionRequest(
+            study_id=1701,
+            machine_id=1751,
+            distance_in_mm=170,
+            exposure_time_sec=0.5,
+            initiated_by="sad",
+            session_date="2026-04-02",
+        )
+    )
+
+    assert same_bucket.id == first.id
+    assert different_day.id != first.id
+
+
+def test_real_client_find_or_create_session_sends_session_date_query(monkeypatch):
+    captured = {}
+
+    def _fake_request_json(self, *, method, path, payload=None, query=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["query"] = query
+        return {
+            "id": 42,
+            "sessionToken": "token-42",
+            "studyId": payload["studyId"],
+            "machineId": payload["machineId"],
+            "distanceInMm": payload["distanceInMm"],
+            "exposureTimeSec": payload["exposureTimeSec"],
+            "status": "ACTIVE",
+            "initiatedBy": payload["initiatedBy"],
+            "initiatedAt": "2026-04-01T10:00:00Z",
+            "expiresAt": "2026-04-01T23:59:59Z",
+        }
+
+    monkeypatch.setattr(RealMatadorUploadApi, "_request_json", _fake_request_json)
+    api = RealMatadorUploadApi(base_url="https://dev-gamma.matur.co.uk", token="token-value")
+
+    response = api.find_or_create_session(
+        MatadorFindOrCreateSessionRequest(
+            study_id=1701,
+            machine_id=1751,
+            distance_in_mm=170,
+            exposure_time_sec=0.5,
+            initiated_by="sad",
+            session_date="2026-04-01",
+        )
+    )
+
+    assert response.id == 42
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/ingest-sessions/find-or-create"
+    assert captured["query"] == {"sessionDate": "2026-04-01"}
+
+
 def test_save_and_load_matador_reference_cache_roundtrip(tmp_path: Path):
     cache_path = tmp_path / "matador_cache.json"
 
