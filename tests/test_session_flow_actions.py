@@ -171,6 +171,137 @@ def test_on_new_session_clears_workspace_before_prompt(monkeypatch, tmp_path):
     assert "status" in order
 
 
+def test_on_new_session_allows_replacing_locked_archived_session(
+    monkeypatch, tmp_path
+):
+    archive_root = tmp_path / "archive" / "measurements"
+    archived_dir = archive_root / "20260407"
+    archived_dir.mkdir(parents=True, exist_ok=True)
+    archived_path = archived_dir / "session_old.nxs.h5"
+    archived_path.write_text("placeholder", encoding="utf-8")
+
+    order = []
+    warnings = []
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec_(self):
+            return session_mixin_module.QDialog.Accepted
+
+        def get_parameters(self):
+            return {
+                "sample_id": "SPEC_002",
+                "study_name": "STUDY_B",
+                "operator_id": "sad",
+                "distance_cm": 17.0,
+            }
+
+    class _FakeSessionManager:
+        def __init__(self):
+            self.sample_id = "SPEC_001"
+            self.session_path = archived_path
+            self.create_calls = 0
+
+        def is_session_active(self):
+            return True
+
+        def is_locked(self):
+            return True
+
+        def create_session(self, folder, **kwargs):
+            self.create_calls += 1
+            self.sample_id = kwargs["sample_id"]
+            self.session_path = Path(folder) / "session_new.nxs.h5"
+            return "session_new", self.session_path
+
+    monkeypatch.setattr(session_mixin_module, "NewSessionDialog", _FakeDialog)
+    monkeypatch.setattr(
+        session_mixin_module.session_flow_actions,
+        "clear_session_workspace",
+        lambda owner: order.append("clear"),
+    )
+    monkeypatch.setattr(
+        session_mixin_module.session_flow_actions,
+        "prompt_and_attach_sample_image",
+        lambda owner: order.append("prompt") or None,
+    )
+    monkeypatch.setattr(
+        session_mixin_module.QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: warnings.append(args[2]) or session_mixin_module.QMessageBox.Ok),
+    )
+    monkeypatch.setattr(
+        session_mixin_module.QMessageBox,
+        "information",
+        staticmethod(lambda *args, **kwargs: session_mixin_module.QMessageBox.Ok),
+    )
+
+    manager = _FakeSessionManager()
+    owner = SimpleNamespace(
+        config={
+            "measurements_folder": str(tmp_path / "measurements"),
+            "measurements_archive_folder": str(archive_root),
+        },
+        operator_manager=object(),
+        session_manager=manager,
+        _default_session_distance_cm=lambda: 17.0,
+        get_session_folder=lambda: tmp_path / "measurements",
+        _append_session_log=lambda message: order.append(message),
+        update_session_status=lambda: order.append("status"),
+    )
+
+    session_mixin_module.SessionMixin.on_new_session(owner)
+
+    assert manager.create_calls == 1
+    assert warnings == []
+    assert "clear" in order
+    assert "prompt" in order
+
+
+def test_on_new_session_blocks_replacing_locked_nonarchived_session(
+    monkeypatch, tmp_path
+):
+    live_dir = tmp_path / "measurements"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    live_path = live_dir / "session_live.nxs.h5"
+    live_path.write_text("placeholder", encoding="utf-8")
+
+    warnings = []
+
+    class _FakeSessionManager:
+        sample_id = "SPEC_001"
+        session_path = live_path
+
+        def is_session_active(self):
+            return True
+
+        def is_locked(self):
+            return True
+
+    monkeypatch.setattr(
+        session_mixin_module.QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: warnings.append(args[2]) or session_mixin_module.QMessageBox.Ok),
+    )
+
+    owner = SimpleNamespace(
+        config={
+            "measurements_folder": str(live_dir),
+            "measurements_archive_folder": str(tmp_path / "archive" / "measurements"),
+        },
+        session_manager=_FakeSessionManager(),
+        _append_session_log=lambda message: None,
+        get_session_folder=lambda: live_dir,
+    )
+
+    session_mixin_module.SessionMixin.on_new_session(owner)
+
+    assert len(warnings) == 1
+    assert "A session container is already open." in warnings[0]
+
+
 def test_find_archived_session_candidates_filters_by_exact_specimen_id(tmp_path):
     archive_root = tmp_path / "archive" / "measurements"
     matching_dir = archive_root / "matching"
