@@ -3,7 +3,7 @@
 import base64
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 import json
 import re
@@ -37,6 +37,12 @@ class SessionOldFormatExporter:
         "EMPTY": "Empty",
         "AGBH": "AgBH",
         "BACKGROUND": "Bg",
+    }
+    TECH_TYPE_METADATA_NAME = {
+        "AGBH": "AgBH",
+        "BACKGROUND": "Background",
+        "DARK": "DarkCurrent",
+        "EMPTY": "EmptyBeam",
     }
 
     @staticmethod
@@ -195,6 +201,35 @@ class SessionOldFormatExporter:
         if abs(v) < 0.005:
             v = 0.0
         return f"{v:.2f}"
+
+    @classmethod
+    def _measurement_file_base(
+        cls,
+        *,
+        bundle_base: str,
+        point_name: str,
+        point_unique_id: str,
+        measurement_name: str,
+        x_mm: Optional[float],
+        y_mm: Optional[float],
+        timestamp_token: str,
+        detector_alias: str,
+    ) -> str:
+        point_token = cls._safe_token(
+            point_unique_id or point_name,
+            cls._safe_token(point_name, "point"),
+        )
+        measurement_token = cls._safe_token(measurement_name, "measurement")
+        alias_token = cls._safe_token(detector_alias, "DETECTOR").upper()
+        return (
+            f"{bundle_base}_"
+            f"{point_token}_"
+            f"{measurement_token}_"
+            f"{cls._format_coord_token(x_mm)}_"
+            f"{cls._format_coord_token(y_mm)}_"
+            f"{timestamp_token}_"
+            f"{alias_token}"
+        )
 
     @staticmethod
     def _distance_int(value: Optional[float], default: int = 17) -> int:
@@ -700,6 +735,10 @@ class SessionOldFormatExporter:
                         "detector_id": detector_id,
                         "integration_s": integration_s,
                         "is_primary": bool(event_is_primary),
+                        "selection_note": cls._as_text(
+                            event_group.attrs.get("supplementary_note", ""),
+                            "",
+                        ).strip(),
                         "processed_signal": np.asarray(det_group[dataset_processed_signal][()]),
                         "raw_blobs": raw_blobs,
                         "poni_text": poni_text,
@@ -721,9 +760,10 @@ class SessionOldFormatExporter:
         *,
         events: List[Dict[str, Any]],
         distance_token: str,
-    ) -> Tuple[Dict[str, bytes], Dict[str, Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, bytes], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
         files: Dict[str, bytes] = {}
         selected: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        calibration_entries: List[Dict[str, Any]] = []
 
         for event in events:
             event_type = cls._as_text(event.get("type"), "UNKNOWN").upper()
@@ -737,6 +777,7 @@ class SessionOldFormatExporter:
             base = f"{prefix}_{distance_token}_{event_idx_token}_{ts_token}_{integration_token}_{alias_token}"
             npy_name = f"{base}.npy"
             files[npy_name] = cls._npy_bytes(event.get("processed_signal"))
+            frame_files = [npy_name]
 
             raw_blobs = event.get("raw_blobs") or {}
             for blob_name, blob_payload in raw_blobs.items():
@@ -748,12 +789,28 @@ class SessionOldFormatExporter:
                 else:
                     raw_name = f"{base}.{ext or 'bin'}"
                 files[raw_name] = bytes(blob_payload)
+                frame_files.append(raw_name)
 
             poni_name = None
             poni_text = event.get("poni_text")
             if event_type == "AGBH" and poni_text is not None:
-                poni_name = f"{base}.poni"
+                poni_name = f"{Path(npy_name).stem}.poni"
                 files[poni_name] = cls._as_text(poni_text, "").encode("utf-8")
+                frame_files.append(poni_name)
+
+            calibration_entries.append(
+                {
+                    "event_type": event_type,
+                    "alias": alias,
+                    "distance": distance_token,
+                    "integration_s": event.get("integration_s"),
+                    "timestamp_token": ts_token,
+                    "poni_text": cls._as_text(poni_text, "") if poni_text is not None else None,
+                    "frame_files": sorted(frame_files),
+                    "is_primary": bool(event.get("is_primary")),
+                    "selection_note": cls._as_text(event.get("selection_note"), "").strip(),
+                }
+            )
 
             rank = (1 if bool(event.get("is_primary")) else 0, int(event.get("event_index") or 0))
             key = (event_type, alias)
@@ -764,9 +821,90 @@ class SessionOldFormatExporter:
                     "npy_name": npy_name,
                     "poni_name": poni_name,
                     "poni_text": cls._as_text(poni_text, "") if poni_text is not None else None,
+                    "integration_s": event.get("integration_s"),
+                    "timestamp_token": ts_token,
                 }
 
-        return files, selected
+        return files, selected, calibration_entries
+
+    @staticmethod
+    def _iso_utc_now() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _timestamp_token_to_iso8601(cls, timestamp_token: str) -> str:
+        text = cls._as_text(timestamp_token, "").strip()
+        if not text:
+            return cls._iso_utc_now()
+        for fmt in ("%Y%m%d_%H%M%S", "%Y%m%d%H%M%S"):
+            try:
+                return datetime.strptime(text, fmt).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                continue
+        return text
+
+    @classmethod
+    def _build_metadata_json(
+        cls,
+        *,
+        bundle_key: str,
+        file_payloads: Dict[str, bytes],
+    ) -> bytes:
+        file_names = sorted(file_payloads.keys()) + ["metadata.json"]
+        base_size = sum(len(payload) for payload in file_payloads.values())
+        created_at = cls._iso_utc_now()
+
+        previous_payload = b""
+        while True:
+            candidate = {
+                "key": bundle_key,
+                "fileCount": len(file_names),
+                "totalSize": int(base_size + len(previous_payload)),
+                "createdAt": created_at,
+                "fileNames": file_names,
+            }
+            payload = json.dumps(candidate, indent=2).encode("utf-8")
+            if len(payload) == len(previous_payload):
+                return payload
+            previous_payload = payload
+
+    @classmethod
+    def _build_calibration_data_payload(
+        cls,
+        *,
+        distance_token: str,
+        entries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload_entries: List[Dict[str, Any]] = []
+        for info in entries:
+            event_type = cls._as_text(info.get("event_type"), "UNKNOWN").upper()
+            alias = cls._as_text(info.get("alias"), "UNKNOWN").upper()
+            selection_note = cls._as_text(info.get("selection_note"), "").strip()
+            used_for_calibration = bool(info.get("is_primary"))
+            payload_entries.append(
+                {
+                    "scanType": cls.TECH_TYPE_METADATA_NAME.get(
+                        str(event_type).upper(),
+                        str(event_type).title() or "Unknown",
+                    ),
+                    "distance": distance_token,
+                    "exposureTime": info.get("integration_s"),
+                    "timestamp": cls._timestamp_token_to_iso8601(
+                        cls._as_text(info.get("timestamp_token"), "")
+                    ),
+                    "detectorAlias": str(alias),
+                    "poniContent": info.get("poni_text"),
+                    "frameFiles": list(info.get("frame_files") or []),
+                    "usedForCalibration": used_for_calibration,
+                    "operatorDecision": (
+                        "accepted_for_calibration"
+                        if used_for_calibration
+                        else "rejected_for_calibration"
+                    ),
+                    "selectionNote": selection_note or None,
+                }
+            )
+        return {"distance": distance_token, "entries": payload_entries}
 
     @classmethod
     def _folder_matches_data_files(cls, folder: Path, files: Dict[str, bytes]) -> bool:
@@ -778,7 +916,9 @@ class SessionOldFormatExporter:
             existing_files = {
                 p.name
                 for p in folder.iterdir()
-                if p.is_file() and not p.name.startswith("technical_meta_")
+                if p.is_file()
+                and not p.name.startswith("technical_meta_")
+                and p.name not in {"calibrationData.json", "metadata.json"}
             }
         except Exception:
             return False
@@ -833,7 +973,7 @@ class SessionOldFormatExporter:
 
         # Prefer exact payload match in any already existing distance folder.
         for _distance_value, token in sorted(existing_tokens):
-            candidate_files, candidate_selected = cls._build_technical_data_files(
+            candidate_files, candidate_selected, _candidate_entries = cls._build_technical_data_files(
                 events=events,
                 distance_token=token,
             )
@@ -841,7 +981,7 @@ class SessionOldFormatExporter:
                 return token, candidate_files, candidate_selected, True
 
         canonical_token = cls._distance_token(canonical_distance_int)
-        canonical_files, canonical_selected = cls._build_technical_data_files(
+        canonical_files, canonical_selected, _canonical_entries = cls._build_technical_data_files(
             events=events,
             distance_token=canonical_token,
         )
@@ -854,7 +994,7 @@ class SessionOldFormatExporter:
             return canonical_token, canonical_files, canonical_selected, True
 
         next_token, _next_int = cls._next_distance_token(calibration_root, canonical_distance_int + 1)
-        next_files, next_selected = cls._build_technical_data_files(
+        next_files, next_selected, _next_entries = cls._build_technical_data_files(
             events=events,
             distance_token=next_token,
         )
@@ -881,6 +1021,10 @@ class SessionOldFormatExporter:
             calibration_root=calibration_root,
             events=events,
             canonical_distance_int=canonical_distance_int,
+        )
+        _, _, calibration_entries = cls._build_technical_data_files(
+            events=events,
+            distance_token=distance_token,
         )
         tech_dir = calibration_root / distance_token
         tech_dir.mkdir(parents=True, exist_ok=True)
@@ -938,15 +1082,37 @@ class SessionOldFormatExporter:
         meta_bytes = json.dumps(meta_payload, indent=2).encode("utf-8")
         cls._write_bytes_if_changed(meta_path, meta_bytes)
 
+        calibration_data_payload = cls._build_calibration_data_payload(
+            distance_token=distance_token,
+            entries=calibration_entries,
+        )
+        calibration_data_path = tech_dir / "calibrationData.json"
+        calibration_data_bytes = json.dumps(
+            calibration_data_payload,
+            indent=2,
+        ).encode("utf-8")
+        cls._write_bytes_if_changed(calibration_data_path, calibration_data_bytes)
+
+        metadata_bytes = cls._build_metadata_json(
+            bundle_key=f"calibration_{distance_token}",
+            file_payloads={
+                **data_files,
+                meta_name: meta_bytes,
+                "calibrationData.json": calibration_data_bytes,
+            },
+        )
+        metadata_path = tech_dir / "metadata.json"
+        cls._write_bytes_if_changed(metadata_path, metadata_bytes)
+
         technical_aux_map: Dict[Tuple[str, str], str] = {}
         for event_type, alias_map in by_type_alias.items():
             for alias, npy_name in alias_map.items():
                 technical_aux_map[(event_type, alias)] = str((tech_dir / npy_name).resolve())
 
-        technical_count = len(data_files) + 1
+        technical_count = len(data_files) + 3
         # Keep a deterministic count even when folder was reused (for reporting/tests).
         if reused_existing:
-            technical_count = len(data_files) + 1
+            technical_count = len(data_files) + 3
 
         return technical_count, distance_token, technical_aux_map, detector_poni, meta_path
 
@@ -1338,14 +1504,15 @@ class SessionOldFormatExporter:
                         det_group.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id")),
                         detector_alias,
                     )
-                    alias_token = cls._safe_token(detector_alias, "DETECTOR").upper()
-
-                    base = (
-                        f"{sample_base_with_distance}_"
-                        f"{cls._format_coord_token(x_mm)}_"
-                        f"{cls._format_coord_token(y_mm)}_"
-                        f"{ts_token}_"
-                        f"{alias_token}"
+                    base = cls._measurement_file_base(
+                        bundle_base=sample_base_with_distance,
+                        point_name=str(point_name),
+                        point_unique_id=str(point_uid),
+                        measurement_name=str(meas_name),
+                        x_mm=x_mm,
+                        y_mm=y_mm,
+                        timestamp_token=ts_token,
+                        detector_alias=detector_alias,
                     )
                     npy_name = f"{base}.npy"
                     txt_name = f"{base}.txt"
