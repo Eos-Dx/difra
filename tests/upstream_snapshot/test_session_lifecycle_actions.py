@@ -103,7 +103,7 @@ def test_execute_matador_upload_rejects_real_upload_without_numeric_specimen(tmp
         session_path,
         old_format_zip_path=zip_path,
         upload_api=RealMatadorUploadApi(
-            base_url="https://dev-gamma.matur.co.uk",
+            base_url="https://portal.matur.co.uk",
             token="token-value",
         ),
         config={},

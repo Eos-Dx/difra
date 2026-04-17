@@ -10,7 +10,7 @@ from difra.gui.matador_upload_api import (
     normalize_matador_token,
 )
 
-DEFAULT_MATADOR_URL = "https://dev-gamma.matur.co.uk"
+DEFAULT_MATADOR_URL = "https://portal.matur.co.uk"
 
 
 def get_runtime_matador_context(owner: Any) -> Dict[str, str]:

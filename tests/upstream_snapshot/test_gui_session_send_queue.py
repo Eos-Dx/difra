@@ -327,7 +327,7 @@ def test_archive_tab_can_resend_already_archived_container(qapp, tmp_path, monke
         lambda fallback_operator: {
             "uploader_id": fallback_operator,
             "token": "",
-            "matador_url": "https://dev-gamma.matur.co.uk",
+            "matador_url": "https://portal.matur.co.uk",
         },
     )
 
