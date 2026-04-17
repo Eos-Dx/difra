@@ -27,24 +27,24 @@ def test_build_matador_upload_api_defaults_to_stub(monkeypatch):
 
 
 def test_build_matador_upload_api_uses_real_client_when_env_present(monkeypatch):
-    monkeypatch.setenv("MATADOR_URL", "https://dev-gamma.matur.co.uk")
+    monkeypatch.setenv("MATADOR_URL", "https://portal.matur.co.uk")
     monkeypatch.setenv("MATADOR_TOKEN", "token-value")
 
     api = build_matador_upload_api(config={})
 
     assert isinstance(api, RealMatadorUploadApi)
-    assert api.base_url == "https://dev-gamma.matur.co.uk"
+    assert api.base_url == "https://portal.matur.co.uk"
     assert api.token == "token-value"
 
 
 def test_normalize_matador_base_url_accepts_page_urls():
     assert (
-        normalize_matador_base_url("https://dev-gamma.matur.co.uk/analytics/studies")
-        == "https://dev-gamma.matur.co.uk"
+        normalize_matador_base_url("https://portal.matur.co.uk/analytics/studies")
+        == "https://portal.matur.co.uk"
     )
     assert (
-        normalize_matador_base_url('"https://dev-gamma.matur.co.uk/difra-api-token"')
-        == "https://dev-gamma.matur.co.uk"
+        normalize_matador_base_url('"https://portal.matur.co.uk/difra-api-token"')
+        == "https://portal.matur.co.uk"
     )
 
 
@@ -148,7 +148,7 @@ def test_real_client_find_or_create_session_sends_session_date_query(monkeypatch
         }
 
     monkeypatch.setattr(RealMatadorUploadApi, "_request_json", _fake_request_json)
-    api = RealMatadorUploadApi(base_url="https://dev-gamma.matur.co.uk", token="token-value")
+    api = RealMatadorUploadApi(base_url="https://portal.matur.co.uk", token="token-value")
 
     response = api.find_or_create_session(
         MatadorFindOrCreateSessionRequest(
@@ -202,7 +202,7 @@ def test_refresh_matador_reference_cache_uses_real_client_and_writes_cache(
     )
 
     payload = refresh_matador_reference_cache(
-        base_url="https://dev-gamma.matur.co.uk",
+        base_url="https://portal.matur.co.uk",
         token="runtime-token",
         cache_path=tmp_path / "matador_cache.json",
     )
