@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
 )
 
 from difra.gui.matador_runtime_context import (
-    DEFAULT_MATADOR_URL,
     get_runtime_matador_context,
     set_runtime_matador_context,
 )
@@ -372,7 +371,7 @@ class NewSessionDialog(QDialog):
         token_edit.setPlaceholderText("Paste JWT token from /difra-api-token")
         layout.addRow("Matador Token:", token_edit)
 
-        url_edit = QLineEdit(existing.get("matador_url") or DEFAULT_MATADOR_URL)
+        url_edit = QLineEdit(existing.get("matador_url") or "")
         layout.addRow("Matador URL:", url_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -527,7 +526,7 @@ class NewSessionDialog(QDialog):
                 return
         try:
             payload = refresh_matador_reference_cache(
-                base_url=context.get("matador_url") or DEFAULT_MATADOR_URL,
+                base_url=context.get("matador_url") or "",
                 token=context.get("token") or "",
                 cache_path=self._matador_cache_path,
             )
@@ -553,7 +552,7 @@ class NewSessionDialog(QDialog):
             return
         try:
             payload = refresh_matador_reference_cache(
-                base_url=context.get("matador_url") or DEFAULT_MATADOR_URL,
+                base_url=context.get("matador_url") or "",
                 token=context.get("token") or "",
                 cache_path=self._matador_cache_path,
             )

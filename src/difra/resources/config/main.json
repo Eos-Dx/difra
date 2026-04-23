@@ -153,6 +153,7 @@
     "technical_archive_folder": "/Users/sad/dev/Data/difra/archive/technical",
     "measurements_folder": "/Users/sad/dev/Data/difra/measurements",
     "measurements_archive_folder": "/Users/sad/dev/Data/difra/archive/measurements",
+    "matador_url": "https://portal.matur.co.uk",
     "measurements_archive_mirror_folder": null,
     "poni_center_validation": {
         "enabled": true,
