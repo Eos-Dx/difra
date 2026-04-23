@@ -123,6 +123,13 @@ class MainWindow(
                 pass
             logger.debug("Dock widgets split")
 
+            try:
+                logger.debug("Starting archive mirror sync timer...")
+                self.setup_archive_mirror_sync()
+                logger.debug("Archive mirror sync timer ready")
+            except Exception as e:
+                logger.warning(f"Failed to start archive mirror sync: {e}", exc_info=True)
+
             # 4. The rest as before...
             logger.debug("Creating drawing actions...")
             self.create_drawing_actions()
