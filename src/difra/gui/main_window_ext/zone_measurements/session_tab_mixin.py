@@ -34,7 +34,6 @@ from PyQt5.QtWidgets import (
 
 from difra.gui.container_api import get_container_manager, get_schema
 from difra.gui.matador_runtime_context import (
-    DEFAULT_MATADOR_URL,
     get_runtime_matador_context,
     set_runtime_matador_context,
 )
@@ -119,7 +118,7 @@ class SessionTabMixin:
         """Collect uploader identity and Matador token right before send."""
         runtime_context = get_runtime_matador_context(self)
         default_operator = str(fallback_operator or "unknown")
-        default_url = str(runtime_context.get("matador_url") or DEFAULT_MATADOR_URL).strip()
+        default_url = str(runtime_context.get("matador_url") or "").strip()
         default_token = str(runtime_context.get("token") or "").strip()
 
         if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
@@ -142,7 +141,7 @@ class SessionTabMixin:
         token_edit.setPlaceholderText("Paste JWT token from /difra-api-token")
         layout.addRow("Matador Token:", token_edit)
 
-        url_edit = QLineEdit(default_url or DEFAULT_MATADOR_URL)
+        url_edit = QLineEdit(default_url)
         layout.addRow("Matador URL:", url_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

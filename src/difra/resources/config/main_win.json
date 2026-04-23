@@ -153,6 +153,7 @@
     "technical_archive_folder": "D:\\Data\\Archive\\technical",
     "measurements_folder": "D:\\Data\\measurements",
     "measurements_archive_folder": "D:\\Data\\Archive\\measurements",
+    "matador_url": "https://portal.matur.co.uk",
     "measurements_archive_mirror_folder": "C:\\Users\\Ulster_matur\\OneDrive - Matur\\General - Ulster\\Measurements_Grant_1_2_and_4",
     "poni_center_validation": {
         "enabled": true,
