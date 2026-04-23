@@ -39,6 +39,7 @@ def test_archive_mirror_sync_uses_only_new_or_updated_files(monkeypatch, tmp_pat
     mirror_root.mkdir(parents=True, exist_ok=True)
 
     calls = []
+    session_logs = []
 
     monkeypatch.setattr(
         module,
@@ -55,6 +56,7 @@ def test_archive_mirror_sync_uses_only_new_or_updated_files(monkeypatch, tmp_pat
             copied_files=1,
             updated_files=0,
             skipped_files=2,
+            transferred_bytes=2048,
         )
 
     monkeypatch.setattr(module, "sync_archive_tree", _sync_archive_tree)
@@ -65,9 +67,20 @@ def test_archive_mirror_sync_uses_only_new_or_updated_files(monkeypatch, tmp_pat
             "measurements_archive_mirror_folder": str(mirror_root),
         },
         _archive_mirror_sync_running=False,
+        _append_session_log=session_logs.append,
+        _format_archive_sync_bytes=module.MainWindowBasic._format_archive_sync_bytes,
     )
 
     module.MainWindowBasic._run_archive_mirror_sync(owner)
 
     assert calls == [(source_root, mirror_root, False)]
     assert owner._archive_mirror_sync_running is False
+    assert session_logs[0].startswith("Archive sync started: from ")
+    assert str(source_root) in session_logs[0]
+    assert str(mirror_root / source_root.name) in session_logs[0]
+    assert "Archive sync completed:" in session_logs[1]
+    assert f"from {source_root} to {mirror_root / source_root.name}" in session_logs[1]
+    assert "scanned 3 file(s)" in session_logs[1]
+    assert "1 file(s) transferred" in session_logs[1]
+    assert "2 skipped" in session_logs[1]
+    assert "2.0 KB" in session_logs[1]
