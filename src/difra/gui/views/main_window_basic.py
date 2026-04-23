@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -17,6 +18,10 @@ from PyQt5.QtWidgets import (
 
 from difra.hardware.camera_capture_dialog import CameraCaptureDialog
 from difra.gui.main_window_ext import session_flow_actions
+from difra.scripts.sync_archive_to_onedrive import (
+    resolve_sync_roots_from_config,
+    sync_archive_tree,
+)
 from difra.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -79,6 +84,11 @@ class MainWindowBasic(QMainWindow):
 
         # Reflect DEV mode visually
         self.update_dev_visuals()
+
+        # Keep OneDrive archive mirror warm in the background.
+        self._archive_mirror_sync_running = False
+        self._archive_mirror_sync_timer = None
+        self.setup_archive_mirror_sync()
 
     def load_config(self):
         """Load global config and merge with a selected setup config.
@@ -194,6 +204,69 @@ class MainWindowBasic(QMainWindow):
         self.toolbar.addAction(self.capture_camera_act)
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.toggle_dev_act)
+
+    def _archive_mirror_sync_interval_ms(self) -> int:
+        raw_value = None
+        if isinstance(self.config, dict):
+            raw_value = self.config.get("archive_mirror_sync_interval_ms")
+        try:
+            interval = int(raw_value)
+        except Exception:
+            interval = 5 * 60 * 1000
+        return max(interval, 60_000)
+
+    def _run_archive_mirror_sync(self) -> None:
+        if getattr(self, "_archive_mirror_sync_running", False):
+            return
+        self._archive_mirror_sync_running = True
+        try:
+            source_root, mirror_root = resolve_sync_roots_from_config(self.config)
+        except Exception as exc:
+            logger.debug("Archive mirror sync disabled or unresolved: %s", exc)
+            self._archive_mirror_sync_running = False
+            return
+
+        try:
+            summary = sync_archive_tree(
+                source_root=source_root,
+                mirror_root=mirror_root,
+                dry_run=False,
+            )
+            if summary.copied_files or summary.updated_files:
+                logger.info(
+                    "Archive mirror sync copied files",
+                    source_root=str(summary.source_root),
+                    destination_root=str(summary.destination_root),
+                    copied_files=summary.copied_files,
+                    updated_files=summary.updated_files,
+                    skipped_files=summary.skipped_files,
+                )
+            else:
+                logger.debug(
+                    "Archive mirror sync checked with no new files",
+                    source_root=str(summary.source_root),
+                    destination_root=str(summary.destination_root),
+                    scanned_files=summary.scanned_files,
+                    skipped_files=summary.skipped_files,
+                )
+        except Exception as exc:
+            logger.warning("Archive mirror sync failed: %s", exc, exc_info=True)
+        finally:
+            self._archive_mirror_sync_running = False
+
+    def setup_archive_mirror_sync(self) -> None:
+        try:
+            resolve_sync_roots_from_config(self.config)
+        except Exception as exc:
+            logger.debug("Archive mirror sync not configured: %s", exc)
+            return
+
+        timer = QTimer(self)
+        timer.setInterval(self._archive_mirror_sync_interval_ms())
+        timer.timeout.connect(self._run_archive_mirror_sync)
+        timer.start()
+        self._archive_mirror_sync_timer = timer
+        QTimer.singleShot(0, self._run_archive_mirror_sync)
 
     def _can_load_or_capture_sample_image(self) -> bool:
         session_manager = getattr(self, "session_manager", None)

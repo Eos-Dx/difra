@@ -1,5 +1,6 @@
 """Tests for high-level session lifecycle workflow actions."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import numpy as np
 from container.v0_2 import container_manager, writer as session_writer
 from difra.gui.matador_upload_api import RealMatadorUploadApi
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
+from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
 
 def _create_session_file(folder: Path, sample_id: str):
@@ -92,6 +94,58 @@ def test_read_matador_metadata_uses_acquisition_date_as_session_date(tmp_path):
     metadata = SessionLifecycleActions._read_matador_session_metadata(session_path)
 
     assert metadata["session_date"] == "2026-02-16"
+
+
+def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_path):
+    _sid, session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_EDIT")
+
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["project_id"] = "OLD_PROJECT"
+        h5f.attrs["matadorProjectId"] = 11
+        h5f.attrs["matadorProjectName"] = "OLD_PROJECT"
+        h5f.attrs["study_name"] = "OLD_STUDY"
+        h5f.attrs["matadorStudyId"] = 22
+        h5f.attrs["meta_json"] = json.dumps(
+            {
+                "project_id": "OLD_PROJECT",
+                "study_name": "OLD_STUDY",
+                "sample_id": "SAMPLE_EDIT",
+            }
+        )
+
+    result = SessionLifecycleActions.edit_archived_session_matador_metadata(
+        container_path=session_path,
+        project_id=6701,
+        project_name="NewProject",
+        study_id=6751,
+        study_name="NewStudy",
+        edited_by="sad",
+        auth_mode="password",
+    )
+
+    assert result["success"] is True
+    with h5py.File(session_path, "r") as h5f:
+        assert h5f.attrs["project_id"] == "NewProject"
+        assert int(h5f.attrs["matadorProjectId"]) == 6701
+        assert h5f.attrs["matadorProjectName"] == "NewProject"
+        assert h5f.attrs["study_name"] == "NewStudy"
+        assert int(h5f.attrs["matadorStudyId"]) == 6751
+        assert h5f["/entry/sample"].attrs["project_id"] == "NewProject"
+        state_payload = json.loads(h5f.attrs["meta_json"])
+        assert state_payload["project_id"] == "NewProject"
+        assert state_payload["study_name"] == "NewStudy"
+        assert int(state_payload["matadorProjectId"]) == 6701
+        assert int(state_payload["matadorStudyId"]) == 6751
+        assert "operator=sad" in str(h5f.attrs.get("archive_metadata_edit_log", ""))
+        assert h5f.attrs["archive_metadata_edit_last_auth"] == "password"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        target_root=tmp_path / "old_format",
+    )
+    exported_state = json.loads(summary.state_path.read_text(encoding="utf-8"))
+    assert exported_state["project_id"] == "NewProject"
+    assert exported_state["study_name"] == "NewStudy"
 
 
 def test_execute_matador_upload_rejects_real_upload_without_numeric_specimen(tmp_path):
@@ -350,6 +404,62 @@ def test_send_and_archive_upload_failure_marks_unsent(tmp_path):
         assert str(h5f.attrs.get("upload_result_message", "")).lower().find("failed") >= 0
         assert str(h5f.attrs.get("upload_response_checksum_sha256", "")) == ""
         assert "status=failed" in str(h5f.attrs.get("upload_attempts_log", ""))
+
+
+def test_send_and_archive_upload_exception_still_mirrors_archive_folder(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    mirror_folder = tmp_path / "onedrive_archive"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+    (measurements / "capture.txt").write_text("txt")
+
+    progress_events = []
+    with patch.object(
+        SessionLifecycleActions,
+        "_execute_matador_upload",
+        side_effect=RuntimeError("Matador HTTP 404 for POST /api/ingest-sessions/find-or-create: Not Found"),
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a},
+            config={
+                "old_format_export_folder": str(tmp_path / "old_format"),
+                "enable_old_format_export": True,
+                "measurements_archive_mirror_folder": str(mirror_folder),
+            },
+            progress_callback=progress_events.append,
+        )
+
+    assert result.moved == 1
+    assert result.upload_success == 0
+    assert result.upload_failed == 1
+    assert any("Matador HTTP 404" in msg for msg in result.failed)
+
+    archived = result.archived_paths[0]
+    archived_folder = archived.parent
+    mirrored_folder = mirror_folder / "Archive" / "measurements" / archived_folder.name
+
+    assert archived.exists() is True
+    assert (archived_folder / "capture.txt").exists() is True
+    assert (measurements / "capture.txt").exists() is False
+    assert mirrored_folder.exists() is True
+    assert (mirrored_folder / archived.name).exists() is True
+    assert (mirrored_folder / "capture.txt").exists() is True
+    assert container_manager.get_transfer_status(archived) == "unsent"
+
+    with h5py.File(archived, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "failed"
+        assert "Matador HTTP 404" in str(h5f.attrs.get("upload_result_message", ""))
+
+    messages = [
+        str(event.get("message") or "")
+        for event in progress_events
+        if isinstance(event, dict)
+    ]
+    assert any("FAILED - unexpected error (Matador HTTP 404" in message for message in messages)
 
 
 def test_send_and_archive_composite_specimen_uses_leading_db_id(tmp_path):
