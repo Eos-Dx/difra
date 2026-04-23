@@ -26,6 +26,7 @@ class SyncSummary:
         copied_files: int,
         updated_files: int,
         skipped_files: int,
+        transferred_bytes: int,
     ) -> None:
         self.source_root = Path(source_root)
         self.destination_root = Path(destination_root)
@@ -33,6 +34,7 @@ class SyncSummary:
         self.copied_files = int(copied_files)
         self.updated_files = int(updated_files)
         self.skipped_files = int(skipped_files)
+        self.transferred_bytes = int(transferred_bytes)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -167,6 +169,7 @@ def sync_archive_tree(
     copied_files = 0
     updated_files = 0
     skipped_files = 0
+    transferred_bytes = 0
 
     for file_path in sorted(source.rglob("*")):
         if not file_path.is_file():
@@ -178,6 +181,7 @@ def sync_archive_tree(
         if not _needs_copy(file_path, destination_path):
             skipped_files += 1
             continue
+        file_size = int(file_path.stat().st_size)
         if not dry_run:
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(file_path), str(destination_path))
@@ -185,6 +189,7 @@ def sync_archive_tree(
             updated_files += 1
         else:
             copied_files += 1
+        transferred_bytes += file_size
 
     return SyncSummary(
         source_root=source,
@@ -193,6 +198,7 @@ def sync_archive_tree(
         copied_files=copied_files,
         updated_files=updated_files,
         skipped_files=skipped_files,
+        transferred_bytes=transferred_bytes,
     )
 
 
@@ -219,6 +225,7 @@ def main() -> int:
     print(f"New copies: {summary.copied_files}")
     print(f"Updated copies: {summary.updated_files}")
     print(f"Skipped files: {summary.skipped_files}")
+    print(f"Transferred bytes: {summary.transferred_bytes}")
     if args.dry_run:
         print("Dry run only: no files were copied.")
     return 0

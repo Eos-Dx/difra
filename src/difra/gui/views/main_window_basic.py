@@ -215,6 +215,21 @@ class MainWindowBasic(QMainWindow):
             interval = 5 * 60 * 1000
         return max(interval, 60_000)
 
+    @staticmethod
+    def _format_archive_sync_bytes(num_bytes: int) -> str:
+        value = max(int(num_bytes or 0), 0)
+        units = ["B", "KB", "MB", "GB", "TB"]
+        amount = float(value)
+        unit = units[0]
+        for candidate in units[1:]:
+            if amount < 1024.0:
+                break
+            amount /= 1024.0
+            unit = candidate
+        if unit == "B":
+            return f"{int(amount)} {unit}"
+        return f"{amount:.1f} {unit}"
+
     def _run_archive_mirror_sync(self) -> None:
         if getattr(self, "_archive_mirror_sync_running", False):
             return
@@ -227,10 +242,26 @@ class MainWindowBasic(QMainWindow):
             return
 
         try:
+            append_session_log = getattr(self, "_append_session_log", None)
+            destination_root = Path(mirror_root) / Path(source_root).name
+            if callable(append_session_log):
+                append_session_log(
+                    f"Archive sync started: from {source_root} to {destination_root}"
+                )
             summary = sync_archive_tree(
                 source_root=source_root,
                 mirror_root=mirror_root,
                 dry_run=False,
+            )
+            transferred_files = int(summary.copied_files) + int(summary.updated_files)
+            completion_message = (
+                "Archive sync completed: "
+                f"from {summary.source_root} to {summary.destination_root}; "
+                f"scanned {summary.scanned_files} file(s), "
+                f"{transferred_files} file(s) transferred "
+                f"({summary.copied_files} new, {summary.updated_files} updated), "
+                f"{summary.skipped_files} skipped, "
+                f"volume {self._format_archive_sync_bytes(summary.transferred_bytes)}."
             )
             if summary.copied_files or summary.updated_files:
                 logger.info(
@@ -240,6 +271,7 @@ class MainWindowBasic(QMainWindow):
                     copied_files=summary.copied_files,
                     updated_files=summary.updated_files,
                     skipped_files=summary.skipped_files,
+                    transferred_bytes=summary.transferred_bytes,
                 )
             else:
                 logger.debug(
@@ -249,8 +281,13 @@ class MainWindowBasic(QMainWindow):
                     scanned_files=summary.scanned_files,
                     skipped_files=summary.skipped_files,
                 )
+            if callable(append_session_log):
+                append_session_log(completion_message)
         except Exception as exc:
             logger.warning("Archive mirror sync failed: %s", exc, exc_info=True)
+            append_session_log = getattr(self, "_append_session_log", None)
+            if callable(append_session_log):
+                append_session_log(f"Archive sync failed: {exc}")
         finally:
             self._archive_mirror_sync_running = False
 

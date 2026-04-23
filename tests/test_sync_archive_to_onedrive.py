@@ -89,6 +89,7 @@ def test_sync_archive_tree_copies_and_updates_files(tmp_path):
     assert summary.copied_files == 1
     assert summary.updated_files == 0
     assert summary.skipped_files == 0
+    assert summary.transferred_bytes == 2
 
     source_file.write_text("v2", encoding="utf-8")
     summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
@@ -96,6 +97,7 @@ def test_sync_archive_tree_copies_and_updates_files(tmp_path):
     assert mirrored_file.read_text(encoding="utf-8") == "v2"
     assert summary.copied_files == 0
     assert summary.updated_files == 1
+    assert summary.transferred_bytes == 2
 
 
 def test_main_reports_dry_run_without_copying(monkeypatch, capsys, tmp_path):
@@ -126,4 +128,5 @@ def test_main_reports_dry_run_without_copying(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert "Source archive root:" in out
     assert "Dry run only" in out
+    assert "Transferred bytes:" in out
     assert (mirror_root / "Archive" / "technical" / "demo.h5").exists() is False
