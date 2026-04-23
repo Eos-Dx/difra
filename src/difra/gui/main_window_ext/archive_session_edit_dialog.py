@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import h5py
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -18,6 +20,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
 )
@@ -109,6 +112,12 @@ class ArchiveSessionEditDialog(QDialog):
         self.matador_status_label.setWordWrap(True)
         self.matador_status_label.setStyleSheet("color: #555; font-size: 10px;")
         refresh_box.addWidget(self.matador_status_label)
+
+        self.matador_progress_bar = QProgressBar()
+        self.matador_progress_bar.setRange(0, 0)
+        self.matador_progress_bar.setTextVisible(False)
+        self.matador_progress_bar.hide()
+        refresh_box.addWidget(self.matador_progress_bar)
         matador_layout.addRow("References:", refresh_box)
 
         self.project_combo = QComboBox()
@@ -147,7 +156,11 @@ class ArchiveSessionEditDialog(QDialog):
         self._populate_project_combo([])
         self._populate_study_combo([])
         self._set_reference_controls_enabled(False)
-        self._ensure_matador_references_loaded()
+        self._set_matador_loading_state(
+            False,
+            "Project and Study must be loaded from Matador with a runtime token.",
+        )
+        QTimer.singleShot(0, self._ensure_matador_references_loaded)
 
     @staticmethod
     def _as_text(value: Any, default: str = "") -> str:
@@ -234,6 +247,17 @@ class ArchiveSessionEditDialog(QDialog):
         if self._ok_button is not None:
             self._ok_button.setEnabled(bool(enabled))
 
+    def _set_matador_loading_state(self, loading: bool, message: str) -> None:
+        self._set_matador_status(message)
+        if loading:
+            self.matador_progress_bar.show()
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        else:
+            self.matador_progress_bar.hide()
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+        QApplication.processEvents()
+
     def _prompt_for_matador_runtime_context(self) -> Optional[Dict[str, str]]:
         existing = self._runtime_matador_context()
 
@@ -289,10 +313,15 @@ class ArchiveSessionEditDialog(QDialog):
             self._refresh_matador_references()
             return
 
+        self._set_matador_loading_state(
+            False,
+            "Matador token is required. Enter token and URL to load Project/Study choices.",
+        )
         context = self._prompt_for_matador_runtime_context()
         if not context:
             self._set_reference_controls_enabled(False)
-            self._set_matador_status(
+            self._set_matador_loading_state(
+                False,
                 "Matador token and URL are required to load Project/Study choices."
             )
             return
@@ -333,7 +362,8 @@ class ArchiveSessionEditDialog(QDialog):
             source = source_label
             if saved_at:
                 source = f"{source} ({saved_at})"
-            self._set_matador_status(
+            self._set_matador_loading_state(
+                False,
                 f"{source}. Choose a project, then choose the replacement study."
             )
             self._references_loaded_from_matador = True
@@ -341,7 +371,8 @@ class ArchiveSessionEditDialog(QDialog):
         else:
             self._references_loaded_from_matador = False
             self._set_reference_controls_enabled(False)
-            self._set_matador_status(
+            self._set_matador_loading_state(
+                False,
                 "Matador returned no studies. Refresh again or check the token/URL."
             )
 
@@ -477,15 +508,26 @@ class ArchiveSessionEditDialog(QDialog):
     def _refresh_matador_references(self) -> bool:
         context = self._runtime_matador_context()
         if not context.get("token"):
+            self._set_matador_loading_state(
+                False,
+                "Matador token is required. Enter token and URL to continue.",
+            )
             context = self._prompt_for_matador_runtime_context()
             if not context:
                 self._references_loaded_from_matador = False
                 self._set_reference_controls_enabled(False)
-                self._set_matador_status(
+                self._set_matador_loading_state(
+                    False,
                     "Matador token and URL are required to load Project/Study choices."
                 )
                 return False
 
+        self._references_loaded_from_matador = False
+        self._set_reference_controls_enabled(False)
+        self._set_matador_loading_state(
+            True,
+            "Connecting to Matador and downloading Project/Study list...",
+        )
         try:
             payload = refresh_matador_reference_cache(
                 base_url=context.get("matador_url") or "",
@@ -495,7 +537,7 @@ class ArchiveSessionEditDialog(QDialog):
         except Exception as exc:
             self._references_loaded_from_matador = False
             self._set_reference_controls_enabled(False)
-            self._set_matador_status(f"Matador refresh failed: {exc}")
+            self._set_matador_loading_state(False, f"Matador refresh failed: {exc}")
             QMessageBox.warning(
                 self,
                 "Matador Refresh Failed",
