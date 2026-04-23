@@ -122,6 +122,31 @@ def test_validate_technical_h5_main_handles_missing_and_quiet_success(
     assert "VALID:" in capsys.readouterr().out
 
 
+def test_sync_archive_to_onedrive_parser_supports_overrides_and_dry_run():
+    module = _load_module(
+        REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
+        "test_sync_archive_to_onedrive_script_parser",
+    )
+
+    parser = module._build_parser()
+    args = parser.parse_args(
+        [
+            "--config",
+            "/tmp/main_win.json",
+            "--source-root",
+            "/tmp/Archive",
+            "--mirror-root",
+            "/tmp/OneDrive",
+            "--dry-run",
+        ]
+    )
+
+    assert args.config == "/tmp/main_win.json"
+    assert args.source_root == "/tmp/Archive"
+    assert args.mirror_root == "/tmp/OneDrive"
+    assert args.dry_run is True
+
+
 def test_hardware_compat_module_lazy_loads_submodules():
     path = REPO_ROOT / "src" / "hardware" / "__init__.py"
     spec = importlib.util.spec_from_file_location("hardware", path)

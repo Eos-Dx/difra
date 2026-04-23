@@ -3,6 +3,7 @@
 from collections import Counter
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
+import json
 import logging
 import os
 from pathlib import Path
@@ -233,6 +234,204 @@ class SessionLifecycleActions:
                 exc_info=True,
             )
             return False
+        finally:
+            if original_mode is not None:
+                try:
+                    os.chmod(path, original_mode)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to restore container file mode: path=%s error=%s",
+                        str(path),
+                        exc,
+                        exc_info=True,
+                    )
+
+    @classmethod
+    def edit_archived_session_matador_metadata(
+        cls,
+        *,
+        container_path: Path,
+        project_id: Any,
+        project_name: Any,
+        study_id: Any,
+        study_name: Any,
+        edited_by: Optional[str] = None,
+        auth_mode: str = "password",
+    ) -> Dict[str, Any]:
+        """Rewrite archived H5 project/study metadata and persist an audit trail."""
+        path = Path(container_path)
+        if not path.exists():
+            return {
+                "success": False,
+                "updated": False,
+                "message": f"Container not found: {path}",
+            }
+
+        resolved_project_id = cls._coerce_optional_int(project_id)
+        resolved_study_id = cls._coerce_optional_int(study_id)
+        resolved_project_name = cls._decode_attr(project_name).strip()
+        resolved_study_name = cls._decode_attr(study_name).strip()
+        resolved_editor = cls._decode_attr(edited_by).strip() or "unknown"
+        resolved_auth_mode = cls._decode_attr(auth_mode).strip() or "password"
+
+        if resolved_project_id is None:
+            return {
+                "success": False,
+                "updated": False,
+                "message": "Matador project ID is required.",
+            }
+        if resolved_study_id is None:
+            return {
+                "success": False,
+                "updated": False,
+                "message": "Matador study ID is required.",
+            }
+        if not resolved_project_name:
+            return {
+                "success": False,
+                "updated": False,
+                "message": "Matador project name is required.",
+            }
+        if not resolved_study_name:
+            return {
+                "success": False,
+                "updated": False,
+                "message": "Matador study name is required.",
+            }
+
+        original_mode: Optional[int] = None
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            try:
+                original_mode = path.stat().st_mode
+                if not os.access(path, os.W_OK):
+                    os.chmod(path, original_mode | 0o200)
+            except Exception:
+                original_mode = None
+
+            with h5py.File(path, "a") as h5f:
+                previous_project_name = cls._decode_attr(
+                    h5f.attrs.get(
+                        "matadorProjectName",
+                        h5f.attrs.get("project_id", ""),
+                    )
+                ).strip()
+                previous_project_id = cls._coerce_optional_int(
+                    h5f.attrs.get("matadorProjectId")
+                )
+                previous_study_name = cls._decode_attr(
+                    h5f.attrs.get("study_name", "")
+                ).strip()
+                previous_study_id = cls._coerce_optional_int(
+                    h5f.attrs.get("matadorStudyId")
+                )
+
+                h5f.attrs["project_id"] = resolved_project_name
+                h5f.attrs["matadorProjectId"] = int(resolved_project_id)
+                h5f.attrs["matadorProjectName"] = resolved_project_name
+                h5f.attrs["study_name"] = resolved_study_name
+                h5f.attrs["matadorStudyId"] = int(resolved_study_id)
+
+                sample_group = h5f.get("/entry/sample")
+                if sample_group is not None:
+                    sample_group.attrs["project_id"] = resolved_project_name
+
+                raw_state = h5f.attrs.get("meta_json")
+                if raw_state is not None:
+                    try:
+                        state_payload = json.loads(cls._decode_attr(raw_state))
+                    except Exception:
+                        state_payload = None
+                    if isinstance(state_payload, dict):
+                        state_payload["project_id"] = resolved_project_name
+                        state_payload["matadorProjectId"] = int(resolved_project_id)
+                        state_payload["matadorProjectName"] = resolved_project_name
+                        state_payload["study_name"] = resolved_study_name
+                        state_payload["matadorStudyId"] = int(resolved_study_id)
+                        h5f.attrs["meta_json"] = json.dumps(
+                            state_payload,
+                            ensure_ascii=False,
+                        )
+
+                line = (
+                    f"{timestamp} | operator={resolved_editor} | auth={resolved_auth_mode} | "
+                    f"project='{previous_project_name or '-'}'[{previous_project_id if previous_project_id is not None else '-'}]"
+                    f" -> '{resolved_project_name}'[{resolved_project_id}] | "
+                    f"study='{previous_study_name or '-'}'[{previous_study_id if previous_study_id is not None else '-'}]"
+                    f" -> '{resolved_study_name}'[{resolved_study_id}]"
+                )
+
+                previous_log = cls._decode_attr(
+                    h5f.attrs.get("archive_metadata_edit_log", "")
+                )
+                lines = [item for item in previous_log.splitlines() if item.strip()]
+                lines.append(line)
+                lines = lines[-100:]
+
+                h5f.attrs["archive_metadata_edit_log"] = "\n".join(lines)
+                h5f.attrs["archive_metadata_edit_count"] = int(len(lines))
+                h5f.attrs["archive_metadata_edit_last_by"] = resolved_editor
+                h5f.attrs["archive_metadata_edit_last_at"] = timestamp
+                h5f.attrs["archive_metadata_edit_last_auth"] = resolved_auth_mode
+                h5f.attrs["archive_metadata_edit_last_summary"] = line
+
+                sample = cls._decode_attr(
+                    h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                ).strip() or "unknown"
+                operator = cls._decode_attr(
+                    h5f.attrs.get("operator_id", h5f.attrs.get("locked_by")),
+                ).strip() or "unknown"
+                machine = cls._decode_attr(h5f.attrs.get("machine_name")).strip() or "unknown"
+                site = cls._decode_attr(h5f.attrs.get("site_id")).strip() or "unknown"
+                session_id = cls._decode_attr(h5f.attrs.get("session_id")).strip() or "unknown"
+                acquisition_date = cls._decode_attr(
+                    h5f.attrs.get("acquisition_date")
+                ).strip()
+                created_at = cls._decode_attr(
+                    h5f.attrs.get("creation_timestamp")
+                ).strip()
+
+                summary = "\n".join(
+                    [
+                        f"Sample ID: {sample}",
+                        f"Project ID: {resolved_project_name}",
+                        f"Study Name: {resolved_study_name}",
+                        f"Operator ID: {operator}",
+                        f"Machine: {machine}",
+                        f"Site ID: {site}",
+                        f"Session ID: {session_id}",
+                        f"Acquisition Date: {acquisition_date}",
+                        f"Created At: {created_at}",
+                    ]
+                )
+                h5f.attrs["human_summary"] = summary
+                if "/entry/human_summary" in h5f:
+                    del h5f["/entry/human_summary"]
+                if "/entry" in h5f:
+                    h5f.create_dataset(
+                        "/entry/human_summary",
+                        data=summary,
+                        dtype=h5py.string_dtype(encoding="utf-8"),
+                    )
+
+            return {
+                "success": True,
+                "updated": True,
+                "message": "Archived session metadata updated.",
+            }
+        except Exception as exc:
+            logger.warning(
+                "Failed to edit archived session metadata: path=%s error=%s",
+                str(path),
+                exc,
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "updated": False,
+                "message": str(exc),
+            }
         finally:
             if original_mode is not None:
                 try:
@@ -1630,51 +1829,71 @@ class SessionLifecycleActions:
                     archived_path = fallback_dir / candidate.name
                     shutil.move(str(candidate), str(archived_path))
 
-                if use_stub_h5_only:
-                    upload_result = cls.execute_upload_stub(
-                        Path(archived_path),
-                        uploader_id=resolved_uploader_id,
-                        upload_session_id=str(upload_session_id or "").strip()
-                        or cls.create_upload_session_id(uploader_id=resolved_uploader_id),
-                        upload_api=upload_api,
-                        simulate_failure=simulate_upload_failure,
-                        failure_message=(
-                            "Matador upload failed (simulated)"
-                            if simulate_upload_failure
-                            else None
-                        ),
+                upload_exception = None
+                try:
+                    if use_stub_h5_only:
+                        upload_result = cls.execute_upload_stub(
+                            Path(archived_path),
+                            uploader_id=resolved_uploader_id,
+                            upload_session_id=str(upload_session_id or "").strip()
+                            or cls.create_upload_session_id(uploader_id=resolved_uploader_id),
+                            upload_api=upload_api,
+                            simulate_failure=simulate_upload_failure,
+                            failure_message=(
+                                "Matador upload failed (simulated)"
+                                if simulate_upload_failure
+                                else None
+                            ),
+                        )
+                    elif old_format_zip_path is None:
+                        upload_result = UploadStubResult(
+                            success=False,
+                            upload_session_id="",
+                            message="Old-format ZIP payload was not generated",
+                            bytes_uploaded=int(Path(archived_path).stat().st_size)
+                            if Path(archived_path).exists()
+                            else 0,
+                            local_checksum_sha256=sha256_file(Path(archived_path))
+                            if Path(archived_path).exists()
+                            else "",
+                            response_checksum_sha256="",
+                            remote_container_id="",
+                        )
+                    else:
+                        upload_result = cls._execute_matador_upload(
+                            Path(archived_path),
+                            old_format_zip_path=Path(old_format_zip_path),
+                            calibration_zip_paths=calibration_zip_paths,
+                            uploader_id=resolved_uploader_id,
+                            upload_api=upload_api,
+                            config=config,
+                            simulate_failure=simulate_upload_failure,
+                            failure_message=(
+                                "Matador upload failed (simulated)"
+                                if simulate_upload_failure
+                                else None
+                            ),
+                            progress_callback=progress_callback,
+                            current=item_index,
+                            total=total_containers,
+                        )
+                except Exception as exc:
+                    upload_exception = exc
+                    logger.warning(
+                        "Matador upload failed after archive: container=%s error=%s",
+                        str(archived_path),
+                        exc,
+                        exc_info=True,
                     )
-                elif old_format_zip_path is None:
                     upload_result = UploadStubResult(
                         success=False,
                         upload_session_id="",
-                        message="Old-format ZIP payload was not generated",
-                        bytes_uploaded=int(Path(archived_path).stat().st_size)
-                        if Path(archived_path).exists()
-                        else 0,
-                        local_checksum_sha256=sha256_file(Path(archived_path))
-                        if Path(archived_path).exists()
-                        else "",
+                        message=str(exc),
+                        bytes_uploaded=0,
+                        local_checksum_sha256="",
                         response_checksum_sha256="",
                         remote_container_id="",
-                    )
-                else:
-                    upload_result = cls._execute_matador_upload(
-                        Path(archived_path),
-                        old_format_zip_path=Path(old_format_zip_path),
-                        calibration_zip_paths=calibration_zip_paths,
-                        uploader_id=resolved_uploader_id,
-                        upload_api=upload_api,
-                        config=config,
-                        simulate_failure=simulate_upload_failure,
-                        failure_message=(
-                            "Matador upload failed (simulated)"
-                            if simulate_upload_failure
-                            else None
-                        ),
-                        progress_callback=progress_callback,
-                        current=item_index,
-                        total=total_containers,
+                        zip_path=str(old_format_zip_path or ""),
                     )
                 if upload_result.upload_session_id and not result.upload_session_id:
                     result.upload_session_id = str(upload_result.upload_session_id)
@@ -1728,13 +1947,20 @@ class SessionLifecycleActions:
                         result.failed.append(
                             f"{candidate.name}: upload metadata write failed"
                         )
+                    elif upload_exception is not None:
+                        result.failed.append(f"{candidate.name}: {upload_result.message}")
                     else:
                         result.failed.append(
                             f"{candidate.name}: upload failed ({upload_result.message})"
                         )
                     cls._notify_progress(
                         progress_callback,
-                        message=f"[{item_index}/{total_containers}] {candidate.name}: FAILED - {upload_result.message}",
+                        message=(
+                            f"[{item_index}/{total_containers}] {candidate.name}: "
+                            f"FAILED - unexpected error ({upload_result.message})"
+                            if upload_exception is not None
+                            else f"[{item_index}/{total_containers}] {candidate.name}: FAILED - {upload_result.message}"
+                        ),
                         current=item_index,
                         total=total_containers,
                         kind="container_failed",

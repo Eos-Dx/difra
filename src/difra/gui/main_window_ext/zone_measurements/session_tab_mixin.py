@@ -1,6 +1,8 @@
 """Session management tab for Zone Measurements."""
 
 from datetime import datetime
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -33,6 +35,9 @@ from PyQt5.QtWidgets import (
 )
 
 from difra.gui.container_api import get_container_manager, get_schema
+from difra.gui.main_window_ext.archive_session_edit_dialog import (
+    ArchiveSessionEditDialog,
+)
 from difra.gui.matador_runtime_context import (
     get_runtime_matador_context,
     set_runtime_matador_context,
@@ -49,6 +54,10 @@ logger = get_module_logger(__name__)
 
 class SessionTabMixin:
     """Mixin for session management tab in Zone Measurements."""
+
+    ARCHIVE_METADATA_EDIT_PASSWORD_HASH = (
+        "64ae5ac9f98ac4a2bb67a66cc913909022d4d0bb7d673fcf76d1999c33debd93"
+    )
 
     def _create_matador_send_progress_dialog(self, total_containers: int):
         dialog = QDialog(self)
@@ -537,6 +546,129 @@ class SessionTabMixin:
         if send_button is not None:
             send_button.setEnabled(bool(self._selected_archived_containers()))
 
+    def _confirm_archive_metadata_edit_password(self) -> bool:
+        if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+            return True
+
+        password, accepted = QInputDialog.getText(
+            self,
+            "Edit Archived Session Metadata",
+            "Enter password to edit archived Project/Study metadata:",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return False
+
+        provided_hash = hashlib.sha256(str(password or "").encode("utf-8")).hexdigest()
+        if hmac.compare_digest(provided_hash, self.ARCHIVE_METADATA_EDIT_PASSWORD_HASH):
+            return True
+
+        QMessageBox.warning(
+            self,
+            "Wrong Password",
+            "Password is incorrect. Archived metadata was not changed.",
+        )
+        return False
+
+    def _current_operator_id_for_archive_edit(self) -> str:
+        operator_manager = getattr(self, "operator_manager", None)
+        if operator_manager is not None:
+            getter = getattr(operator_manager, "get_current_operator_id", None)
+            if callable(getter):
+                try:
+                    value = str(getter() or "").strip()
+                except Exception:
+                    value = ""
+                if value:
+                    return value
+
+        session_manager = getattr(self, "session_manager", None)
+        if session_manager is not None:
+            value = str(getattr(session_manager, "operator_id", "") or "").strip()
+            if value:
+                return value
+
+        if hasattr(self, "config") and isinstance(self.config, dict):
+            value = str(self.config.get("operator_id") or "").strip()
+            if value:
+                return value
+
+        return "unknown"
+
+    def _edit_archived_sessions(self, container_paths: List[Path]):
+        targets = [Path(path) for path in container_paths if Path(path).exists()]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "No archived session containers selected.",
+            )
+            return
+
+        if not self._confirm_archive_metadata_edit_password():
+            return
+
+        dialog = ArchiveSessionEditDialog(
+            container_paths=targets,
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        selection = dialog.get_selection()
+        editor_id = self._current_operator_id_for_archive_edit()
+        updated = []
+        unchanged = []
+        failed = []
+
+        for container_path in targets:
+            result = SessionLifecycleActions.edit_archived_session_matador_metadata(
+                container_path=container_path,
+                project_id=selection.get("project_id"),
+                project_name=selection.get("project_name"),
+                study_id=selection.get("study_id"),
+                study_name=selection.get("study_name"),
+                edited_by=editor_id,
+                auth_mode="password",
+            )
+            if not result.get("success"):
+                failed.append(f"{container_path.name}: {result.get('message')}")
+            elif result.get("updated"):
+                updated.append(container_path.name)
+            else:
+                unchanged.append(container_path.name)
+
+        summary = [
+            f"Project: {selection.get('project_name')} [{selection.get('project_id')}]",
+            f"Study: {selection.get('study_name')} [{selection.get('study_id')}]",
+            f"Changed by: {editor_id}",
+        ]
+        if updated:
+            summary.append("")
+            summary.append(f"Updated: {len(updated)}")
+        if unchanged:
+            summary.append(f"Already matched: {len(unchanged)}")
+        if failed:
+            summary.append(f"Failed: {len(failed)}")
+            summary.extend(failed[:6])
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Archived Metadata Updated With Errors",
+                "\n".join(summary),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Archived Metadata Updated",
+                "\n".join(summary),
+            )
+
+        self._refresh_session_container_lists()
+        if hasattr(self, "update_session_status"):
+            self.update_session_status()
+
     def _open_session_container_path(self, container_path: Path):
         if container_path is None:
             return
@@ -692,6 +824,7 @@ class SessionTabMixin:
         transfer_status = str(info.get("transfer_status") or "").strip().upper()
         menu = QMenu(table)
         load_action = menu.addAction("Load Container")
+        edit_action = menu.addAction("Edit Project/Study")
         send_action = menu.addAction(
             "Send To Matador Again" if transfer_status == "SENT" else "Send To Matador"
         )
@@ -701,6 +834,10 @@ class SessionTabMixin:
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
             self._open_session_container_path(container_path)
+        elif selected == edit_action:
+            self._edit_archived_sessions(
+                self._selected_archived_containers(fallback_path=container_path)
+            )
         elif selected == send_action:
             self._send_archived_sessions(
                 self._selected_archived_containers(fallback_path=container_path)

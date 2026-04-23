@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import (
     QApplication,
+    QDialog,
     QGroupBox,
     QMainWindow,
     QMessageBox,
@@ -449,6 +450,81 @@ def test_archived_container_manual_generate_old_format(qapp, tmp_path, monkeypat
 
     old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
     assert len(old_dirs) == 1
+
+
+def test_archive_tab_can_edit_project_and_study_without_touching_specimen(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+
+    session_path = _create_session_file(measurements_folder, "SAMPLE_KEEP", "OLD_STUDY")
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["project_id"] = "OLD_PROJECT"
+        h5f.attrs["matadorProjectId"] = 11
+        h5f.attrs["matadorProjectName"] = "OLD_PROJECT"
+        h5f.attrs["matadorStudyId"] = 22
+        h5f.attrs["meta_json"] = '{"sample_id": "SAMPLE_KEEP", "project_id": "OLD_PROJECT", "study_name": "OLD_STUDY"}'
+
+    session_manager = _FakeSessionManager()
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+        },
+        session_manager=session_manager,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._archive_sessions([session_path])
+    qapp.processEvents()
+
+    archived_path = harness._path_from_table_row(harness.archived_sessions_table, 0, 9)
+    assert archived_path is not None and archived_path.exists() is True
+
+    class _FakeEditDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec_(self):
+            return QDialog.Accepted
+
+        def get_selection(self):
+            return {
+                "project_id": 6701,
+                "project_name": "NewProject",
+                "study_id": 6751,
+                "study_name": "NewStudy",
+            }
+
+    monkeypatch.setattr(harness, "_confirm_archive_metadata_edit_password", lambda: True)
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.ArchiveSessionEditDialog",
+        _FakeEditDialog,
+    )
+
+    harness._edit_archived_sessions([archived_path])
+    qapp.processEvents()
+
+    with h5py.File(archived_path, "r") as h5f:
+        assert h5f.attrs[schema.ATTR_SAMPLE_ID] == "SAMPLE_KEEP"
+        assert str(h5f.attrs.get("specimenId", "SAMPLE_KEEP")) == "SAMPLE_KEEP"
+        assert h5f.attrs["project_id"] == "NewProject"
+        assert h5f.attrs["matadorProjectName"] == "NewProject"
+        assert int(h5f.attrs["matadorProjectId"]) == 6701
+        assert h5f.attrs["study_name"] == "NewStudy"
+        assert int(h5f.attrs["matadorStudyId"]) == 6751
+        assert "operator=sad" in str(h5f.attrs.get("archive_metadata_edit_log", ""))
+
+    harness._refresh_session_container_lists()
+    assert harness.archived_sessions_table.item(0, 1).text() == "SAMPLE_KEEP"
+    assert harness.archived_sessions_table.item(0, 2).text() == "NewProject"
+    assert harness.archived_sessions_table.item(0, 3).text() == "NewStudy"
 
 
 def test_session_queue_close_archives_and_marks_incomplete(qapp, tmp_path, monkeypatch):
