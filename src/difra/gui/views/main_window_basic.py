@@ -88,18 +88,20 @@ class MainWindowBasic(QMainWindow):
         # Keep OneDrive archive mirror warm in the background.
         self._archive_mirror_sync_running = False
         self._archive_mirror_sync_timer = None
-        self.setup_archive_mirror_sync()
 
     def load_config(self):
         """Load global config and merge with a selected setup config.
         Fallback to legacy main.json if split configs are missing.
         """
-        folder_keys = (
+        path_override_keys = (
             "difra_base_folder",
             "technical_folder",
             "technical_archive_folder",
             "measurements_folder",
             "measurements_archive_folder",
+            "technical_archive_mirror_folder",
+            "measurements_archive_mirror_folder",
+            "session_archive_mirror_folder",
         )
 
         def _read_json(p: Path):
@@ -161,7 +163,7 @@ class MainWindowBasic(QMainWindow):
         # On Windows, prefer folder paths from main_win.json when available.
         if os.name == "nt":
             legacy_cfg = _read_json(self._legacy_main_path)
-            for key in folder_keys:
+            for key in path_override_keys:
                 value = legacy_cfg.get(key)
                 if value:
                     merged[key] = value
@@ -234,15 +236,17 @@ class MainWindowBasic(QMainWindow):
         if getattr(self, "_archive_mirror_sync_running", False):
             return
         self._archive_mirror_sync_running = True
+        append_session_log = getattr(self, "_append_session_log", None)
         try:
             source_root, mirror_root = resolve_sync_roots_from_config(self.config)
         except Exception as exc:
             logger.debug("Archive mirror sync disabled or unresolved: %s", exc)
+            if callable(append_session_log):
+                append_session_log(f"Archive sync skipped: {exc}")
             self._archive_mirror_sync_running = False
             return
 
         try:
-            append_session_log = getattr(self, "_append_session_log", None)
             destination_root = Path(mirror_root) / Path(source_root).name
             if callable(append_session_log):
                 append_session_log(
@@ -296,6 +300,9 @@ class MainWindowBasic(QMainWindow):
             resolve_sync_roots_from_config(self.config)
         except Exception as exc:
             logger.debug("Archive mirror sync not configured: %s", exc)
+            append_session_log = getattr(self, "_append_session_log", None)
+            if callable(append_session_log):
+                append_session_log(f"Archive sync disabled: {exc}")
             return
 
         timer = QTimer(self)
@@ -366,6 +373,23 @@ class MainWindowBasic(QMainWindow):
                     "Default image file not found in DEV mode", path=default_image
                 )
 
+    @staticmethod
+    def _augment_setup_config_for_editor(parsed: dict, merged_config: dict | None) -> dict:
+        if not isinstance(parsed, dict):
+            return parsed
+        payload = dict(parsed)
+        effective_config = merged_config if isinstance(merged_config, dict) else {}
+        visible_keys = (
+            "measurements_archive_mirror_folder",
+            "technical_archive_mirror_folder",
+            "session_archive_mirror_folder",
+            "archive_mirror_sync_interval_ms",
+        )
+        for key in visible_keys:
+            if key not in payload and key in effective_config:
+                payload[key] = effective_config.get(key)
+        return payload
+
     def edit_config(self):
         """
         Open a JSON editor for the currently active setup config file (setup or legacy), save and reload config.
@@ -382,7 +406,15 @@ class MainWindowBasic(QMainWindow):
         layout = QVBoxLayout(dlg)
 
         editor = QPlainTextEdit(dlg)
-        editor.setPlainText(text)
+        try:
+            parsed_text = json.loads(text)
+        except Exception:
+            editor.setPlainText(text)
+        else:
+            if isinstance(parsed_text, dict):
+                parsed_text = self._augment_setup_config_for_editor(parsed_text, self.config)
+                text = json.dumps(parsed_text, indent=4)
+            editor.setPlainText(text)
         layout.addWidget(editor)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel, dlg)

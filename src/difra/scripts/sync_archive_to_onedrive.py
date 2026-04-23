@@ -171,6 +171,9 @@ def sync_archive_tree(
     skipped_files = 0
     transferred_bytes = 0
 
+    if not dry_run:
+        destination_root.mkdir(parents=True, exist_ok=True)
+
     for file_path in sorted(source.rglob("*")):
         if not file_path.is_file():
             continue

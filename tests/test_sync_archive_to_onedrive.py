@@ -100,6 +100,26 @@ def test_sync_archive_tree_copies_and_updates_files(tmp_path):
     assert summary.transferred_bytes == 2
 
 
+def test_sync_archive_tree_creates_archive_root_even_without_new_files(tmp_path):
+    module = _load_module(
+        REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
+        "test_sync_archive_to_onedrive_creates_root",
+    )
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    source_root.mkdir(parents=True, exist_ok=True)
+
+    summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert summary.destination_root == mirror_root / "Archive"
+    assert summary.destination_root.exists() is True
+    assert summary.destination_root.is_dir() is True
+    assert summary.scanned_files == 0
+    assert summary.copied_files == 0
+    assert summary.updated_files == 0
+
+
 def test_main_reports_dry_run_without_copying(monkeypatch, capsys, tmp_path):
     module = _load_module(
         REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
