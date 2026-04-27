@@ -240,6 +240,7 @@ Toggle between production and demo modes:
 - **Demo Mode** (DEV=true):
   - Loads default test image automatically
   - Visual indicator: gray background + "[DEMO]" in title
+  - Operator warning: blinking red top banner reading "!! DEVELOPMENT !!"
   - Use for testing without hardware
 
 **Toggle via GUI:**

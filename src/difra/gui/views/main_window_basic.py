@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -12,6 +12,8 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QLabel,
+    QSizePolicy,
     QToolBar,
     QVBoxLayout,
 )
@@ -72,6 +74,11 @@ class MainWindowBasic(QMainWindow):
             else self._config_dir / "main.json"
         )
         self.config = self.load_config()
+        self._dev_banner_active = False
+        self._dev_banner_lit = True
+        self._dev_banner_timer = QTimer(self)
+        self._dev_banner_timer.setInterval(650)
+        self._dev_banner_timer.timeout.connect(self._blink_dev_mode_banner)
 
         # Central image view
         # self.image_view = ImageView(self)
@@ -565,20 +572,84 @@ class MainWindowBasic(QMainWindow):
             return name, path if path.exists() else (name, None)
         return None, None
 
+    @staticmethod
+    def _dev_banner_style(lit: bool) -> str:
+        background = "#d50000" if lit else "#6e0000"
+        border = "#fff176" if lit else "#b71c1c"
+        color = "#ffffff" if lit else "#ffb3b3"
+        return f"""
+            QLabel#DevModeWarningBanner {{
+                background-color: {background};
+                color: {color};
+                border: 3px solid {border};
+                font-size: 20px;
+                font-weight: 900;
+                padding: 8px 10px;
+            }}
+        """
+
+    def _ensure_dev_mode_banner(self):
+        if hasattr(self, "dev_mode_banner"):
+            return self.dev_mode_banner
+
+        layout = getattr(self, "main_layout", None)
+        if layout is None:
+            return None
+
+        banner = QLabel("!! DEVELOPMENT !!", self)
+        banner.setObjectName("DevModeWarningBanner")
+        banner.setAlignment(Qt.AlignCenter)
+        banner.setMinimumHeight(42)
+        banner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        banner.setToolTip("Development mode is enabled.")
+        banner.setVisible(False)
+        banner.setStyleSheet(self._dev_banner_style(True))
+        layout.insertWidget(0, banner)
+        self.dev_mode_banner = banner
+        return banner
+
+    def _blink_dev_mode_banner(self):
+        if not self._dev_banner_active:
+            return
+        banner = getattr(self, "dev_mode_banner", None)
+        if banner is None:
+            return
+        self._dev_banner_lit = not self._dev_banner_lit
+        banner.setStyleSheet(self._dev_banner_style(self._dev_banner_lit))
+
+    def _set_dev_mode_banner_active(self, is_dev: bool):
+        banner = self._ensure_dev_mode_banner()
+        self._dev_banner_active = bool(is_dev)
+        if banner is None:
+            return
+
+        banner.setVisible(bool(is_dev))
+        if is_dev:
+            self._dev_banner_lit = True
+            banner.setStyleSheet(self._dev_banner_style(True))
+            if not self._dev_banner_timer.isActive():
+                self._dev_banner_timer.start()
+        else:
+            if self._dev_banner_timer.isActive():
+                self._dev_banner_timer.stop()
+
     def update_dev_visuals(self):
         """
-        Gray background + "[DEMO]" when DEV=True, else normal.
+        Gray background + "[DEMO]" and a blinking DEV banner when DEV=True.
         """
         base_title = "EosDX Scanning Software"
         is_dev = self.config.get("DEV", False)
         if is_dev:
             self.setStyleSheet("background-color: lightgray;")
             self.setWindowTitle(f"{base_title} [DEMO]")
-            self.toggle_dev_act.setText("Switch to Production")
+            if hasattr(self, "toggle_dev_act"):
+                self.toggle_dev_act.setText("Switch to Production")
         else:
             self.setStyleSheet("")
             self.setWindowTitle(base_title)
-            self.toggle_dev_act.setText("Switch to Demo")
+            if hasattr(self, "toggle_dev_act"):
+                self.toggle_dev_act.setText("Switch to Demo")
+        self._set_dev_mode_banner_active(is_dev)
 
     def toggle_dev_mode(self):
         """

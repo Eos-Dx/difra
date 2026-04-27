@@ -194,6 +194,8 @@ class MainWindow(
             self.setCentralWidget(central)
             self.main_layout = QVBoxLayout(central)
             logger.debug("Central widget and layout created")
+            self._ensure_dev_mode_banner()
+            self._set_dev_mode_banner_active(bool(self.config.get("DEV", False)))
 
             # Create the image view and add it to central widget
             logger.debug("Creating ImageView...")
