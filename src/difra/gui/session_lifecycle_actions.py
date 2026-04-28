@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 import zipfile
 
 import h5py
@@ -175,16 +175,7 @@ class SessionLifecycleActions:
                 )
                 specimen_token = cls._safe_token(specimen_text, "UNKNOWN")
 
-                technical_container_id = ""
-                calibration_snapshot = None
-                for snapshot_path in ("/entry/calibration_snapshot", "/entry/technical"):
-                    calibration_snapshot = h5f.get(snapshot_path)
-                    if calibration_snapshot is not None:
-                        break
-                if calibration_snapshot is not None:
-                    technical_container_id = str(
-                        calibration_snapshot.attrs.get("source_container_id", "") or ""
-                    ).strip()
+                technical_container_id = cls._read_technical_container_id_from_h5(h5f)
                 technical_token = cls._safe_token(
                     technical_container_id,
                     "unknown_technical",
@@ -207,6 +198,61 @@ class SessionLifecycleActions:
             "measurement_zip_name": measurement_zip_name,
             "calibration_zip_name": calibration_zip_name,
         }
+
+    @classmethod
+    def _read_technical_container_id_from_h5(cls, h5f: h5py.File) -> str:
+        for snapshot_path in ("/entry/calibration_snapshot", "/entry/technical"):
+            snapshot = h5f.get(snapshot_path)
+            if snapshot is None:
+                continue
+            for attr_name in (
+                "source_container_id",
+                "technical_container_id",
+                "container_id",
+            ):
+                value = cls._decode_attr(snapshot.attrs.get(attr_name, "")).strip()
+                if value:
+                    return value
+        for attr_name in ("technical_container_id", "source_container_id"):
+            value = cls._decode_attr(h5f.attrs.get(attr_name, "")).strip()
+            if value:
+                return value
+        return ""
+
+    @classmethod
+    def _read_technical_container_id(cls, session_path: Path) -> str:
+        try:
+            with h5py.File(Path(session_path), "r") as h5f:
+                return cls._read_technical_container_id_from_h5(h5f)
+        except Exception:
+            logger.warning(
+                "Failed to read technical container id for %s",
+                str(session_path),
+                exc_info=True,
+            )
+            return ""
+
+    @classmethod
+    def _matador_batch_group_key(cls, session_path: Path) -> str:
+        path = Path(session_path)
+        if not path.exists():
+            return f"container:{cls._safe_token(path.resolve().as_posix())}"
+        technical_id = cls._read_technical_container_id(path)
+        if technical_id:
+            return f"technical:{cls._safe_token(technical_id)}"
+        return f"container:{cls._safe_token(path.resolve().as_posix())}"
+
+    @classmethod
+    def _order_paths_by_matador_group(cls, paths: Iterable[Path]) -> List[Path]:
+        buckets: Dict[str, List[Path]] = {}
+        group_order: List[str] = []
+        for path in [Path(item) for item in paths]:
+            key = cls._matador_batch_group_key(path)
+            if key not in buckets:
+                buckets[key] = []
+                group_order.append(key)
+            buckets[key].append(path)
+        return [path for key in group_order for path in buckets[key]]
 
     @classmethod
     def _write_container_attrs(cls, container_path: Path, attrs: Dict[str, Any]) -> bool:
@@ -812,6 +858,8 @@ class SessionLifecycleActions:
         progress_callback: Optional[Any] = None,
         current: Optional[int] = None,
         total: Optional[int] = None,
+        batch_session_cache: Optional[Dict[str, Any]] = None,
+        batch_calibration_uploaded: Optional[Set[str]] = None,
     ) -> UploadStubResult:
         cls._notify_progress(
             progress_callback,
@@ -846,6 +894,9 @@ class SessionLifecycleActions:
         calibration_zip_paths = [
             Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
         ]
+        batch_group_key = ""
+        if batch_session_cache is not None or batch_calibration_uploaded is not None:
+            batch_group_key = cls._matador_batch_group_key(Path(archived_path))
 
         def _blocked_result(message: str) -> UploadStubResult:
             cls._notify_progress(
@@ -889,26 +940,64 @@ class SessionLifecycleActions:
                 "but none is stored in the container."
             )
 
-        cls._notify_progress(
-            progress_callback,
-            message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
-            current=current,
-            total=total,
-            kind="create_session",
-            container_path=Path(archived_path),
-        )
-        ingest_session = upload_backend.find_or_create_session(
-            MatadorFindOrCreateSessionRequest(
-                study_id=int(session_metadata["study_id"]),
-                machine_id=int(session_metadata["machine_id"]),
-                distance_in_mm=int(session_metadata["distance_mm"]),
-                exposure_time_sec=float(session_metadata["exposure_time_sec"]),
-                initiated_by=str(session_metadata["initiated_by"]),
-                session_date=str(session_metadata.get("session_date") or ""),
-            )
-        )
+        ingest_session = None
+        if batch_group_key and batch_session_cache is not None:
+            ingest_session = batch_session_cache.get(batch_group_key)
 
-        for calibration_zip_path in calibration_zip_paths:
+        if ingest_session is None:
+            cls._notify_progress(
+                progress_callback,
+                message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
+                current=current,
+                total=total,
+                kind="create_session",
+                container_path=Path(archived_path),
+            )
+            ingest_session = upload_backend.find_or_create_session(
+                MatadorFindOrCreateSessionRequest(
+                    study_id=int(session_metadata["study_id"]),
+                    machine_id=int(session_metadata["machine_id"]),
+                    distance_in_mm=int(session_metadata["distance_mm"]),
+                    exposure_time_sec=float(session_metadata["exposure_time_sec"]),
+                    initiated_by=str(session_metadata["initiated_by"]),
+                    session_date=str(session_metadata.get("session_date") or ""),
+                )
+            )
+            if batch_group_key and batch_session_cache is not None:
+                batch_session_cache[batch_group_key] = ingest_session
+        else:
+            cls._notify_progress(
+                progress_callback,
+                message=(
+                    f"{Path(archived_path).name}: Reusing Matador ingest session "
+                    f"{ingest_session.id} for calibration group."
+                ),
+                current=current,
+                total=total,
+                kind="reuse_session",
+                container_path=Path(archived_path),
+            )
+
+        upload_calibration = True
+        if (
+            batch_group_key
+            and batch_calibration_uploaded is not None
+            and batch_group_key in batch_calibration_uploaded
+        ):
+            upload_calibration = False
+            cls._notify_progress(
+                progress_callback,
+                message=(
+                    f"{Path(archived_path).name}: Calibration already uploaded for "
+                    "this technical group."
+                ),
+                current=current,
+                total=total,
+                kind="skip_calibration",
+                container_path=Path(archived_path),
+            )
+
+        for calibration_zip_path in (calibration_zip_paths if upload_calibration else []):
             calibration_checksum = sha256_file(Path(calibration_zip_path))
             cls._notify_progress(
                 progress_callback,
@@ -977,6 +1066,14 @@ class SessionLifecycleActions:
                     zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
                     zip_path=str(old_format_zip_path),
                 )
+
+        if (
+            upload_calibration
+            and calibration_zip_paths
+            and batch_group_key
+            and batch_calibration_uploaded is not None
+        ):
+            batch_calibration_uploaded.add(batch_group_key)
 
         zip_checksum = sha256_file(Path(old_format_zip_path))
         cls._notify_progress(
@@ -1711,7 +1808,15 @@ class SessionLifecycleActions:
         cleanup_folders = set()
 
         queued_paths = [Path(path) for path in container_paths]
+        if len(queued_paths) > 1:
+            queued_paths = cls._order_paths_by_matador_group(queued_paths)
         total_containers = len(queued_paths)
+        batch_session_cache: Optional[Dict[str, Any]] = (
+            {} if total_containers > 1 else None
+        )
+        batch_calibration_uploaded: Optional[Set[str]] = (
+            set() if total_containers > 1 else None
+        )
 
         for item_index, container_path in enumerate(queued_paths, start=1):
             candidate = Path(container_path)
@@ -1876,6 +1981,8 @@ class SessionLifecycleActions:
                             progress_callback=progress_callback,
                             current=item_index,
                             total=total_containers,
+                            batch_session_cache=batch_session_cache,
+                            batch_calibration_uploaded=batch_calibration_uploaded,
                         )
                 except Exception as exc:
                     upload_exception = exc
@@ -2051,7 +2158,15 @@ class SessionLifecycleActions:
             if value not in (None, "")
         }
         queued_paths = [Path(path) for path in container_paths]
+        if len(queued_paths) > 1:
+            queued_paths = cls._order_paths_by_matador_group(queued_paths)
         total_containers = len(queued_paths)
+        batch_session_cache: Optional[Dict[str, Any]] = (
+            {} if total_containers > 1 else None
+        )
+        batch_calibration_uploaded: Optional[Set[str]] = (
+            set() if total_containers > 1 else None
+        )
 
         for item_index, container_path in enumerate(queued_paths, start=1):
             candidate = Path(container_path)
@@ -2164,6 +2279,8 @@ class SessionLifecycleActions:
                         progress_callback=progress_callback,
                         current=item_index,
                         total=total_containers,
+                        batch_session_cache=batch_session_cache,
+                        batch_calibration_uploaded=batch_calibration_uploaded,
                     )
 
                 if upload_result.upload_session_id and not result.upload_session_id:

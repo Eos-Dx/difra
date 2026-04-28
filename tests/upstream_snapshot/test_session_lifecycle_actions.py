@@ -7,7 +7,7 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 from container.v0_2 import container_manager, writer as session_writer
-from difra.gui.matador_upload_api import RealMatadorUploadApi
+from difra.gui.matador_upload_api import RealMatadorUploadApi, StubMatadorUploadApi
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
@@ -46,6 +46,21 @@ def _add_complete_session_payload(session_path: Path):
         detector_metadata={"PRIMARY": {"integration_time_ms": 100.0}},
         poni_alias_map={"PRIMARY": "PRIMARY"},
     )
+
+
+class _CountingMatadorUploadApi(StubMatadorUploadApi):
+    def __init__(self):
+        super().__init__(force_failure=False, failure_probability=0.0)
+        self.find_requests = []
+        self.register_requests = []
+
+    def find_or_create_session(self, request):
+        self.find_requests.append(request)
+        return super().find_or_create_session(request)
+
+    def register_file(self, request):
+        self.register_requests.append(request)
+        return super().register_file(request)
 
 
 def test_finalize_session_container_locks_once(tmp_path):
@@ -282,6 +297,101 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
             attempt_log = str(h5f.attrs.get("upload_attempts_log", ""))
             assert "operator=sad" in attempt_log
             assert "status=success" in attempt_log
+
+
+def test_batch_send_uploads_one_calibration_for_shared_technical_container(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    sid_b, path_b = _create_session_file(measurements, "326112__326170")
+    _add_complete_session_payload(path_a)
+    _add_complete_session_payload(path_b)
+
+    for sid, path in ((sid_a, path_a), (sid_b, path_b)):
+        with h5py.File(path, "a") as h5f:
+            h5f.attrs["specimenId"] = h5f.attrs["sample_id"]
+            h5f.attrs["distance_cm"] = 17.0
+            h5f.attrs["session_id"] = sid
+            h5f.require_group("/entry/technical").attrs[
+                "source_container_id"
+            ] = "tech_shared"
+
+    api = _CountingMatadorUploadApi()
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a, path_b],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a, str(path_b): sid_b},
+            config={
+                "old_format_export_folder": str(old_format_folder),
+                "enable_old_format_export": True,
+            },
+        )
+
+    kinds = [request.ingest_kind for request in api.register_requests]
+    session_ids = {int(request.ingest_session_id) for request in api.register_requests}
+
+    assert result.upload_success == 2
+    assert result.upload_failed == 0
+    assert len(api.find_requests) == 1
+    assert kinds.count("CALIBRATION") == 1
+    assert kinds.count("MEASUREMENT") == 4
+    assert len(session_ids) == 1
+
+
+def test_batch_send_opens_one_matador_session_per_technical_group(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    sid_b, path_b = _create_session_file(measurements, "326112__326170")
+    _add_complete_session_payload(path_a)
+    _add_complete_session_payload(path_b)
+
+    for sid, path, distance_cm, tech_id in (
+        (sid_a, path_a, 17.0, "tech_17cm"),
+        (sid_b, path_b, 2.0, "tech_2cm"),
+    ):
+        with h5py.File(path, "a") as h5f:
+            h5f.attrs["specimenId"] = h5f.attrs["sample_id"]
+            h5f.attrs["distance_cm"] = distance_cm
+            h5f.attrs["session_id"] = sid
+            h5f.require_group("/entry/technical").attrs[
+                "source_container_id"
+            ] = tech_id
+
+    api = _CountingMatadorUploadApi()
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a, path_b],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a, str(path_b): sid_b},
+            config={
+                "old_format_export_folder": str(old_format_folder),
+                "enable_old_format_export": True,
+            },
+        )
+
+    kinds = [request.ingest_kind for request in api.register_requests]
+    session_ids = {int(request.ingest_session_id) for request in api.register_requests}
+
+    assert result.upload_success == 2
+    assert result.upload_failed == 0
+    assert len(api.find_requests) == 2
+    assert kinds.count("CALIBRATION") == 2
+    assert kinds.count("MEASUREMENT") == 4
+    assert len(session_ids) == 2
 
 
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):
