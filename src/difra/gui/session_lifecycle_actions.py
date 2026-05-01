@@ -255,6 +255,24 @@ class SessionLifecycleActions:
         return [path for key in group_order for path in buckets[key]]
 
     @classmethod
+    def _matador_calibration_group_key(
+        cls,
+        session_path: Path,
+        *,
+        calibration_zip_paths: Iterable[Path],
+    ) -> str:
+        names = sorted(
+            {
+                str(Path(path).name).strip()
+                for path in calibration_zip_paths
+                if str(Path(path).name).strip()
+            }
+        )
+        if names:
+            return "calibration_files:" + "|".join(names)
+        return cls._matador_batch_group_key(Path(session_path))
+
+    @classmethod
     def _write_container_attrs(cls, container_path: Path, attrs: Dict[str, Any]) -> bool:
         """Write attrs to a possibly locked HDF5 container (best effort)."""
         path = Path(container_path)
@@ -932,7 +950,10 @@ class SessionLifecycleActions:
         ]
         batch_group_key = ""
         if batch_session_cache is not None or batch_calibration_uploaded is not None:
-            batch_group_key = cls._matador_batch_group_key(Path(archived_path))
+            batch_group_key = cls._matador_calibration_group_key(
+                Path(archived_path),
+                calibration_zip_paths=calibration_zip_paths,
+            )
 
         def _blocked_result(message: str) -> UploadStubResult:
             cls._notify_progress(
