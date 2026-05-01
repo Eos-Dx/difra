@@ -126,6 +126,23 @@ def test_stub_find_or_create_session_uses_session_date_bucket():
     assert different_day.id != first.id
 
 
+def test_stub_create_ingest_session_always_creates_new_session():
+    api = StubMatadorUploadApi(force_failure=False, failure_probability=0.0)
+    request = MatadorFindOrCreateSessionRequest(
+        study_id=1701,
+        machine_id=1751,
+        distance_in_mm=170,
+        exposure_time_sec=0.5,
+        initiated_by="sad",
+        session_date="2026-04-01",
+    )
+
+    first = api.create_ingest_session(request)
+    second = api.create_ingest_session(request)
+
+    assert second.id != first.id
+
+
 def test_real_client_find_or_create_session_sends_session_date_query(monkeypatch):
     captured = {}
 
@@ -165,6 +182,48 @@ def test_real_client_find_or_create_session_sends_session_date_query(monkeypatch
     assert captured["method"] == "POST"
     assert captured["path"] == "/api/ingest-sessions/find-or-create"
     assert captured["query"] == {"sessionDate": "2026-04-01"}
+
+
+def test_real_client_create_ingest_session_posts_session_payload(monkeypatch):
+    captured = {}
+
+    def _fake_request_json(self, *, method, path, payload=None, query=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["query"] = query
+        return {
+            "id": 43,
+            "sessionToken": "token-43",
+            "studyId": payload["studyId"],
+            "machineId": payload["machineId"],
+            "distanceInMm": payload["distanceInMm"],
+            "exposureTimeSec": payload["exposureTimeSec"],
+            "status": payload["status"],
+            "initiatedBy": payload["initiatedBy"],
+            "initiatedAt": payload["initiatedAt"],
+            "expiresAt": payload["expiresAt"],
+        }
+
+    monkeypatch.setattr(RealMatadorUploadApi, "_request_json", _fake_request_json)
+    api = RealMatadorUploadApi(base_url="https://portal.matur.co.uk", token="token-value")
+
+    response = api.create_ingest_session(
+        MatadorFindOrCreateSessionRequest(
+            study_id=1701,
+            machine_id=1751,
+            distance_in_mm=170,
+            exposure_time_sec=0.5,
+            initiated_by="sad",
+            session_date="2026-04-01",
+        )
+    )
+
+    assert response.id == 43
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/ingest-sessions"
+    assert captured["query"] is None
+    assert captured["payload"]["sessionDate"] == "2026-04-01"
 
 
 def test_save_and_load_matador_reference_cache_roundtrip(tmp_path: Path):

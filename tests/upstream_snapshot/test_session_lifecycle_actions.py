@@ -51,8 +51,13 @@ def _add_complete_session_payload(session_path: Path):
 class _CountingMatadorUploadApi(StubMatadorUploadApi):
     def __init__(self):
         super().__init__(force_failure=False, failure_probability=0.0)
+        self.create_requests = []
         self.find_requests = []
         self.register_requests = []
+
+    def create_ingest_session(self, request):
+        self.create_requests.append(request)
+        return super().create_ingest_session(request)
 
     def find_or_create_session(self, request):
         self.find_requests.append(request)
@@ -61,6 +66,19 @@ class _CountingMatadorUploadApi(StubMatadorUploadApi):
     def register_file(self, request):
         self.register_requests.append(request)
         return super().register_file(request)
+
+
+def test_matador_batch_group_key_is_readable_technical_id(tmp_path):
+    _sid, session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A")
+    with h5py.File(session_path, "a") as h5f:
+        h5f.require_group("/entry/technical").attrs["source_container_id"] = (
+            "technical 2cm / MOLI"
+        )
+
+    assert (
+        SessionLifecycleActions._matador_batch_group_key(session_path)
+        == "technical:technical 2cm / MOLI"
+    )
 
 
 def test_finalize_session_container_locks_once(tmp_path):
@@ -451,9 +469,7 @@ def test_separate_sends_reuse_existing_calibration_in_matador_session(tmp_path):
     assert len(session_ids) == 1
 
 
-def test_batch_send_groups_by_calibration_zip_name_when_h5_technical_id_missing(
-    tmp_path,
-):
+def test_batch_send_does_not_share_group_without_technical_id(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
@@ -468,32 +484,13 @@ def test_batch_send_groups_by_calibration_zip_name_when_h5_technical_id_missing(
             h5f.attrs["distance_cm"] = 2.0
             h5f.attrs["session_id"] = sid
             technical_group = h5f.require_group("/entry/technical")
-            technical_group.attrs["source_container_id"] = f"per_container_{sid}"
+            if "source_container_id" in technical_group.attrs:
+                del technical_group.attrs["source_container_id"]
 
     api = _CountingMatadorUploadApi()
-    original_prepare = SessionLifecycleActions._prepare_old_format_payload
-
-    def _prepare_with_shared_calibration_name(*args, **kwargs):
-        summary, archived_dir, zip_path, calibration_paths = original_prepare(
-            *args,
-            **kwargs,
-        )
-        shared_paths = []
-        for calibration_path in calibration_paths:
-            shared_path = calibration_path.with_name(
-                "calibration_2cm_f65853c6aade40fc.zip"
-            )
-            calibration_path.rename(shared_path)
-            shared_paths.append(shared_path)
-        return summary, archived_dir, zip_path, shared_paths
-
     with patch(
         "difra.gui.session_lifecycle_actions.build_matador_upload_api",
         return_value=api,
-    ), patch.object(
-        SessionLifecycleActions,
-        "_prepare_old_format_payload",
-        side_effect=_prepare_with_shared_calibration_name,
     ):
         result = SessionLifecycleActions.send_and_archive_session_containers(
             container_paths=[path_a, path_b],
@@ -512,9 +509,11 @@ def test_batch_send_groups_by_calibration_zip_name_when_h5_technical_id_missing(
 
     assert result.upload_success == 2
     assert result.upload_failed == 0
-    assert kinds.count("CALIBRATION") == 1
+    assert len(api.create_requests) == 2
+    assert len(api.find_requests) == 0
+    assert kinds.count("CALIBRATION") == 2
     assert kinds.count("MEASUREMENT") == 4
-    assert len(session_ids) == 1
+    assert len(session_ids) == 2
 
 
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):
