@@ -236,41 +236,25 @@ class SessionLifecycleActions:
     def _matador_batch_group_key(cls, session_path: Path) -> str:
         path = Path(session_path)
         if not path.exists():
-            return f"container:{cls._safe_token(path.resolve().as_posix())}"
+            return ""
         technical_id = cls._read_technical_container_id(path)
         if technical_id:
-            return f"technical:{cls._safe_token(technical_id)}"
-        return f"container:{cls._safe_token(path.resolve().as_posix())}"
+            return f"technical:{technical_id}"
+        return ""
 
     @classmethod
     def _order_paths_by_matador_group(cls, paths: Iterable[Path]) -> List[Path]:
         buckets: Dict[str, List[Path]] = {}
         group_order: List[str] = []
         for path in [Path(item) for item in paths]:
-            key = cls._matador_batch_group_key(path)
+            key = cls._matador_batch_group_key(path) or (
+                f"ungrouped:{cls._safe_token(path.resolve().as_posix())}"
+            )
             if key not in buckets:
                 buckets[key] = []
                 group_order.append(key)
             buckets[key].append(path)
         return [path for key in group_order for path in buckets[key]]
-
-    @classmethod
-    def _matador_calibration_group_key(
-        cls,
-        session_path: Path,
-        *,
-        calibration_zip_paths: Iterable[Path],
-    ) -> str:
-        names = sorted(
-            {
-                str(Path(path).name).strip()
-                for path in calibration_zip_paths
-                if str(Path(path).name).strip()
-            }
-        )
-        if names:
-            return "calibration_files:" + "|".join(names)
-        return cls._matador_batch_group_key(Path(session_path))
 
     @classmethod
     def _write_container_attrs(cls, container_path: Path, attrs: Dict[str, Any]) -> bool:
@@ -948,12 +932,22 @@ class SessionLifecycleActions:
         calibration_zip_paths = [
             Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
         ]
+        technical_group_key = cls._matador_batch_group_key(Path(archived_path))
         batch_group_key = ""
         if batch_session_cache is not None or batch_calibration_uploaded is not None:
-            batch_group_key = cls._matador_calibration_group_key(
-                Path(archived_path),
-                calibration_zip_paths=calibration_zip_paths,
-            )
+            batch_group_key = technical_group_key
+            if not batch_group_key:
+                cls._notify_progress(
+                    progress_callback,
+                    message=(
+                        f"{Path(archived_path).name}: Technical container ID is "
+                        "missing; this container will not share a Matador batch group."
+                    ),
+                    current=current,
+                    total=total,
+                    kind="missing_technical_group",
+                    container_path=Path(archived_path),
+                )
 
         def _blocked_result(message: str) -> UploadStubResult:
             cls._notify_progress(
@@ -1002,24 +996,39 @@ class SessionLifecycleActions:
             ingest_session = batch_session_cache.get(batch_group_key)
 
         if ingest_session is None:
+            session_request = MatadorFindOrCreateSessionRequest(
+                study_id=int(session_metadata["study_id"]),
+                machine_id=int(session_metadata["machine_id"]),
+                distance_in_mm=int(session_metadata["distance_mm"]),
+                exposure_time_sec=float(session_metadata["exposure_time_sec"]),
+                initiated_by=str(session_metadata["initiated_by"]),
+                session_date=str(session_metadata.get("session_date") or ""),
+            )
+            create_isolated_session = not technical_group_key
             cls._notify_progress(
                 progress_callback,
-                message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
+                message=(
+                    f"{Path(archived_path).name}: Now creating isolated Matador "
+                    "ingest session..."
+                    if create_isolated_session
+                    else f"{Path(archived_path).name}: Now creating/finding Matador ingest session..."
+                ),
                 current=current,
                 total=total,
-                kind="create_session",
+                kind="create_isolated_session" if create_isolated_session else "create_session",
                 container_path=Path(archived_path),
             )
-            ingest_session = upload_backend.find_or_create_session(
-                MatadorFindOrCreateSessionRequest(
-                    study_id=int(session_metadata["study_id"]),
-                    machine_id=int(session_metadata["machine_id"]),
-                    distance_in_mm=int(session_metadata["distance_mm"]),
-                    exposure_time_sec=float(session_metadata["exposure_time_sec"]),
-                    initiated_by=str(session_metadata["initiated_by"]),
-                    session_date=str(session_metadata.get("session_date") or ""),
+            if create_isolated_session and hasattr(upload_backend, "create_ingest_session"):
+                ingest_session = upload_backend.create_ingest_session(session_request)
+            else:
+                if create_isolated_session:
+                    logger.warning(
+                        "Upload backend cannot create isolated Matador ingest sessions; "
+                        "falling back to find-or-create"
+                    )
+                ingest_session = upload_backend.find_or_create_session(
+                    session_request
                 )
-            )
             if batch_group_key and batch_session_cache is not None:
                 batch_session_cache[batch_group_key] = ingest_session
         else:
@@ -1057,7 +1066,7 @@ class SessionLifecycleActions:
         calibration_zip_paths_to_upload: List[Path] = []
         if upload_calibration:
             for calibration_zip_path in calibration_zip_paths:
-                if cls._matador_session_has_reusable_file(
+                if technical_group_key and cls._matador_session_has_reusable_file(
                     upload_backend,
                     ingest_session_id=int(ingest_session.id),
                     file_name=Path(calibration_zip_path).name,

@@ -296,6 +296,11 @@ class MatadorUploadApi(Protocol):
         ...
 
     # Real ingest contract.
+    def create_ingest_session(
+        self, request: MatadorFindOrCreateSessionRequest
+    ) -> MatadorIngestSessionResponse:
+        ...
+
     def find_or_create_session(
         self, request: MatadorFindOrCreateSessionRequest
     ) -> MatadorIngestSessionResponse:
@@ -425,6 +430,42 @@ class StubMatadorUploadApi:
             initiated_by=str(existing["initiated_by"]),
             initiated_at=str(existing["initiated_at"]),
             expires_at=str(existing["expires_at"]),
+        )
+
+    def create_ingest_session(
+        self, request: MatadorFindOrCreateSessionRequest
+    ) -> MatadorIngestSessionResponse:
+        day_token = _normalize_iso_date(request.session_date) or time.strftime("%Y-%m-%d")
+        self._next_session_id += 1
+        session_id = self._next_session_id
+        payload = {
+            "id": session_id,
+            "session_token": (
+                f"upload_{_safe_token(request.initiated_by)}_"
+                f"{time.strftime('%Y%m%d_%H%M%S')}_{session_id}"
+            ),
+            "study_id": int(request.study_id),
+            "machine_id": int(request.machine_id),
+            "distance_in_mm": int(request.distance_in_mm),
+            "exposure_time_sec": float(request.exposure_time_sec),
+            "status": "ACTIVE",
+            "initiated_by": request.initiated_by,
+            "initiated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "expires_at": time.strftime("%Y-%m-%dT23:59:59Z"),
+            "day_token": day_token,
+        }
+        self._sessions[session_id] = payload
+        return MatadorIngestSessionResponse(
+            id=int(payload["id"]),
+            session_token=str(payload["session_token"]),
+            study_id=int(payload["study_id"]),
+            machine_id=int(payload["machine_id"]),
+            distance_in_mm=int(payload["distance_in_mm"]),
+            exposure_time_sec=float(payload["exposure_time_sec"]),
+            status=str(payload["status"]),
+            initiated_by=str(payload["initiated_by"]),
+            initiated_at=str(payload["initiated_at"]),
+            expires_at=str(payload["expires_at"]),
         )
 
     def register_file(
@@ -684,6 +725,29 @@ class RealMatadorUploadApi:
             path="/api/ingest-sessions/find-or-create",
             payload=payload,
             query={"sessionDate": session_date} if session_date else None,
+        )
+        return self._coerce_session(data)
+
+    def create_ingest_session(
+        self, request: MatadorFindOrCreateSessionRequest
+    ) -> MatadorIngestSessionResponse:
+        session_date = _normalize_iso_date(request.session_date)
+        payload = {
+            "studyId": int(request.study_id),
+            "machineId": int(request.machine_id),
+            "distanceInMm": int(request.distance_in_mm),
+            "exposureTimeSec": float(request.exposure_time_sec),
+            "initiatedBy": str(request.initiated_by),
+            "status": "ACTIVE",
+            "initiatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "expiresAt": time.strftime("%Y-%m-%dT23:59:59Z", time.gmtime()),
+        }
+        if session_date:
+            payload["sessionDate"] = session_date
+        data = self._request_json(
+            method="POST",
+            path="/api/ingest-sessions",
+            payload=payload,
         )
         return self._coerce_session(data)
 
