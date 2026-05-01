@@ -394,6 +394,63 @@ def test_batch_send_opens_one_matador_session_per_technical_group(tmp_path):
     assert len(session_ids) == 2
 
 
+def test_separate_sends_reuse_existing_calibration_in_matador_session(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    sid_b, path_b = _create_session_file(measurements, "326112__326170")
+    _add_complete_session_payload(path_a)
+    _add_complete_session_payload(path_b)
+
+    for sid, path in ((sid_a, path_a), (sid_b, path_b)):
+        with h5py.File(path, "a") as h5f:
+            h5f.attrs["specimenId"] = h5f.attrs["sample_id"]
+            h5f.attrs["distance_cm"] = 2.0
+            h5f.attrs["session_id"] = sid
+            h5f.require_group("/entry/technical").attrs[
+                "source_container_id"
+            ] = "f65853c6aade40fc"
+
+    api = _CountingMatadorUploadApi()
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        first = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a},
+            config={
+                "old_format_export_folder": str(old_format_folder),
+                "enable_old_format_export": True,
+            },
+        )
+        second = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_b],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_b): sid_b},
+            config={
+                "old_format_export_folder": str(old_format_folder),
+                "enable_old_format_export": True,
+            },
+        )
+
+    kinds = [request.ingest_kind for request in api.register_requests]
+    session_ids = {int(request.ingest_session_id) for request in api.register_requests}
+
+    assert first.upload_success == 1
+    assert second.upload_success == 1
+    assert len(api.find_requests) == 2
+    assert kinds.count("CALIBRATION") == 1
+    assert kinds.count("MEASUREMENT") == 4
+    assert len(session_ids) == 1
+
+
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
