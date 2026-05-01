@@ -843,6 +843,42 @@ class SessionLifecycleActions:
                 time.sleep(max(float(delay_sec), 0.0))
         return last_status
 
+    @staticmethod
+    def _uploaded_file_is_reusable(status: Any) -> bool:
+        upload_status = str(getattr(status, "upload_status", "") or "").upper()
+        processing_status = str(getattr(status, "processing_status", "") or "").upper()
+        if processing_status == "COMPLETED":
+            return True
+        return upload_status == "HASH_VERIFIED" and processing_status not in {
+            "ABANDONED",
+            "FAILED",
+            "REJECTED",
+        }
+
+    @classmethod
+    def _matador_session_has_reusable_file(
+        cls,
+        upload_api: Any,
+        *,
+        ingest_session_id: int,
+        file_name: str,
+    ) -> bool:
+        try:
+            session_files = upload_api.list_session_files(int(ingest_session_id))
+        except Exception:
+            logger.debug(
+                "Failed to list Matador ingest session files before calibration upload",
+                exc_info=True,
+            )
+            return False
+        target_name = str(file_name or "").strip()
+        for status in session_files:
+            if str(getattr(status, "file_name", "") or "").strip() != target_name:
+                continue
+            if cls._uploaded_file_is_reusable(status):
+                return True
+        return False
+
     @classmethod
     def _execute_matador_upload(
         cls,
@@ -997,7 +1033,30 @@ class SessionLifecycleActions:
                 container_path=Path(archived_path),
             )
 
-        for calibration_zip_path in (calibration_zip_paths if upload_calibration else []):
+        calibration_zip_paths_to_upload: List[Path] = []
+        if upload_calibration:
+            for calibration_zip_path in calibration_zip_paths:
+                if cls._matador_session_has_reusable_file(
+                    upload_backend,
+                    ingest_session_id=int(ingest_session.id),
+                    file_name=Path(calibration_zip_path).name,
+                ):
+                    cls._notify_progress(
+                        progress_callback,
+                        message=(
+                            f"{Path(archived_path).name}: Calibration ZIP "
+                            f"{Path(calibration_zip_path).name} already exists in "
+                            "this Matador ingest session."
+                        ),
+                        current=current,
+                        total=total,
+                        kind="skip_existing_calibration",
+                        container_path=Path(archived_path),
+                    )
+                    continue
+                calibration_zip_paths_to_upload.append(Path(calibration_zip_path))
+
+        for calibration_zip_path in calibration_zip_paths_to_upload:
             calibration_checksum = sha256_file(Path(calibration_zip_path))
             cls._notify_progress(
                 progress_callback,
