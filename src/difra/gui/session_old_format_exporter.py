@@ -38,6 +38,12 @@ class SessionOldFormatExporter:
         "AGBH": "AgBH",
         "BACKGROUND": "Bg",
     }
+    TECH_TYPE_FILE_ORDER = {
+        "DARK": 1,
+        "EMPTY": 2,
+        "AGBH": 3,
+        "BACKGROUND": 4,
+    }
     TECH_TYPE_METADATA_NAME = {
         "AGBH": "AgBH",
         "BACKGROUND": "Background",
@@ -352,10 +358,26 @@ class SessionOldFormatExporter:
             value = max(float(seconds), 0.0)
         except Exception:
             value = 0.0
-        if abs(value - round(value)) < 1e-6:
-            return f"{int(round(value))}s"
-        token = f"{value:.6f}".rstrip("0").rstrip(".")
-        return f"{token}s"
+        return f"{value:.6f}s"
+
+    @staticmethod
+    def _frames_token(n_frames: Any) -> str:
+        try:
+            value = int(n_frames)
+        except Exception:
+            value = 1
+        return f"{max(1, value)}frames"
+
+    @classmethod
+    def _technical_type_order_token(cls, event_type: str, fallback_index: Any) -> str:
+        event_type_key = str(event_type or "").upper()
+        value = cls.TECH_TYPE_FILE_ORDER.get(event_type_key)
+        if value is None:
+            try:
+                value = int(fallback_index)
+            except Exception:
+                value = 1
+        return f"{max(1, int(value)):03d}"
 
     @classmethod
     def _extract_distance_from_attrs(cls, attrs: Any) -> Optional[float]:
@@ -801,6 +823,9 @@ class SessionOldFormatExporter:
                 integration_s = None
                 if integration_ms is not None:
                     integration_s = integration_ms / 1000.0
+                n_frames = cls._safe_int(
+                    det_group.attrs.get(getattr(schema, "ATTR_N_FRAMES", "n_frames"))
+                )
 
                 det_distance = cls._extract_distance_from_attrs(det_group.attrs)
                 resolved_distance = det_distance if det_distance is not None else event_distance
@@ -834,6 +859,7 @@ class SessionOldFormatExporter:
                         "alias": alias,
                         "detector_id": detector_id,
                         "integration_s": integration_s,
+                        "n_frames": n_frames or 1,
                         "is_primary": bool(event_is_primary),
                         "selection_note": cls._as_text(
                             event_group.attrs.get("supplementary_note", ""),
@@ -869,12 +895,16 @@ class SessionOldFormatExporter:
             event_type = cls._as_text(event.get("type"), "UNKNOWN").upper()
             alias = cls._as_text(event.get("alias"), "DETECTOR").upper()
             alias_token = cls._safe_token(alias, "DETECTOR").upper()
-            event_idx_token = f"{int(event.get('event_index') or 1):03d}"
+            event_idx_token = cls._technical_type_order_token(
+                event_type,
+                event.get("event_index"),
+            )
             ts_token = cls._as_text(event.get("timestamp_token"), "")
             integration_token = cls._integration_token(event.get("integration_s"), event_type)
+            frames_token = cls._frames_token(event.get("n_frames"))
             prefix = cls.TECH_TYPE_FILE_PREFIX.get(event_type, event_type.title() or "Tech")
 
-            base = f"{prefix}_{distance_token}_{event_idx_token}_{ts_token}_{integration_token}_{alias_token}"
+            base = f"{prefix}_{distance_token}_{event_idx_token}_{ts_token}_{integration_token}_{frames_token}_{alias_token}"
             raw_blobs = event.get("raw_blobs") or {}
             matrix_name, matrix_payload, _matrix_ext, dsc_payload = cls._select_matrix_payload(
                 base=base,
