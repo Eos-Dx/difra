@@ -181,6 +181,67 @@ def _create_session_without_technical_raw_txt(tmp_path: Path) -> Path:
     return session_path
 
 
+def test_technical_calibration_filenames_use_contract_type_order():
+    events = [
+        {
+            "type": "AGBH",
+            "event_index": 17,
+            "timestamp_token": "20260331_092600",
+            "alias": "PRIMARY",
+            "integration_s": 300.0,
+            "n_frames": 1,
+            "processed_signal": np.ones((2, 2), dtype=np.float32),
+            "raw_blobs": {
+                "raw_txt": b"1 2\n3 4\n",
+                "raw_dsc": b"[F0]\nType=i16\n",
+            },
+            "poni_text": "Distance: 0.17\n",
+        },
+        {
+            "type": "DARK",
+            "event_index": 99,
+            "timestamp_token": "20260331_091854",
+            "alias": "PRIMARY",
+            "integration_s": 60.0,
+            "n_frames": 1,
+            "processed_signal": np.zeros((2, 2), dtype=np.float32),
+            "raw_blobs": {"raw_txt": b"0\n", "raw_dsc": b"[F0]\n"},
+        },
+        {
+            "type": "EMPTY",
+            "event_index": 7,
+            "timestamp_token": "20260331_092010",
+            "alias": "PRIMARY",
+            "integration_s": 300.0,
+            "n_frames": 1,
+            "processed_signal": np.ones((2, 2), dtype=np.float32),
+            "raw_blobs": {"raw_txt": b"1\n", "raw_dsc": b"[F0]\n"},
+        },
+        {
+            "type": "BACKGROUND",
+            "event_index": 3,
+            "timestamp_token": "20260331_093220",
+            "alias": "PRIMARY",
+            "integration_s": 300.0,
+            "n_frames": 1,
+            "processed_signal": np.ones((2, 2), dtype=np.float32),
+            "raw_blobs": {"raw_txt": b"2\n", "raw_dsc": b"[F0]\n"},
+        },
+    ]
+
+    files, _selected, _entries = SessionOldFormatExporter._build_technical_data_files(
+        events=events,
+        distance_token="17cm",
+    )
+
+    assert "DC_17cm_001_20260331_091854_60.000000s_1frames_PRIMARY.txt" in files
+    assert "Empty_17cm_002_20260331_092010_300.000000s_1frames_PRIMARY.txt" in files
+    assert "AgBH_17cm_003_20260331_092600_300.000000s_1frames_PRIMARY.txt" in files
+    assert "AgBH_17cm_003_20260331_092600_300.000000s_1frames_PRIMARY.poni" in files
+    assert "Bg_17cm_004_20260331_093220_300.000000s_1frames_PRIMARY.txt" in files
+    assert "AgBH_17cm_003_20260331_092600_300.000000s_1frames_PRIMARY.txt.dsc" in files
+
+
 def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     session_path = _create_session_with_technical_and_measurement(tmp_path, tag="layout")
     old_format_root = tmp_path / "Data" / "difra" / "Old_format"
