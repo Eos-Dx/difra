@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -270,9 +271,36 @@ class TechnicalCaptureMixin:
         return masks.get(alias)
 
     @staticmethod
-    def _build_windows_pyfai_script(*, folder: str, env: str) -> str:
+    def _ps_quote(value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    @staticmethod
+    def _build_windows_conda_pyfai_command(*, env: str, command=None) -> str:
+        target_env = str(env or "").strip()
+        args = [str(arg) for arg in (command or ["pyfai-calib2"])]
+        if args == ["pyfai-calib2"]:
+            return f"conda run --no-capture-output -n {target_env} pyfai-calib2"
+        quoted = " ".join(TechnicalCaptureMixin._ps_quote(arg) for arg in args)
+        return (
+            "conda run --no-capture-output "
+            f"-n {TechnicalCaptureMixin._ps_quote(target_env)} {quoted}"
+        )
+
+    @staticmethod
+    def _build_posix_conda_pyfai_command(*, env: str, command=None) -> str:
+        target_env = str(env or "").strip()
+        args = [str(arg) for arg in (command or ["pyfai-calib2"])]
+        quoted = " ".join(shlex.quote(arg) for arg in args)
+        return f"conda run -n {shlex.quote(target_env)} {quoted}"
+
+    @staticmethod
+    def _build_windows_pyfai_script(*, folder: str, env: str, command=None) -> str:
         target_folder = str(folder or "").strip()
         target_env = str(env or "").strip()
+        command_line = TechnicalCaptureMixin._build_windows_conda_pyfai_command(
+            env=target_env,
+            command=command,
+        )
         return "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
@@ -280,7 +308,7 @@ class TechnicalCaptureMixin:
                 f"Write-Host 'Starting PyFAI calibration in conda environment: {target_env}'",
                 f"Write-Host 'Folder: {target_folder}'",
                 "Write-Host ''",
-                f"conda run --no-capture-output -n {target_env} pyfai-calib2",
+                command_line,
                 "if ($LASTEXITCODE -ne 0) {",
                 "  Write-Host ''",
                 "  Write-Host 'Error: Failed to launch PyFAI.'",
@@ -383,24 +411,457 @@ class TechnicalCaptureMixin:
         if not fallback:
             return ""
 
-        lowered = fallback.lower()
-        if any(token in lowered for token in ("eosdx", "iosdx", "usdx")):
-            env_names = {name.lower(): name for name in self._list_conda_env_names()}
-            for preferred in ("ulster38", "ulster37"):
-                if preferred in env_names:
-                    chosen = env_names[preferred]
-                    logger.info(
-                        "PyFAI env fallback selected",
-                        extra={
-                            "requested_env": fallback,
-                            "selected_env": chosen,
-                            "reason": "missing_pyfai_conda",
-                        },
-                    )
-                    return chosen
-            return "ulster38"
-
         return fallback
+
+    def _selected_aux_row_for_pyfai(self):
+        try:
+            if not hasattr(self, "auxTable") or self.auxTable is None:
+                return None
+            selection = self.auxTable.selectionModel()
+            rows = sorted({index.row() for index in selection.selectedRows()}) if selection else []
+            return rows[0] if rows else None
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+
+    def _aux_row_alias(self, row: int) -> str:
+        tm = _tm()
+        alias_cb = self.auxTable.cellWidget(row, self.AUX_COL_ALIAS)
+        if isinstance(alias_cb, tm.QComboBox):
+            alias = str(alias_cb.currentText() or "").strip()
+            if alias and alias != getattr(self, "NO_SELECTION_LABEL", ""):
+                return alias
+        file_item = self.auxTable.item(row, self.AUX_COL_FILE)
+        if file_item is not None and ":" in str(file_item.text() or ""):
+            return str(file_item.text()).split(":", 1)[0].strip()
+        return ""
+
+    def _aux_row_type(self, row: int) -> str:
+        type_cb = self.auxTable.cellWidget(row, self.AUX_COL_TYPE)
+        if type_cb is not None and callable(getattr(type_cb, "currentText", None)):
+            return str(type_cb.currentText() or "").strip().upper()
+        return ""
+
+    def _detector_config_for_alias(self, alias: str) -> dict:
+        alias_key = str(alias or "").strip()
+        for detector_cfg in (self.config.get("detectors", []) if hasattr(self, "config") else []):
+            if str(detector_cfg.get("alias") or "").strip() == alias_key:
+                return dict(detector_cfg)
+        return {"alias": alias_key}
+
+    def _distance_m_for_detector_alias(self, alias: str, detector_config: dict):
+        distances = getattr(self, "_detector_distances", {}) or {}
+        detector_id = str(detector_config.get("id") or "").strip()
+        candidates = [detector_id, str(alias or "").strip()]
+        for key in candidates:
+            if key and key in distances:
+                try:
+                    return float(distances[key]) / 100.0
+                except (TypeError, ValueError):
+                    return None
+        distance_by_alias = getattr(self, "_distance_map_by_alias", None)
+        if callable(distance_by_alias):
+            try:
+                mapped = distance_by_alias() or {}
+                if alias in mapped:
+                    return float(mapped[alias]) / 100.0
+            except (TypeError, ValueError):
+                return None
+        standard = (
+            self.config.get("standard_distances", {})
+            if hasattr(self, "config") and isinstance(self.config, dict)
+            else {}
+        )
+        if alias in standard:
+            try:
+                value = float(standard[alias])
+                return value / 100.0 if value > 1.0 else value
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _prepare_selected_agbh_pyfai_review(self):
+        tm = _tm()
+        row = self._selected_aux_row_for_pyfai()
+        if row is None:
+            return None
+        row_type = self._aux_row_type(row)
+        if row_type != "AGBH":
+            tm.QMessageBox.warning(
+                self,
+                "PyFAI Calibration",
+                "Select an AGBH row to launch seeded PyFAI calibration.",
+            )
+            return False
+
+        file_item = self.auxTable.item(row, self.AUX_COL_FILE)
+        source_ref = str(file_item.data(tm.Qt.UserRole) or "").strip() if file_item is not None else ""
+        if not source_ref:
+            tm.QMessageBox.warning(self, "PyFAI Calibration", "Selected AGBH row has no image source.")
+            return False
+
+        alias = self._aux_row_alias(row)
+        detector_config = self._detector_config_for_alias(alias)
+        distance_m = self._distance_m_for_detector_alias(alias, detector_config)
+        if distance_m is None:
+            tm.QMessageBox.warning(
+                self,
+                "PyFAI Calibration",
+                f"No configured detector distance for {alias or 'selected detector'}.",
+            )
+            return False
+
+        try:
+            from difra.gui.technical.pyfai_calibration import prepare_agbh_calib2_review
+
+            output_dir = Path(self._current_technical_output_folder()) / "pyfai_seed"
+            existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
+            if not existing_poni:
+                existing_poni = str(detector_config.get("default_poni") or "")
+            review = prepare_agbh_calib2_review(
+                source_image=source_ref,
+                detector_config=detector_config,
+                distance_m=distance_m,
+                alias=alias,
+                output_dir=output_dir,
+                existing_poni_text=existing_poni,
+            )
+            self._log_technical_event(
+                f"Prepared PyFAI seed for {alias}: {review.poni_path.name}, {review.image_path.name}"
+            )
+            return review
+        except Exception as exc:
+            self._log_technical_event(f"Failed to prepare PyFAI seed: {exc}")
+            logger.warning("Failed to prepare PyFAI seed", exc_info=True)
+            tm.QMessageBox.warning(
+                self,
+                "PyFAI Calibration",
+                f"Could not prepare seeded PyFAI calibration:\n{exc}",
+            )
+            return False
+
+    def _auto_poni_config(self) -> dict:
+        from difra.gui.technical.pyfai_calibration import normalized_auto_poni_config
+
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        return normalized_auto_poni_config(cfg)
+
+    def _auto_poni_rule_alias(self, alias: str) -> str:
+        try:
+            from difra.gui.main_window_ext.technical.poni_center_validation import (
+                resolve_poni_rule_alias,
+            )
+
+            detector_cfgs = self.config.get("detectors", []) if hasattr(self, "config") else []
+            return resolve_poni_rule_alias(alias, detector_cfgs)
+        except Exception:
+            return str(alias or "").strip().upper()
+
+    def _confirm_auto_poni_config(self, auto_cfg: dict) -> bool:
+        tm = _tm()
+        first_visible = auto_cfg.get("first_visible_ring_by_alias", {})
+        primary_ring = int(first_visible.get("PRIMARY", 3) or 3)
+        secondary_ring = int(first_visible.get("SECONDARY", 5) or 5)
+        reply = tm.QMessageBox.question(
+            self,
+            "Auto PONI",
+            "Auto PONI uses first visible AgBh ring indexes from global config.\n\n"
+            f"PRIMARY: ring {primary_ring} (rings 1-2 can be hidden by beam stop)\n"
+            f"SECONDARY: ring {secondary_ring}\n\n"
+            "Config key:\n"
+            "auto_poni_calibration.first_visible_ring_by_alias\n\n"
+            "Continue automatic PONI generation?",
+            tm.QMessageBox.Yes | tm.QMessageBox.No,
+            tm.QMessageBox.Yes,
+        )
+        return reply == tm.QMessageBox.Yes
+
+    def _auto_poni_center_px_for_alias(self, alias: str, detector_config: dict):
+        existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
+        if existing_poni:
+            return None
+        if str(detector_config.get("default_poni") or "").strip():
+            return None
+
+        resolver = getattr(self, "_resolve_fake_demo_center_px", None)
+        if not callable(resolver):
+            return None
+        size_cfg = detector_config.get("size", {})
+        if isinstance(size_cfg, dict):
+            size = (size_cfg.get("width", 256), size_cfg.get("height", 256))
+        else:
+            size = (256, 256)
+        try:
+            return resolver(alias, size)
+        except Exception:
+            logger.debug("Failed to resolve auto PONI center for %s", alias, exc_info=True)
+            return None
+
+    def _collect_auto_poni_agbh_sources(self) -> dict:
+        tm = _tm()
+        sources = {}
+        if not hasattr(self, "auxTable") or self.auxTable is None:
+            return sources
+
+        for row in range(self.auxTable.rowCount()):
+            if self._aux_row_type(row) != "AGBH":
+                continue
+            alias = self._aux_row_alias(row)
+            if not alias:
+                continue
+            file_item = self.auxTable.item(row, self.AUX_COL_FILE)
+            source_ref = str(file_item.data(tm.Qt.UserRole) or "").strip() if file_item is not None else ""
+            if not source_ref:
+                continue
+            sources.setdefault(alias, source_ref)
+        return sources
+
+    def _prepare_auto_poni_reviews(self, auto_cfg: dict):
+        tm = _tm()
+        sources = self._collect_auto_poni_agbh_sources()
+        if not sources:
+            tm.QMessageBox.warning(
+                self,
+                "Auto PONI",
+                "No AGBH rows found. Measure or load AGBH NumPy images first.",
+            )
+            return False
+
+        try:
+            from difra.gui.technical.pyfai_calibration import (
+                load_calibration_array,
+                prepare_agbh_calib2_review,
+            )
+        except Exception as exc:
+            tm.QMessageBox.warning(
+                self,
+                "Auto PONI",
+                f"Auto PONI helpers are unavailable:\n{exc}",
+            )
+            return False
+
+        output_dir = Path(self._current_technical_output_folder()) / "auto_poni"
+        reviews = {}
+        images = {}
+        detector_configs = {}
+        missing = []
+
+        for alias, source_ref in sorted(sources.items()):
+            detector_config = self._detector_config_for_alias(alias)
+            detector_configs[alias] = detector_config
+            distance_m = self._distance_m_for_detector_alias(alias, detector_config)
+            if distance_m is None:
+                missing.append(f"{alias}: distance")
+                continue
+
+            existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
+            if not existing_poni:
+                existing_poni = str(detector_config.get("default_poni") or "")
+
+            try:
+                review = prepare_agbh_calib2_review(
+                    source_image=source_ref,
+                    detector_config=detector_config,
+                    distance_m=distance_m,
+                    alias=alias,
+                    output_dir=output_dir,
+                    existing_poni_text=existing_poni,
+                    calibrant=str(auto_cfg.get("calibrant") or "AgBh"),
+                    center_px=self._auto_poni_center_px_for_alias(alias, detector_config),
+                )
+                reviews[alias] = review
+                images[alias] = load_calibration_array(source_ref)
+            except Exception as exc:
+                missing.append(f"{alias}: {exc}")
+
+        if missing:
+            tm.QMessageBox.warning(
+                self,
+                "Auto PONI",
+                "Could not prepare Auto PONI for:\n\n" + "\n".join(missing),
+            )
+
+        if not reviews:
+            return False
+        return {
+            "reviews": reviews,
+            "images": images,
+            "detector_configs": detector_configs,
+        }
+
+    def _first_visible_rings_for_auto_poni(self, aliases, auto_cfg: dict) -> dict:
+        configured = auto_cfg.get("first_visible_ring_by_alias", {})
+        result = {}
+        for alias in aliases:
+            rule_alias = self._auto_poni_rule_alias(alias)
+            alias_key = str(alias or "").strip().upper()
+            rule_key = str(rule_alias or "").strip().upper()
+            try:
+                value = configured.get(alias_key, configured.get(rule_key, 1))
+                ring = int(value)
+            except (TypeError, ValueError):
+                ring = 1
+            result[alias_key] = max(1, ring)
+        return result
+
+    def _launch_pyfai_reviews(self, reviews: dict) -> bool:
+        env = self._resolve_pyfai_conda_env()
+        if not env:
+            _tm().QMessageBox.warning(self, "Auto PONI", "No conda env configured for pyFAI.")
+            return False
+        commands = [list(review.command) for review in reviews.values()]
+        if not commands:
+            return False
+        folder = Path(next(iter(reviews.values())).image_path).parent
+
+        try:
+            if os.name == "nt":
+                command_lines = [
+                    self._build_windows_conda_pyfai_command(env=env, command=cmd)
+                    for cmd in commands
+                ]
+                script = "\n".join(
+                    [
+                        "$ErrorActionPreference = 'Stop'",
+                        f"Set-Location {self._ps_quote(str(folder))}",
+                        *command_lines,
+                        "",
+                    ]
+                )
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+                ) as handle:
+                    handle.write(script)
+                    script_path = handle.name
+                start_cmd = (
+                    f'Start-Process powershell '
+                    f'-ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "{script_path}"'
+                )
+                subprocess.Popen(["powershell", "-NoProfile", "-Command", start_cmd])
+            else:
+                command_lines = [
+                    self._build_posix_conda_pyfai_command(env=env, command=cmd)
+                    for cmd in commands
+                ]
+                script = "\n".join(
+                    [
+                        "#!/bin/bash",
+                        f"cd {shlex.quote(str(folder))}",
+                        *command_lines,
+                        "",
+                    ]
+                )
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".command", delete=False) as handle:
+                    handle.write(script)
+                    script_path = handle.name
+                os.chmod(script_path, 0o755)
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", "-a", "Terminal", script_path])
+                else:
+                    subprocess.Popen(["bash", script_path])
+            self._log_technical_event(f"Auto PONI correction launched for {len(commands)} detector(s)")
+            return True
+        except Exception as exc:
+            logger.warning("Failed to launch Auto PONI correction", exc_info=True)
+            _tm().QMessageBox.warning(self, "Auto PONI", f"Could not launch pyFAI:\n{exc}")
+            return False
+
+    def _validate_auto_poni_reviews(self, reviews: dict) -> bool:
+        tm = _tm()
+        if not isinstance(getattr(self, "ponis", None), dict):
+            self.ponis = {}
+        if not isinstance(getattr(self, "poni_files", None), dict):
+            self.poni_files = {}
+
+        for alias, review in reviews.items():
+            self.ponis[alias] = str(review.poni_text or "")
+            self.poni_files[alias] = {
+                "path": str(review.poni_path),
+                "name": Path(review.poni_path).name,
+            }
+
+        sync_ok = True
+        sync_fn = getattr(self, "_sync_active_technical_container_from_table", None)
+        active_path = getattr(self, "_active_technical_container_path_obj", lambda: None)()
+        if callable(sync_fn) and active_path is not None:
+            sync_ok = bool(sync_fn(show_errors=True))
+            if sync_ok:
+                validate_centers = getattr(self, "_validate_poni_centers_for_container", None)
+                write_review = getattr(self, "_write_poni_review_state", None)
+                set_state = getattr(self, "_set_container_state", None)
+                if callable(validate_centers) and callable(write_review):
+                    center_errors, _center_warnings = validate_centers(Path(active_path))
+                    if not center_errors:
+                        write_review(
+                            Path(active_path),
+                            status="accepted",
+                            in_zone=True,
+                            notes="auto_poni_ring_overlay_validated",
+                        )
+                        if callable(set_state):
+                            set_state(
+                                Path(active_path),
+                                state=getattr(self, "STATE_READY_TO_LOCK", "ready_to_lock"),
+                                reason="auto_poni_validated",
+                            )
+                    elif callable(set_state):
+                        set_state(
+                            Path(active_path),
+                            state=getattr(self, "STATE_PENDING_PONI_REVIEW", "pending_poni_review"),
+                            reason="auto_poni_validated_center_review_required",
+                        )
+
+        if sync_ok:
+            self._log_technical_event(f"Auto PONI validated for {len(reviews)} detector(s)")
+            tm.QMessageBox.information(
+                self,
+                "Auto PONI",
+                "Generated PONI files saved and synced to the active technical container.",
+            )
+            return True
+
+        tm.QMessageBox.warning(
+            self,
+            "Auto PONI",
+            "PONI files were generated, but active container sync failed.",
+        )
+        return False
+
+    def run_auto_poni(self):
+        auto_cfg = self._auto_poni_config()
+        if not self._confirm_auto_poni_config(auto_cfg):
+            return False
+
+        prepared = self._prepare_auto_poni_reviews(auto_cfg)
+        if not prepared:
+            return False
+
+        reviews = prepared["reviews"]
+        aliases = list(reviews.keys())
+        first_visible = self._first_visible_rings_for_auto_poni(aliases, auto_cfg)
+        show_review = self._get_technical_module("show_auto_poni_review_window")
+        if not callable(show_review):
+            _tm().QMessageBox.warning(self, "Auto PONI", "Auto PONI review UI unavailable.")
+            return False
+
+        decision_payload = show_review(
+            aliases=aliases,
+            review_by_alias=reviews,
+            images_by_alias=prepared["images"],
+            detector_config_by_alias=prepared["detector_configs"],
+            first_visible_ring_by_alias=first_visible,
+            rings_to_show=int(auto_cfg.get("rings_to_show", 8)),
+            parent=self,
+        )
+        decision = ""
+        if isinstance(decision_payload, dict):
+            decision = str(decision_payload.get("decision") or "").strip().lower()
+
+        if decision == "validate":
+            return self._validate_auto_poni_reviews(reviews)
+        if decision == "correct":
+            return self._launch_pyfai_reviews(reviews)
+        self._log_technical_event("Auto PONI cancelled")
+        return False
 
     def _is_container_backed_aux_row(self, row: int) -> bool:
         tm = _tm()
@@ -758,13 +1219,23 @@ class TechnicalCaptureMixin:
             tm.QMessageBox.warning(self, "PyFAI Not Configured", msg)
             return
 
+        review = self._prepare_selected_agbh_pyfai_review()
+        if review is False:
+            return
+
         validate_folder = self._get_technical_module("validate_folder")
-        folder = validate_folder(self._current_technical_output_folder())
+        if review is not None:
+            folder = validate_folder(str(review.image_path.parent))
+            pyfai_command = list(review.command)
+        else:
+            folder = validate_folder(self._current_technical_output_folder())
+            pyfai_command = ["pyfai-calib2"]
 
         if os.name == "nt":
             ps_content = self._build_windows_pyfai_script(
                 folder=str(folder),
                 env=env,
+                command=pyfai_command,
             )
             try:
                 with tempfile.NamedTemporaryFile(
@@ -787,13 +1258,17 @@ class TechnicalCaptureMixin:
             return
 
         try:
+            command_line = self._build_posix_conda_pyfai_command(
+                env=env,
+                command=pyfai_command,
+            )
             if sys.platform == "darwin":
                 script_content = f"""#!/bin/bash
 cd "{folder}"
 echo "Starting PyFAI calibration in conda environment: {env}"
 echo "Folder: {folder}"
 echo ""
-conda run -n {env} pyfai-calib2
+{command_line}
 if [ $? -ne 0 ]; then
     echo ""
     echo "Error: Failed to launch PyFAI. Check that:"
@@ -814,7 +1289,7 @@ fi
                 bash_cmd = (
                     f'cd "{folder}" && '
                     f'echo "Starting PyFAI in environment: {env}" && '
-                    f'conda run -n {env} pyfai-calib2 || '
+                    f'{command_line} || '
                     f'(echo "\\nError: Failed to launch PyFAI"; read -p "Press Enter to close...")'
                 )
                 for terminal in ["gnome-terminal", "konsole", "xterm"]:

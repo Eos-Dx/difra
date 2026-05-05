@@ -6,6 +6,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
+from typing import Dict, Optional
 
 try:
     from PyQt5.QtWidgets import QInputDialog, QMessageBox
@@ -109,6 +110,87 @@ def _rewrite_technical_source_paths(container_path: Path, archive_folder: Path) 
             pass
 
     return updated
+
+
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _find_existing_technical_companion_archive_folder(
+    container_path: Path,
+    archive_base: Path,
+) -> Optional[Path]:
+    """Return an existing archive folder referenced by embedded raw file paths."""
+    import h5py
+
+    container_path = Path(container_path)
+    archive_base = Path(archive_base)
+    parent_counts: Dict[Path, int] = {}
+
+    if not container_path.exists():
+        return None
+
+    try:
+        with h5py.File(container_path, "r") as h5f:
+            def _visit(_name, obj):
+                if not hasattr(obj, "attrs"):
+                    return
+                for attr_name in ("source_file", "source_ref"):
+                    raw_value = obj.attrs.get(attr_name)
+                    if raw_value is None:
+                        continue
+                    if isinstance(raw_value, bytes):
+                        raw_value = raw_value.decode("utf-8", errors="replace")
+                    raw_text = str(raw_value or "").strip()
+                    if not raw_text or raw_text.startswith("h5ref://"):
+                        continue
+
+                    raw_path = Path(raw_text)
+                    if (
+                        raw_path.exists()
+                        and raw_path.is_file()
+                        and _path_is_relative_to(raw_path.parent, archive_base)
+                    ):
+                        parent_counts[raw_path.parent] = (
+                            parent_counts.get(raw_path.parent, 0) + 1
+                        )
+
+            h5f.visititems(_visit)
+    except Exception:
+        logger.debug(
+            "Could not inspect technical companion archive folder for %s",
+            str(container_path),
+            exc_info=True,
+        )
+        return None
+
+    if not parent_counts:
+        return None
+
+    return sorted(
+        parent_counts,
+        key=lambda path: (-parent_counts[path], str(path)),
+    )[0]
+
+
+def _unique_archive_destination(archive_folder: Path, file_name: str) -> Path:
+    destination = Path(archive_folder) / file_name
+    if not destination.exists():
+        return destination
+
+    source_name = Path(file_name)
+    stem = source_name.stem
+    suffix = source_name.suffix
+    idx = 2
+    while True:
+        candidate = Path(archive_folder) / f"{stem}_{idx}{suffix}"
+        if not candidate.exists():
+            return candidate
+        idx += 1
 
 
 def _repack_hdf5_in_place(container_path: Path) -> tuple[float, float]:
@@ -316,10 +398,17 @@ def archive_existing_containers(owner, storage_folder: str) -> int:
             except Exception:
                 archive_operator = "unknown"
 
-            archive_folder = archive_base / f"{container_id}_{archive_operator}_{timestamp}"
-            archive_folder.mkdir(parents=True, exist_ok=True)
+            archive_folder = _find_existing_technical_companion_archive_folder(
+                h5_file,
+                archive_base,
+            )
+            if archive_folder is None:
+                archive_folder = archive_base / f"{container_id}_{archive_operator}_{timestamp}"
+                archive_folder.mkdir(parents=True, exist_ok=True)
+            else:
+                archive_folder.mkdir(parents=True, exist_ok=True)
 
-            dest_h5 = archive_folder / h5_file.name
+            dest_h5 = _unique_archive_destination(archive_folder, h5_file.name)
             shutil.move(str(h5_file), str(dest_h5))
 
             if created_by_error:

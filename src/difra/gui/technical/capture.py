@@ -1203,6 +1203,141 @@ def show_poni_centers_preview_window(
     return dialog
 
 
+def show_auto_poni_review_window(
+    *,
+    aliases,
+    review_by_alias: dict,
+    images_by_alias: dict,
+    detector_config_by_alias: dict,
+    first_visible_ring_by_alias: dict,
+    rings_to_show: int = 8,
+    parent=None,
+):
+    """Show AgBh heatmaps with generated PONI ring overlays."""
+    from matplotlib.patches import Circle
+
+    from difra.gui.technical.pyfai_calibration import build_agbh_ring_overlays
+
+    aliases = [str(alias) for alias in aliases if str(alias or "").strip()]
+    if not aliases:
+        return {"decision": "cancel", "dialog": None}
+
+    cols = len(aliases)
+    fig = Figure(figsize=(4.8 * cols, 4.4))
+    canvas = FigureCanvas(fig)
+    axes = fig.subplots(1, cols)
+    if cols == 1:
+        axes = [axes]
+
+    for ax, alias in zip(axes, aliases):
+        alias_key = str(alias).upper()
+        review = review_by_alias.get(alias) or review_by_alias.get(alias_key)
+        detector_config = (
+            detector_config_by_alias.get(alias)
+            or detector_config_by_alias.get(alias_key)
+            or {}
+        )
+        image = images_by_alias.get(alias) if isinstance(images_by_alias, dict) else None
+        if image is None and isinstance(images_by_alias, dict):
+            image = images_by_alias.get(alias_key)
+        try:
+            data = np.asarray(image, dtype=float)
+            if data.ndim != 2:
+                raise ValueError("non-2d")
+        except Exception:
+            data = np.zeros((256, 256), dtype=float)
+
+        display = np.log1p(np.clip(data, a_min=0.0, a_max=None))
+        height, width = display.shape
+        ax.imshow(
+            display,
+            origin="lower",
+            cmap="magma",
+            aspect="equal",
+            extent=(0.0, float(width), 0.0, float(height)),
+        )
+        ax.set_title(f"{alias} AgBh")
+        ax.set_xlabel("col (px)")
+        ax.set_ylabel("row (px)")
+
+        first_ring = int(first_visible_ring_by_alias.get(alias_key, 1) or 1)
+        poni_text = str(getattr(review, "poni_text", "") or "")
+        overlays = build_agbh_ring_overlays(
+            poni_text=poni_text,
+            detector_config=detector_config,
+            first_visible_ring=first_ring,
+            rings_to_show=rings_to_show,
+        )
+        for overlay in overlays:
+            ring_index = int(overlay["ring_index"])
+            circle = Circle(
+                (
+                    float(overlay["center_col_px"]),
+                    float(overlay["center_row_px"]),
+                ),
+                float(overlay["radius_px"]),
+                fill=False,
+                linewidth=1.15 if ring_index == first_ring else 0.85,
+                edgecolor="#35d0ff" if ring_index == first_ring else "#f9f871",
+                alpha=0.95 if ring_index == first_ring else 0.78,
+            )
+            ax.add_patch(circle)
+            if ring_index == first_ring:
+                ax.text(
+                    0.02,
+                    0.98,
+                    f"first visible ring: {ring_index}",
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=8.5,
+                    color="#35d0ff",
+                    bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
+                )
+
+        ax.set_xlim(0.0, float(width))
+        ax.set_ylim(0.0, float(height))
+
+    fig.tight_layout()
+
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Auto PONI Review")
+    dialog.setModal(True)
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(canvas)
+    note = QLabel(dialog)
+    note.setWordWrap(True)
+    note.setText(
+        "Validate saves generated PONI files and updates the active technical container. "
+        "Correct opens pyFAI-calib2 for manual refinement."
+    )
+    layout.addWidget(note)
+
+    buttons = QDialogButtonBox(dialog)
+    validate_btn = buttons.addButton("Validate", QDialogButtonBox.AcceptRole)
+    correct_btn = buttons.addButton("Correct", QDialogButtonBox.ActionRole)
+    cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.RejectRole)
+    decision = {"value": "cancel"}
+
+    def _validate():
+        decision["value"] = "validate"
+        dialog.accept()
+
+    def _correct():
+        decision["value"] = "correct"
+        dialog.accept()
+
+    validate_btn.clicked.connect(_validate)
+    correct_btn.clicked.connect(_correct)
+    cancel_btn.clicked.connect(dialog.reject)
+    layout.addWidget(buttons)
+    dialog.resize(max(720, 520 * cols), 520)
+    result = dialog.exec_()
+    if result != QDialog.Accepted:
+        decision["value"] = "cancel"
+    return {"decision": decision["value"], "dialog": dialog}
+
+
 def compute_hf_score_from_cake(
     measurement_filename: np.ndarray,
     poni_text: str = None,

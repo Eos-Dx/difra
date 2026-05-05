@@ -106,6 +106,7 @@ class MainWindowBasic(QMainWindow):
             "technical_archive_folder",
             "measurements_folder",
             "measurements_archive_folder",
+            "old_format_export_folder",
             "technical_archive_mirror_folder",
             "measurements_archive_mirror_folder",
             "session_archive_mirror_folder",
