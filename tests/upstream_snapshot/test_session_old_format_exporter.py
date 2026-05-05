@@ -6,7 +6,6 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-
 from container.v0_2 import technical_container, writer as session_writer
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
@@ -28,6 +27,8 @@ def _create_session_with_technical_and_measurement(
         folder=technical_dir,
         distance_cm=17.0,
     )
+    raw_dir = technical_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     technical_container.write_detector_config(
         file_path=tech_path,
         detectors_config=[
@@ -47,6 +48,8 @@ def _create_session_with_technical_and_measurement(
         distances_cm={"PRIMARY": 17.0},
         detector_id_by_alias={"PRIMARY": "DET-PRIMARY"},
     )
+    (raw_dir / "AGBH_PRIMARY.txt").write_text("1 2 3\n4 5 6\n", encoding="utf-8")
+    (raw_dir / "AGBH_PRIMARY.txt.dsc").write_text("[F0]\nType=i16\n", encoding="utf-8")
     technical_container.add_technical_event(
         file_path=tech_path,
         event_index=1,
@@ -56,12 +59,15 @@ def _create_session_with_technical_and_measurement(
                 "data": np.full((4, 4), technical_value, dtype=np.float32),
                 "detector_id": "DET-PRIMARY",
                 "integration_time_ms": 5000.0,
+                "source_file": str(raw_dir / "AGBH_PRIMARY.txt"),
             }
         },
         timestamp=technical_timestamp,
         distances_cm={"PRIMARY": 17.0},
     )
     if duplicate_agbh_with_rejected:
+        (raw_dir / "AGBH_REJECTED_PRIMARY.txt").write_text("7 8 9\n10 11 12\n", encoding="utf-8")
+        (raw_dir / "AGBH_REJECTED_PRIMARY.txt.dsc").write_text("[F0]\nType=i16\n", encoding="utf-8")
         technical_container.add_technical_event(
             file_path=tech_path,
             event_index=2,
@@ -71,6 +77,7 @@ def _create_session_with_technical_and_measurement(
                     "data": np.full((4, 4), technical_value + 5.0, dtype=np.float32),
                     "detector_id": "DET-PRIMARY",
                     "integration_time_ms": 7000.0,
+                    "source_file": str(raw_dir / "AGBH_REJECTED_PRIMARY.txt"),
                 }
             },
             timestamp="2026-02-24 10:05:00",
@@ -144,6 +151,36 @@ def _create_session_with_technical_and_measurement(
     return Path(session_path)
 
 
+def _create_session_without_raw_txt(tmp_path: Path) -> Path:
+    session_path = _create_session_with_technical_and_measurement(tmp_path, tag="no_raw_txt")
+    with h5py.File(session_path, "a") as h5f:
+        measurements_group = h5f["/entry/measurements"]
+        for point_group in measurements_group.values():
+            for measurement_group in point_group.values():
+                for det_group in measurement_group.values():
+                    blob_group = det_group.get("blob")
+                    if blob_group is not None and "raw_txt" in blob_group:
+                        del blob_group["raw_txt"]
+    return session_path
+
+
+def _create_session_without_technical_raw_txt(tmp_path: Path) -> Path:
+    session_path = _create_session_with_technical_and_measurement(
+        tmp_path,
+        tag="no_tech_raw_txt",
+    )
+    with h5py.File(session_path, "a") as h5f:
+        tech_group = h5f["/entry/technical"]
+        for tech_event_group in tech_group.values():
+            if not str(tech_event_group.name).split("/")[-1].startswith("tech_evt_"):
+                continue
+            for det_group in tech_event_group.values():
+                blob_group = det_group.get("blob")
+                if blob_group is not None and "raw_txt" in blob_group:
+                    del blob_group["raw_txt"]
+    return session_path
+
+
 def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     session_path = _create_session_with_technical_and_measurement(tmp_path, tag="layout")
     old_format_root = tmp_path / "Data" / "difra" / "Old_format"
@@ -158,7 +195,7 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert summary.state_path.exists() is True
     assert summary.state_path.name == "session.json"
     assert summary.state_path.parent.parent.name == "measurements"
-    assert summary.raw_file_count >= 3  # npy + txt + dsc
+    assert summary.raw_file_count >= 2  # selected matrix + dsc
     assert summary.technical_file_count >= 2  # poni + technical event data
 
     state = json.loads(summary.state_path.read_text(encoding="utf-8"))
@@ -167,9 +204,12 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert all(str(name).endswith(".txt") for name in state.get("measurements_meta", {}).keys())
 
     sample_files = {path.name for path in summary.state_path.parent.iterdir() if path.is_file()}
-    assert any(name.endswith(".npy") for name in sample_files)
     assert any(name.endswith(".txt") for name in sample_files)
-    assert any(name.endswith(".dsc") for name in sample_files)
+    assert any(name.endswith(".txt.dsc") for name in sample_files)
+    assert not any(
+        name.endswith(".dsc") and not name.endswith(".txt.dsc")
+        for name in sample_files
+    )
 
     calibration_root = summary.export_dir / "calibration"
     assert calibration_root.exists() is True
@@ -178,7 +218,8 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     technical_dir = distance_dirs[0]
     tech_files = {path.name for path in technical_dir.iterdir() if path.is_file()}
     assert any(name.endswith(".poni") for name in tech_files)
-    assert any(name.endswith(".npy") for name in tech_files)
+    assert any(name.endswith(".txt") for name in tech_files)
+    assert any(name.endswith(".txt.dsc") for name in tech_files)
     assert any(name.startswith("technical_meta_") and name.endswith(".json") for name in tech_files)
     assert "calibrationData.json" in tech_files
     assert "metadata.json" in tech_files
@@ -187,14 +228,22 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
         (technical_dir / "calibrationData.json").read_text(encoding="utf-8")
     )
     assert calibration_data["distance"] == "17cm"
+    assert calibration_data["name"] == "17cm_calibration"
+    assert calibration_data["distanceInMM"] == 170
+    assert calibration_data["processingStatus"] == "REQUEST_FOR_VALIDATION"
+    assert calibration_data["machine"]["machineName"] == "DIFRA_TEST"
+    assert calibration_data["createdAt"] == "2026-02-24"
     assert calibration_data["entries"]
     assert calibration_data["entries"][0]["scanType"] == "AgBH"
     assert calibration_data["entries"][0]["detectorAlias"] == "PRIMARY"
+    assert calibration_data["CALIBRATION_GROUP_HASH"]
+    assert calibration_data["filetypeMap"]["CALIBRATION_GROUP_HASH"] == calibration_data["CALIBRATION_GROUP_HASH"]
+    assert calibration_data["ponifile"].startswith("Distance:")
     assert any(name.endswith(".poni") for name in calibration_data["entries"][0]["frameFiles"])
     agbh_entry = calibration_data["entries"][0]
-    agbh_npy = next(name for name in agbh_entry["frameFiles"] if name.endswith(".npy"))
+    agbh_txt = next(name for name in agbh_entry["frameFiles"] if name.endswith(".txt"))
     agbh_poni = next(name for name in agbh_entry["frameFiles"] if name.endswith(".poni"))
-    assert agbh_poni == f"{Path(agbh_npy).stem}.poni"
+    assert agbh_poni == f"{Path(agbh_txt).stem}.poni"
 
     calibration_manifest = json.loads(
         (technical_dir / "metadata.json").read_text(encoding="utf-8")
@@ -219,13 +268,58 @@ def test_export_session_to_old_format_keeps_measurement_filenames_unique(tmp_pat
 
     sample_files = [path.name for path in summary.state_path.parent.iterdir() if path.is_file()]
     txt_files = sorted(name for name in sample_files if name.endswith(".txt"))
-    npy_files = sorted(name for name in sample_files if name.endswith(".npy"))
 
     assert len(txt_files) == 2
     assert len(set(txt_files)) == 2
-    assert len(npy_files) == 2
-    assert len(set(npy_files)) == 2
+    assert not any(name.endswith(".npy") for name in sample_files)
     assert any("_meas_" in name for name in txt_files)
+
+
+def test_export_session_to_old_format_uses_npy_when_raw_txt_is_missing(tmp_path):
+    session_path = _create_session_without_raw_txt(tmp_path)
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    sample_files = [path.name for path in summary.state_path.parent.iterdir() if path.is_file()]
+
+    assert any(name.endswith(".npy") for name in sample_files)
+    assert not any(name.endswith(".txt") for name in sample_files)
+
+
+def test_select_matrix_payload_allows_raw_txt_without_dsc():
+    matrix_name, matrix_payload, matrix_ext, dsc_payload = SessionOldFormatExporter._select_matrix_payload(
+        base="sample_PRIMARY",
+        processed_signal=np.zeros((2, 2), dtype=np.float32),
+        raw_blobs={"raw_txt": b"1 2\n3 4\n"},
+    )
+
+    assert matrix_name == "sample_PRIMARY.txt"
+    assert matrix_payload == b"1 2\n3 4\n"
+    assert matrix_ext == "txt"
+    assert dsc_payload == b""
+
+
+def test_export_session_to_old_format_never_writes_npy_dsc_for_technical(tmp_path):
+    session_path = _create_session_without_technical_raw_txt(tmp_path)
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    technical_dir = next(
+        path for path in (summary.export_dir / "calibration").iterdir() if path.is_dir()
+    )
+    tech_files = [path.name for path in technical_dir.iterdir() if path.is_file()]
+
+    assert any(name.endswith(".npy") for name in tech_files)
+    assert any(name.endswith(".txt.dsc") for name in tech_files)
+    assert not any(name.endswith(".npy.dsc") for name in tech_files)
 
 
 def test_calibration_data_marks_selected_and_rejected_entries(tmp_path):

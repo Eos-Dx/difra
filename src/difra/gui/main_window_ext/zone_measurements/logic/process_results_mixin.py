@@ -17,6 +17,35 @@ def _pm():
 logger = logging.getLogger(__name__)
 
 
+def _find_nearby_dsc(folder: Path, *, base_name: str, alias: str, reference_path: Path) -> Optional[Path]:
+    folder = Path(folder)
+    exact_candidates = [
+        folder / f"{base_name}.txt.dsc",
+        folder / f"{base_name}.dsc",
+    ]
+    for candidate in exact_candidates:
+        if candidate.exists():
+            return candidate
+
+    alias_token = str(alias or "").strip().upper()
+    candidates = []
+    for candidate in folder.glob("*.dsc"):
+        name_upper = candidate.name.upper()
+        if alias_token and alias_token not in name_upper:
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        return None
+
+    try:
+        reference_mtime = Path(reference_path).stat().st_mtime
+    except Exception:
+        reference_mtime = None
+    if reference_mtime is None:
+        return sorted(candidates, key=lambda path: path.name)[0]
+    return min(candidates, key=lambda path: abs(path.stat().st_mtime - reference_mtime))
+
+
 class ZoneMeasurementsProcessResultsMixin:
     @staticmethod
     def _measurement_ref_to_filename(measurement_ref) -> str:
@@ -407,6 +436,15 @@ class ZoneMeasurementsProcessResultsMixin:
                     for pattern in patterns:
                         ext = pattern[1:] if pattern.startswith("*") else pattern
                         raw_file = folder / f"{base_name}{ext}"
+                        if ext == ".dsc" and not raw_file.exists():
+                            nearby = _find_nearby_dsc(
+                                folder,
+                                base_name=base_name,
+                                alias=alias,
+                                reference_path=npy_path,
+                            )
+                            if nearby is not None:
+                                raw_file = nearby
                         if raw_file.exists():
                             try:
                                 with open(raw_file, "rb") as f:
@@ -417,6 +455,14 @@ class ZoneMeasurementsProcessResultsMixin:
                                 pm.logger.debug(f"Read raw file for blob: {raw_file.name} -> {blob_key}")
                             except OSError as e:
                                 pm.logger.warning(f"Failed to read raw file {raw_file}: {e}")
+                    if "raw_txt" in raw_files and "raw_dsc" not in raw_files:
+                        nearby_dsc = sorted(folder.glob("*.dsc"))
+                        pm.logger.warning(
+                            "Raw TXT found but matching DSC is missing",
+                            detector_alias=alias,
+                            expected=str(folder / f"{base_name}.dsc"),
+                            nearby_dsc=[str(path) for path in nearby_dsc],
+                        )
 
                     if raw_files:
                         raw_files_data[detector_id] = raw_files

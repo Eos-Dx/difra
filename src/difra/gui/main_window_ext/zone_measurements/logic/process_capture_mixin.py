@@ -17,16 +17,28 @@ def _pm():
 logger = logging.getLogger(__name__)
 
 
+def _dsc_candidates(path: Path):
+    path = Path(path)
+    candidates = [Path(str(path) + ".dsc"), path.with_suffix(".dsc")]
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield candidate
+
+
 def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = True) -> None:
     """Place raw detector output at target path, preferring move over copy."""
     src_path = Path(src_raw)
     target_txt = Path(target_txt)
     target_txt.parent.mkdir(parents=True, exist_ok=True)
-    src_dsc = src_path.with_suffix(".dsc")
-    dst_dsc = target_txt.with_suffix(".dsc")
+    dst_dsc = Path(str(target_txt) + ".dsc")
+    src_dsc = next((path for path in _dsc_candidates(src_path) if path.exists()), None)
 
     if src_path.resolve() == target_txt.resolve():
-        if src_dsc.exists() and not dst_dsc.exists():
+        if src_dsc is not None and not dst_dsc.exists():
             shutil.copy2(src_dsc, dst_dsc)
         return
 
@@ -41,7 +53,7 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
     if not moved:
         shutil.copy2(src_path, target_txt)
 
-    if src_dsc.exists():
+    if src_dsc is not None:
         if moved:
             try:
                 shutil.move(str(src_dsc), str(dst_dsc))
