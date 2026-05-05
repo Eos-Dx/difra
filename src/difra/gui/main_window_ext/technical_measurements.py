@@ -149,6 +149,7 @@ def _get_technical_imports():
     try:
         from difra.gui.technical.capture import (
             CaptureWorker,
+            show_auto_poni_review_window,
             show_measurement_window,
             show_poni_centers_preview_window,
             validate_folder,
@@ -158,6 +159,7 @@ def _get_technical_imports():
         _technical_modules.update(
             {
                 "CaptureWorker": CaptureWorker,
+                "show_auto_poni_review_window": show_auto_poni_review_window,
                 "show_measurement_window": show_measurement_window,
                 "show_poni_centers_preview_window": show_poni_centers_preview_window,
                 "validate_folder": validate_folder,
@@ -195,6 +197,10 @@ def _get_technical_module(name):
         "show_measurement_window": lambda *args, **kwargs: print(
             "Technical measurement window not available - imports failed"
         ),
+        "show_auto_poni_review_window": lambda *args, **kwargs: {
+            "decision": "cancel",
+            "dialog": None,
+        },
         "show_poni_centers_preview_window": lambda *args, **kwargs: None,
         "validate_folder": lambda path: str(path) if path else "",
         "MeasurementWorker": type(

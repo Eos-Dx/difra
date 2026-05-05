@@ -454,21 +454,33 @@ class H5ManagementLoadingMixin:
             except (AttributeError, OSError, TypeError, ValueError):
                 operator_token = "unknown"
 
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        archive_dir = archive_base / (
-            f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
-            f"{operator_token}_{timestamp}"
+        from .h5_management_lock_actions import (
+            _find_existing_technical_companion_archive_folder,
+            _unique_archive_destination,
         )
-        suffix = 1
-        while archive_dir.exists():
-            suffix += 1
+
+        archive_dir = _find_existing_technical_companion_archive_folder(
+            existing_path,
+            archive_base,
+        )
+        if archive_dir is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
             archive_dir = archive_base / (
                 f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
-                f"{operator_token}_{timestamp}_{suffix}"
+                f"{operator_token}_{timestamp}"
             )
-        archive_dir.mkdir(parents=True, exist_ok=False)
+            suffix = 1
+            while archive_dir.exists():
+                suffix += 1
+                archive_dir = archive_base / (
+                    f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
+                    f"{operator_token}_{timestamp}_{suffix}"
+                )
+            archive_dir.mkdir(parents=True, exist_ok=False)
+        else:
+            archive_dir.mkdir(parents=True, exist_ok=True)
 
-        destination = archive_dir / Path(existing_path).name
+        destination = _unique_archive_destination(archive_dir, Path(existing_path).name)
         shutil.move(str(existing_path), str(destination))
         set_state = getattr(self, "_set_container_state", None)
         if callable(set_state):

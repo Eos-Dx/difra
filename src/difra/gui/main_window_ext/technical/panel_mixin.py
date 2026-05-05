@@ -222,6 +222,11 @@ class TechnicalPanelMixin:
         self.update_poni_btn.clicked.connect(self.update_active_technical_container_poni)
         actions_bottom_row.addWidget(self.update_poni_btn)
 
+        self.auto_poni_btn = tm.QPushButton("Auto PONI")
+        self.auto_poni_btn.setToolTip("Generate AgBh PONI files and review ring overlays")
+        self.auto_poni_btn.clicked.connect(self.run_auto_poni)
+        actions_bottom_row.addWidget(self.auto_poni_btn)
+
         self.lock_h5_btn = tm.QPushButton("Lock Container")
         self.lock_h5_btn.setToolTip("Lock active technical container for production use")
         self.lock_h5_btn.clicked.connect(self.lock_active_technical_container)
@@ -235,7 +240,7 @@ class TechnicalPanelMixin:
         actions_bottom_row.addWidget(self.archive_h5_btn)
 
         self.pyfai_btn = tm.QPushButton("PyFAI")
-        self.pyfai_btn.setToolTip("Run pyfai-calib2 in this folder")
+        self.pyfai_btn.setToolTip("Run pyfai-calib2; select an AGBH row to seed calibration")
         self.pyfai_btn.clicked.connect(self.run_pyfai)
         actions_bottom_row.addWidget(self.pyfai_btn)
 
@@ -376,6 +381,8 @@ class TechnicalPanelMixin:
             self.pyfai_btn.setEnabled(has_distances)
         if hasattr(self, "update_poni_btn"):
             self.update_poni_btn.setEnabled(has_distances)
+        if hasattr(self, "auto_poni_btn"):
+            self.auto_poni_btn.setEnabled(has_distances)
         if hasattr(self, "lock_h5_btn"):
             self.lock_h5_btn.setEnabled(has_distances)
 
