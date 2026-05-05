@@ -227,12 +227,26 @@ def test_place_raw_capture_file_moves_or_copies_files(tmp_path: Path):
     src_txt.write_text("txt", encoding="utf-8")
     src_dsc.write_text("dsc", encoding="utf-8")
     target_txt = tmp_path / "nested" / "target.txt"
-    target_dsc = target_txt.with_suffix(".dsc")
+    target_dsc = Path(str(target_txt) + ".dsc")
 
     _place_raw_capture_file(str(src_txt), target_txt, allow_move=False)
 
     assert src_txt.exists()
     assert src_dsc.exists()
+    assert target_txt.read_text(encoding="utf-8") == "txt"
+    assert target_dsc.read_text(encoding="utf-8") == "dsc"
+
+
+def test_place_raw_capture_file_copies_txt_dsc_variant(tmp_path: Path):
+    src_txt = tmp_path / "source.txt"
+    src_dsc = tmp_path / "source.txt.dsc"
+    src_txt.write_text("txt", encoding="utf-8")
+    src_dsc.write_text("dsc", encoding="utf-8")
+    target_txt = tmp_path / "nested" / "target.txt"
+    target_dsc = Path(str(target_txt) + ".dsc")
+
+    _place_raw_capture_file(str(src_txt), target_txt, allow_move=False)
+
     assert target_txt.read_text(encoding="utf-8") == "txt"
     assert target_dsc.read_text(encoding="utf-8") == "dsc"
 

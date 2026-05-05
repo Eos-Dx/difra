@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import time
 from typing import Any, Dict, Iterable, List, Optional, Set
 import zipfile
@@ -175,17 +176,26 @@ class SessionLifecycleActions:
                 )
                 specimen_token = cls._safe_token(specimen_text, "UNKNOWN")
 
-                technical_container_id = cls._read_technical_container_id_from_h5(h5f)
-                technical_token = cls._safe_token(
-                    technical_container_id,
-                    "unknown_technical",
+                state_payload = SessionOldFormatExporter._load_state_payload(h5f)
+                calibration_fallback = cls._matador_bundle_hash_fallback_from_h5(
+                    h5f,
+                    path=session_path,
+                )
+                calibration_group_hash = SessionOldFormatExporter._resolve_calibration_group_hash(
+                    h5f,
+                    state_payload=state_payload,
+                    fallback=calibration_fallback,
+                )
+                calibration_token = cls._safe_token(
+                    calibration_group_hash,
+                    "unknown_calibration",
                 )
 
                 measurement_zip_name = (
                     f"measurement_{specimen_token}_{distance_token}_{session_id}.zip"
                 )
                 calibration_zip_name = (
-                    f"calibration_{distance_token}_{technical_token}.zip"
+                    f"calibration_{distance_token}_{calibration_token}.zip"
                 )
         except Exception:
             logger.warning(
@@ -233,21 +243,139 @@ class SessionLifecycleActions:
             return ""
 
     @classmethod
-    def _matador_batch_group_key(cls, session_path: Path) -> str:
+    def _matador_bundle_hash_fallback_from_h5(
+        cls,
+        h5f: h5py.File,
+        *,
+        path: Path,
+    ) -> str:
+        specimen_text = cls._decode_attr(
+            h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+        ).strip()
+        patient_text = cls._decode_attr(h5f.attrs.get("patient_id", "")).strip()
+        specimen_info = MatadorZipBundleExporter._parse_specimen_patient(
+            specimen_text=specimen_text,
+            patient_text=patient_text,
+        )
+        distance_value = h5f.attrs.get("distance_cm", h5f.attrs.get("distanceCm"))
+        try:
+            distance_token = f"{max(1, int(round(float(distance_value))))}cm"
+        except Exception:
+            distance_token = "unknown_distance"
+        bundle_key = str(specimen_info.get("bundle_key") or "").strip()
+        if bundle_key:
+            return f"{bundle_key}_{distance_token}"
+        return Path(path).stem
+
+    @classmethod
+    def _read_calibration_group_hash_from_h5(
+        cls,
+        session_path: Path,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> str:
         path = Path(session_path)
         if not path.exists():
             return ""
-        technical_id = cls._read_technical_container_id(path)
-        if technical_id:
-            return f"technical:{technical_id}"
-        return ""
+        try:
+            with h5py.File(path, "r") as h5f:
+                state_payload = SessionOldFormatExporter._load_state_payload(h5f)
+                calibration_fallback = cls._matador_bundle_hash_fallback_from_h5(
+                    h5f,
+                    path=path,
+                )
+                return SessionOldFormatExporter._resolve_calibration_group_hash(
+                    h5f,
+                    state_payload=state_payload,
+                    config=config,
+                    fallback=calibration_fallback,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to read calibration group hash for %s",
+                str(session_path),
+                exc_info=True,
+            )
+            return ""
+
+    @staticmethod
+    def _format_matador_exposure_key(value: Any) -> str:
+        try:
+            return f"{float(value):.6f}".rstrip("0").rstrip(".")
+        except Exception:
+            return str(value or "").strip()
 
     @classmethod
-    def _order_paths_by_matador_group(cls, paths: Iterable[Path]) -> List[Path]:
+    def _matador_session_bucket_key_from_metadata(
+        cls,
+        metadata: Dict[str, Any],
+    ) -> str:
+        return ":".join(
+            [
+                "session",
+                str(metadata.get("session_date") or ""),
+                str(metadata.get("study_id") or ""),
+                str(metadata.get("machine_id") or ""),
+                str(metadata.get("distance_mm") or ""),
+                cls._format_matador_exposure_key(metadata.get("exposure_time_sec")),
+            ]
+        )
+
+    @classmethod
+    def _matador_batch_group_key(
+        cls,
+        session_path: Path,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        uploader_id: Optional[str] = None,
+    ) -> str:
+        path = Path(session_path)
+        if not path.exists():
+            return ""
+        metadata = cls._read_matador_session_metadata(
+            path,
+            config=config,
+            uploader_id=uploader_id,
+        )
+        return cls._matador_session_bucket_key_from_metadata(metadata)
+
+    @classmethod
+    def _matador_batch_order_key(
+        cls,
+        session_path: Path,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        uploader_id: Optional[str] = None,
+    ) -> str:
+        session_key = cls._matador_batch_group_key(
+            session_path,
+            config=config,
+            uploader_id=uploader_id,
+        )
+        group_hash = cls._read_calibration_group_hash_from_h5(
+            session_path,
+            config=config,
+        )
+        if session_key and group_hash:
+            return f"{session_key}:calibration:{group_hash}"
+        return session_key
+
+    @classmethod
+    def _order_paths_by_matador_group(
+        cls,
+        paths: Iterable[Path],
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        uploader_id: Optional[str] = None,
+    ) -> List[Path]:
         buckets: Dict[str, List[Path]] = {}
         group_order: List[str] = []
         for path in [Path(item) for item in paths]:
-            key = cls._matador_batch_group_key(path) or (
+            key = cls._matador_batch_order_key(
+                path,
+                config=config,
+                uploader_id=uploader_id,
+            ) or (
                 f"ungrouped:{cls._safe_token(path.resolve().as_posix())}"
             )
             if key not in buckets:
@@ -622,7 +750,10 @@ class SessionLifecycleActions:
     ):
         stamp = time.strftime("%Y%m%d_%H%M%S")
         payload_names = cls._read_upload_payload_names(Path(session_path))
-        temp_root = Path(archive_folder) / ".matador_old_format_tmp" / (
+        temp_root = Path(tempfile.gettempdir()) / "difra" / ".matador_old_format_tmp"
+        if temp_root.exists():
+            shutil.rmtree(temp_root)
+        temp_root = temp_root / (
             f"{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}"
         )
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -639,13 +770,25 @@ class SessionLifecycleActions:
             export_dir.parent / str(payload_names.get("measurement_zip_name") or export_dir.with_suffix(".zip").name),
             include_root=False,
         )
+        calibration_group_hash = ""
+        try:
+            state_payload = json.loads(Path(summary.state_path).read_text(encoding="utf-8"))
+            if isinstance(state_payload, dict):
+                calibration_group_hash = str(
+                    state_payload.get("CALIBRATION_GROUP_HASH") or ""
+                ).strip()
+        except Exception:
+            calibration_group_hash = ""
 
         calibration_zip_paths: List[Path] = []
         calibration_export_dir: Optional[Path] = None
         try:
+            calibration_config = dict(config or {})
+            if calibration_group_hash:
+                calibration_config["matador_calibration_group_hash_override"] = calibration_group_hash
             calibration_summary = SessionOldFormatExporter.export_from_session_container(
                 session_path,
-                config=config,
+                config=calibration_config,
                 archive_folder=archive_folder,
                 target_root=temp_root / "calibration_bundle",
             )
@@ -672,33 +815,51 @@ class SessionLifecycleActions:
                 exc_info=True,
             )
 
-        archive_root = cls._resolve_old_format_archive_root(
+        old_format_root = cls._resolve_old_format_archive_root(
             config=config,
             archive_folder=archive_folder,
         )
-        archive_root.mkdir(parents=True, exist_ok=True)
-        archived_export_dir = archive_root / (
-            f"{export_dir.name}_{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}"
+        old_format_root.mkdir(parents=True, exist_ok=True)
+        try:
+            if old_format_root.resolve() == Path(archive_folder).resolve():
+                raise ValueError(
+                    "old-format folder must be separate from the measurements archive"
+                )
+        except FileNotFoundError:
+            pass
+
+        for child in sorted(old_format_root.iterdir()):
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            except Exception:
+                logger.warning(
+                    "Failed to clear previous old-format output: %s",
+                    str(child),
+                    exc_info=True,
+                )
+
+        old_format_group = old_format_root / export_dir.name
+        old_format_group.mkdir(parents=True, exist_ok=True)
+        old_format_measurements_root = old_format_group / "measurements"
+        old_format_measurements_root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            export_dir,
+            old_format_measurements_root / export_dir.name,
+            dirs_exist_ok=True,
         )
-        suffix = 1
-        while archived_export_dir.exists():
-            suffix += 1
-            archived_export_dir = archive_root / (
-                f"{export_dir.name}_{cls._safe_token(Path(session_path).stem, 'session')}_{stamp}_{suffix}"
-            )
-        archived_export_dir.mkdir(parents=True, exist_ok=False)
-        archived_measurements_root = archived_export_dir / "measurements"
-        archived_measurements_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(export_dir), str(archived_measurements_root / export_dir.name))
         if calibration_export_dir is not None:
             calibration_root = calibration_export_dir / "calibration"
             if calibration_root.exists():
                 shutil.copytree(
                     calibration_root,
-                    archived_export_dir / "calibration",
+                    old_format_group / "calibration",
                     dirs_exist_ok=True,
                 )
-        return summary, archived_export_dir, zip_path, calibration_zip_paths
+
+        return summary, old_format_group, zip_path, calibration_zip_paths
 
     @classmethod
     def _read_matador_session_metadata(
@@ -881,6 +1042,139 @@ class SessionLifecycleActions:
                 return True
         return False
 
+    @staticmethod
+    def _matador_manifest_now() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    @staticmethod
+    def _load_matador_uploaded_manifest(manifest_path: Optional[Path]) -> Dict[str, Any]:
+        if manifest_path is None:
+            return {}
+        path = Path(manifest_path)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Failed to load Matador upload manifest %s", str(path), exc_info=True)
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @classmethod
+    def _write_matador_uploaded_manifest(
+        cls,
+        manifest_path: Optional[Path],
+        manifest: Dict[str, Any],
+    ) -> None:
+        if manifest_path is None:
+            return
+        path = Path(manifest_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manifest["version"] = 1
+        manifest["updated_at"] = cls._matador_manifest_now()
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+
+    @staticmethod
+    def _manifest_file_key(file_path: Path, manifest_path: Optional[Path]) -> str:
+        path = Path(file_path)
+        if manifest_path is not None:
+            root = Path(manifest_path).parent
+            try:
+                return path.resolve().relative_to(root.resolve()).as_posix()
+            except Exception:
+                pass
+        return path.name
+
+    @staticmethod
+    def _matador_calibration_manifest_key(
+        *,
+        session_id: int,
+        distance_mm: int,
+        detector_scope: str,
+        calibration_group_hash: str,
+    ) -> str:
+        return (
+            f"{int(session_id)}:{int(distance_mm)}:"
+            f"{str(detector_scope or 'PRIMARY').upper()}:{str(calibration_group_hash).strip()}"
+        )
+
+    @classmethod
+    def _matador_manifest_distance_bucket(
+        cls,
+        manifest: Dict[str, Any],
+        *,
+        session_metadata: Dict[str, Any],
+        session_id: int,
+    ) -> Dict[str, Any]:
+        distances = manifest.setdefault("distances", {})
+        distance_key = str(int(session_metadata["distance_mm"]))
+        bucket = distances.setdefault(distance_key, {})
+        bucket["session_id"] = int(session_id)
+        bucket["session_date"] = str(session_metadata.get("session_date") or "")
+        bucket["study_id"] = int(session_metadata["study_id"])
+        bucket["machine_id"] = int(session_metadata["machine_id"])
+        bucket["distanceInMm"] = int(session_metadata["distance_mm"])
+        bucket["exposureTimeSec"] = float(session_metadata["exposure_time_sec"])
+        bucket.setdefault("calibrations", {})
+        bucket.setdefault("uploaded_files", {})
+        return bucket
+
+    @classmethod
+    def _matador_manifest_has_verified_calibration(
+        cls,
+        manifest: Dict[str, Any],
+        *,
+        distance_mm: int,
+        calibration_key: str,
+    ) -> bool:
+        bucket = (manifest.get("distances") or {}).get(str(int(distance_mm))) or {}
+        entry = (bucket.get("calibrations") or {}).get(str(calibration_key)) or {}
+        return str(entry.get("uploadStatus") or "").upper() == "HASH_VERIFIED"
+
+    @classmethod
+    def _record_matador_uploaded_file(
+        cls,
+        *,
+        manifest_path: Optional[Path],
+        session_metadata: Dict[str, Any],
+        session_id: int,
+        file_path: Path,
+        file_id: int,
+        file_type: str,
+        ingest_kind: str,
+        sha256: str,
+        size_bytes: int,
+        upload_status: str,
+        processing_status: str = "",
+        calibration_key: str = "",
+        paired_file_id: Optional[int] = None,
+    ) -> None:
+        manifest = cls._load_matador_uploaded_manifest(manifest_path)
+        bucket = cls._matador_manifest_distance_bucket(
+            manifest,
+            session_metadata=session_metadata,
+            session_id=int(session_id),
+        )
+        entry = {
+            "file_id": int(file_id),
+            "sha256": str(sha256),
+            "size_bytes": int(size_bytes),
+            "file_type": str(file_type),
+            "ingest_kind": str(ingest_kind),
+            "uploadStatus": str(upload_status),
+            "processingStatus": str(processing_status or ""),
+            "uploaded_at": cls._matador_manifest_now(),
+        }
+        if paired_file_id is not None:
+            entry["paired_file_id"] = int(paired_file_id)
+        if calibration_key:
+            bucket.setdefault("calibrations", {})[str(calibration_key)] = dict(entry)
+        file_key = cls._manifest_file_key(file_path, manifest_path)
+        bucket.setdefault("uploaded_files", {})[file_key] = entry
+        cls._write_matador_uploaded_manifest(manifest_path, manifest)
+
     @classmethod
     def _execute_matador_upload(
         cls,
@@ -898,6 +1192,7 @@ class SessionLifecycleActions:
         total: Optional[int] = None,
         batch_session_cache: Optional[Dict[str, Any]] = None,
         batch_calibration_uploaded: Optional[Set[str]] = None,
+        matador_manifest_path: Optional[Path] = None,
     ) -> UploadStubResult:
         cls._notify_progress(
             progress_callback,
@@ -932,22 +1227,14 @@ class SessionLifecycleActions:
         calibration_zip_paths = [
             Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
         ]
-        technical_group_key = cls._matador_batch_group_key(Path(archived_path))
-        batch_group_key = ""
-        if batch_session_cache is not None or batch_calibration_uploaded is not None:
-            batch_group_key = technical_group_key
-            if not batch_group_key:
-                cls._notify_progress(
-                    progress_callback,
-                    message=(
-                        f"{Path(archived_path).name}: Technical container ID is "
-                        "missing; this container will not share a Matador batch group."
-                    ),
-                    current=current,
-                    total=total,
-                    kind="missing_technical_group",
-                    container_path=Path(archived_path),
-                )
+        calibration_group_hash = cls._read_calibration_group_hash_from_h5(
+            Path(archived_path),
+            config=config,
+        )
+        batch_group_key = cls._matador_session_bucket_key_from_metadata(session_metadata)
+        if not calibration_group_hash:
+            calibration_group_hash = cls._safe_token(Path(archived_path).stem, "unknown")
+        session_metadata["calibration_group_hash"] = calibration_group_hash
 
         def _blocked_result(message: str) -> UploadStubResult:
             cls._notify_progress(
@@ -1004,31 +1291,17 @@ class SessionLifecycleActions:
                 initiated_by=str(session_metadata["initiated_by"]),
                 session_date=str(session_metadata.get("session_date") or ""),
             )
-            create_isolated_session = not technical_group_key
             cls._notify_progress(
                 progress_callback,
-                message=(
-                    f"{Path(archived_path).name}: Now creating isolated Matador "
-                    "ingest session..."
-                    if create_isolated_session
-                    else f"{Path(archived_path).name}: Now creating/finding Matador ingest session..."
-                ),
+                message=f"{Path(archived_path).name}: Now creating/finding Matador ingest session...",
                 current=current,
                 total=total,
-                kind="create_isolated_session" if create_isolated_session else "create_session",
+                kind="create_session",
                 container_path=Path(archived_path),
             )
-            if create_isolated_session and hasattr(upload_backend, "create_ingest_session"):
-                ingest_session = upload_backend.create_ingest_session(session_request)
-            else:
-                if create_isolated_session:
-                    logger.warning(
-                        "Upload backend cannot create isolated Matador ingest sessions; "
-                        "falling back to find-or-create"
-                    )
-                ingest_session = upload_backend.find_or_create_session(
-                    session_request
-                )
+            ingest_session = upload_backend.find_or_create_session(
+                session_request
+            )
             if batch_group_key and batch_session_cache is not None:
                 batch_session_cache[batch_group_key] = ingest_session
         else:
@@ -1044,46 +1317,54 @@ class SessionLifecycleActions:
                 container_path=Path(archived_path),
             )
 
+        calibration_manifest_key = cls._matador_calibration_manifest_key(
+            session_id=int(ingest_session.id),
+            distance_mm=int(session_metadata["distance_mm"]),
+            detector_scope=str(session_metadata["detector_scope"]),
+            calibration_group_hash=str(calibration_group_hash),
+        )
+        manifest_payload = cls._load_matador_uploaded_manifest(matador_manifest_path)
         upload_calibration = True
         if (
-            batch_group_key
+            calibration_manifest_key
             and batch_calibration_uploaded is not None
-            and batch_group_key in batch_calibration_uploaded
+            and calibration_manifest_key in batch_calibration_uploaded
         ):
             upload_calibration = False
             cls._notify_progress(
                 progress_callback,
                 message=(
                     f"{Path(archived_path).name}: Calibration already uploaded for "
-                    "this technical group."
+                    "this Matador calibration key."
                 ),
                 current=current,
                 total=total,
                 kind="skip_calibration",
                 container_path=Path(archived_path),
             )
+        elif cls._matador_manifest_has_verified_calibration(
+            manifest_payload,
+            distance_mm=int(session_metadata["distance_mm"]),
+            calibration_key=calibration_manifest_key,
+        ):
+            upload_calibration = False
+            if batch_calibration_uploaded is not None:
+                batch_calibration_uploaded.add(calibration_manifest_key)
+            cls._notify_progress(
+                progress_callback,
+                message=(
+                    f"{Path(archived_path).name}: Calibration already recorded in "
+                    ".matador_uploaded for this Matador calibration key."
+                ),
+                current=current,
+                total=total,
+                kind="skip_calibration_manifest",
+                container_path=Path(archived_path),
+            )
 
         calibration_zip_paths_to_upload: List[Path] = []
         if upload_calibration:
             for calibration_zip_path in calibration_zip_paths:
-                if technical_group_key and cls._matador_session_has_reusable_file(
-                    upload_backend,
-                    ingest_session_id=int(ingest_session.id),
-                    file_name=Path(calibration_zip_path).name,
-                ):
-                    cls._notify_progress(
-                        progress_callback,
-                        message=(
-                            f"{Path(archived_path).name}: Calibration ZIP "
-                            f"{Path(calibration_zip_path).name} already exists in "
-                            "this Matador ingest session."
-                        ),
-                        current=current,
-                        total=total,
-                        kind="skip_existing_calibration",
-                        container_path=Path(archived_path),
-                    )
-                    continue
                 calibration_zip_paths_to_upload.append(Path(calibration_zip_path))
 
         for calibration_zip_path in calibration_zip_paths_to_upload:
@@ -1155,14 +1436,28 @@ class SessionLifecycleActions:
                     zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
                     zip_path=str(old_format_zip_path),
                 )
+            cls._record_matador_uploaded_file(
+                manifest_path=matador_manifest_path,
+                session_metadata=session_metadata,
+                session_id=int(ingest_session.id),
+                file_path=Path(calibration_zip_path),
+                file_id=int(calibration_registered.id),
+                file_type="ZIP_PAYLOAD",
+                ingest_kind="CALIBRATION",
+                sha256=calibration_checksum,
+                size_bytes=int(Path(calibration_zip_path).stat().st_size),
+                upload_status=str(calibration_status.upload_status),
+                processing_status=str(calibration_status.processing_status),
+                calibration_key=calibration_manifest_key,
+            )
 
         if (
             upload_calibration
             and calibration_zip_paths
-            and batch_group_key
+            and calibration_manifest_key
             and batch_calibration_uploaded is not None
         ):
-            batch_calibration_uploaded.add(batch_group_key)
+            batch_calibration_uploaded.add(calibration_manifest_key)
 
         zip_checksum = sha256_file(Path(old_format_zip_path))
         cls._notify_progress(
@@ -1224,8 +1519,22 @@ class SessionLifecycleActions:
                 zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
                 zip_path=str(old_format_zip_path),
             )
+        cls._record_matador_uploaded_file(
+            manifest_path=matador_manifest_path,
+            session_metadata=session_metadata,
+            session_id=int(ingest_session.id),
+            file_path=Path(old_format_zip_path),
+            file_id=int(zip_registered.id),
+            file_type="ZIP_PAYLOAD",
+            ingest_kind="MEASUREMENT",
+            sha256=zip_checksum,
+            size_bytes=int(Path(old_format_zip_path).stat().st_size),
+            upload_status=str(zip_status.upload_status),
+            processing_status=str(zip_status.processing_status),
+        )
 
         h5_checksum = sha256_file(Path(archived_path))
+        h5_register_name = f"{Path(old_format_zip_path).stem}.h5"
         cls._notify_progress(
             progress_callback,
             message=f"{Path(archived_path).name}: Now registering H5 container...",
@@ -1237,7 +1546,7 @@ class SessionLifecycleActions:
         h5_registered = upload_backend.register_file(
             MatadorRegisterFileRequest(
                 ingest_session_id=int(ingest_session.id),
-                file_name=Path(archived_path).name,
+                file_name=h5_register_name,
                 file_type="HDF5_CONTAINER",
                 ingest_kind="MEASUREMENT",
                 detector_scope=str(session_metadata["detector_scope"]),
@@ -1269,6 +1578,21 @@ class SessionLifecycleActions:
             total=total,
             container_path=Path(archived_path),
         )
+        if h5_status is not None and str(h5_status.upload_status or "").upper() == "HASH_VERIFIED":
+            cls._record_matador_uploaded_file(
+                manifest_path=matador_manifest_path,
+                session_metadata=session_metadata,
+                session_id=int(ingest_session.id),
+                file_path=Path(archived_path),
+                file_id=int(h5_registered.id),
+                file_type="HDF5_CONTAINER",
+                ingest_kind="MEASUREMENT",
+                sha256=h5_checksum,
+                size_bytes=int(Path(archived_path).stat().st_size),
+                upload_status=str(h5_status.upload_status),
+                processing_status=str(h5_status.processing_status),
+                paired_file_id=int(zip_registered.id),
+            )
 
         zip_ok = (
             zip_status is not None
@@ -1898,7 +2222,11 @@ class SessionLifecycleActions:
 
         queued_paths = [Path(path) for path in container_paths]
         if len(queued_paths) > 1:
-            queued_paths = cls._order_paths_by_matador_group(queued_paths)
+            queued_paths = cls._order_paths_by_matador_group(
+                queued_paths,
+                config=config,
+                uploader_id=resolved_uploader_id,
+            )
         total_containers = len(queued_paths)
         batch_session_cache: Optional[Dict[str, Any]] = (
             {} if total_containers > 1 else None
@@ -1909,6 +2237,7 @@ class SessionLifecycleActions:
 
         for item_index, container_path in enumerate(queued_paths, start=1):
             candidate = Path(container_path)
+            old_format_zip_path = None
             try:
                 if not candidate.exists():
                     continue
@@ -1956,7 +2285,6 @@ class SessionLifecycleActions:
                         {"matadorSpecimenId": int(override_value)},
                     )
 
-                old_format_zip_path = None
                 calibration_zip_paths: List[Path] = []
                 if not use_stub_h5_only:
                     try:
@@ -1968,14 +2296,14 @@ class SessionLifecycleActions:
                             kind="prepare_old_format",
                             container_path=candidate,
                         )
-                        _summary, archived_old_format_dir, old_format_zip_path, calibration_zip_paths = (
+                        _summary, old_format_group, old_format_zip_path, calibration_zip_paths = (
                             cls._prepare_old_format_payload(
                                 candidate,
                                 archive_folder=archive_folder,
                                 config=config,
                             )
                         )
-                        result.old_format_paths.append(archived_old_format_dir)
+                        result.old_format_paths.append(old_format_group)
                         cls._notify_progress(
                             progress_callback,
                             message=f"[{item_index}/{total_containers}] {candidate.name}: ZIP folder with old-format data is ready.",
@@ -2072,6 +2400,7 @@ class SessionLifecycleActions:
                             total=total_containers,
                             batch_session_cache=batch_session_cache,
                             batch_calibration_uploaded=batch_calibration_uploaded,
+                            matador_manifest_path=Path(archive_folder) / ".matador_uploaded",
                         )
                 except Exception as exc:
                     upload_exception = exc
@@ -2248,7 +2577,11 @@ class SessionLifecycleActions:
         }
         queued_paths = [Path(path) for path in container_paths]
         if len(queued_paths) > 1:
-            queued_paths = cls._order_paths_by_matador_group(queued_paths)
+            queued_paths = cls._order_paths_by_matador_group(
+                queued_paths,
+                config=config,
+                uploader_id=resolved_uploader_id,
+            )
         total_containers = len(queued_paths)
         batch_session_cache: Optional[Dict[str, Any]] = (
             {} if total_containers > 1 else None
@@ -2259,6 +2592,7 @@ class SessionLifecycleActions:
 
         for item_index, container_path in enumerate(queued_paths, start=1):
             candidate = Path(container_path)
+            old_format_zip_path = None
             try:
                 if not candidate.exists():
                     result.upload_failed += 1
@@ -2301,7 +2635,6 @@ class SessionLifecycleActions:
                     container_path=candidate,
                 )
 
-                old_format_zip_path = None
                 calibration_zip_paths: List[Path] = []
                 if not use_stub_h5_only:
                     try:
@@ -2313,14 +2646,14 @@ class SessionLifecycleActions:
                             kind="prepare_old_format",
                             container_path=candidate,
                         )
-                        _summary, archived_old_format_dir, old_format_zip_path, calibration_zip_paths = (
+                        _summary, old_format_group, old_format_zip_path, calibration_zip_paths = (
                             cls._prepare_old_format_payload(
                                 candidate,
                                 archive_folder=candidate.parent,
                                 config=config,
                             )
                         )
-                        result.old_format_paths.append(archived_old_format_dir)
+                        result.old_format_paths.append(old_format_group)
                     except Exception as exc:
                         result.old_format_failed.append(f"{candidate.name}: {exc}")
                         old_format_zip_path = None
@@ -2370,8 +2703,8 @@ class SessionLifecycleActions:
                         total=total_containers,
                         batch_session_cache=batch_session_cache,
                         batch_calibration_uploaded=batch_calibration_uploaded,
+                        matador_manifest_path=Path(candidate).parent / ".matador_uploaded",
                     )
-
                 if upload_result.upload_session_id and not result.upload_session_id:
                     result.upload_session_id = str(upload_result.upload_session_id)
 

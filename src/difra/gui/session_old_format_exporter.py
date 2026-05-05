@@ -4,11 +4,11 @@ import base64
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +44,7 @@ class SessionOldFormatExporter:
         "DARK": "DarkCurrent",
         "EMPTY": "EmptyBeam",
     }
+    MATRIX_BLOB_PRIORITY = ("txt", "npy", "tif", "tiff", "gfrm")
 
     @staticmethod
     def _schema_for_h5(h5f: h5py.File):
@@ -104,6 +105,105 @@ class SessionOldFormatExporter:
         buffer = io.BytesIO()
         np.save(buffer, np.asarray(array))
         return buffer.getvalue()
+
+    @classmethod
+    def _technical_container_id_from_h5(cls, h5f: h5py.File) -> str:
+        for snapshot_path in ("/entry/calibration_snapshot", "/entry/technical"):
+            snapshot = h5f.get(snapshot_path)
+            if snapshot is None:
+                continue
+            for attr_name in (
+                "source_container_id",
+                "technical_container_id",
+                "container_id",
+            ):
+                value = cls._as_text(snapshot.attrs.get(attr_name), "").strip()
+                if value:
+                    return value
+        for attr_name in ("technical_container_id", "source_container_id"):
+            value = cls._as_text(h5f.attrs.get(attr_name), "").strip()
+            if value:
+                return value
+        return ""
+
+    @classmethod
+    def _default_calibration_group_hash(
+        cls,
+        h5f: h5py.File,
+        *,
+        fallback: str,
+    ) -> str:
+        technical_id = cls._technical_container_id_from_h5(h5f)
+        if technical_id:
+            return technical_id
+        token = str(fallback or "").strip()
+        return hashlib.md5(token.encode("utf-8")).hexdigest()[:16]
+
+    @classmethod
+    def _resolve_calibration_group_hash(
+        cls,
+        h5f: h5py.File,
+        *,
+        state_payload: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None,
+        fallback: str,
+    ) -> str:
+        cfg = config or {}
+        for value in (cfg.get("matador_calibration_group_hash_override"),):
+            text = cls._as_text(value, "").strip()
+            if text:
+                return text
+        technical_id = cls._technical_container_id_from_h5(h5f)
+        if technical_id:
+            return cls._default_calibration_group_hash(h5f, fallback=fallback)
+        state_hash = cls._as_text(state_payload.get("CALIBRATION_GROUP_HASH"), "").strip()
+        if state_hash:
+            return state_hash
+        return cls._default_calibration_group_hash(h5f, fallback=fallback)
+
+    @staticmethod
+    def _raw_blob_extension(blob_name: str) -> str:
+        text = str(blob_name or "")
+        ext = text[4:] if text.startswith("raw_") else text
+        return ext.lower().lstrip(".")
+
+    @classmethod
+    def _select_matrix_payload(
+        cls,
+        *,
+        base: str,
+        processed_signal: Any,
+        raw_blobs: Dict[str, bytes],
+        require_raw_txt: bool = False,
+        require_raw_dsc: bool = False,
+    ) -> Tuple[str, bytes, Optional[str], bytes]:
+        by_ext: Dict[str, bytes] = {}
+        dsc_payload = b""
+        for blob_name, payload in sorted((raw_blobs or {}).items()):
+            ext = cls._raw_blob_extension(blob_name)
+            if ext == "dsc":
+                dsc_payload = bytes(payload)
+                continue
+            by_ext[ext] = bytes(payload)
+
+        if require_raw_txt and "txt" not in by_ext:
+            raise ValueError(f"Missing raw_txt blob for {base}")
+        if require_raw_dsc and not dsc_payload:
+            raise ValueError(f"Missing raw_dsc blob for {base}")
+
+        for ext in cls.MATRIX_BLOB_PRIORITY:
+            if ext not in by_ext:
+                continue
+            output_ext = "tiff" if ext == "tiff" else ext
+            return f"{base}.{output_ext}", by_ext[ext], output_ext, dsc_payload
+
+        return f"{base}.npy", cls._npy_bytes(processed_signal), "npy", dsc_payload
+
+    @staticmethod
+    def _measurement_dsc_sidecar_name(matrix_name: str) -> str:
+        matrix_path = Path(str(matrix_name or "measurement"))
+        base_name = matrix_path.stem if matrix_path.suffix else matrix_path.name
+        return f"{base_name}.txt.dsc"
 
     @staticmethod
     def _write_bytes_if_changed(path: Path, payload: bytes) -> bool:
@@ -775,26 +875,23 @@ class SessionOldFormatExporter:
             prefix = cls.TECH_TYPE_FILE_PREFIX.get(event_type, event_type.title() or "Tech")
 
             base = f"{prefix}_{distance_token}_{event_idx_token}_{ts_token}_{integration_token}_{alias_token}"
-            npy_name = f"{base}.npy"
-            files[npy_name] = cls._npy_bytes(event.get("processed_signal"))
-            frame_files = [npy_name]
-
             raw_blobs = event.get("raw_blobs") or {}
-            for blob_name, blob_payload in raw_blobs.items():
-                ext = str(blob_name)[4:] if str(blob_name).startswith("raw_") else str(blob_name)
-                if ext == "txt":
-                    raw_name = f"{base}.txt"
-                elif ext == "dsc":
-                    raw_name = f"{base}.txt.dsc"
-                else:
-                    raw_name = f"{base}.{ext or 'bin'}"
-                files[raw_name] = bytes(blob_payload)
-                frame_files.append(raw_name)
+            matrix_name, matrix_payload, _matrix_ext, dsc_payload = cls._select_matrix_payload(
+                base=base,
+                processed_signal=event.get("processed_signal"),
+                raw_blobs=raw_blobs,
+            )
+            files[matrix_name] = matrix_payload
+            frame_files = [matrix_name]
+            if dsc_payload:
+                dsc_name = cls._measurement_dsc_sidecar_name(matrix_name)
+                files[dsc_name] = dsc_payload
+                frame_files.append(dsc_name)
 
             poni_name = None
             poni_text = event.get("poni_text")
             if event_type == "AGBH" and poni_text is not None:
-                poni_name = f"{Path(npy_name).stem}.poni"
+                poni_name = f"{Path(matrix_name).stem}.poni"
                 files[poni_name] = cls._as_text(poni_text, "").encode("utf-8")
                 frame_files.append(poni_name)
 
@@ -818,7 +915,7 @@ class SessionOldFormatExporter:
             if existing is None or rank > existing["rank"]:
                 selected[key] = {
                     "rank": rank,
-                    "npy_name": npy_name,
+                    "matrix_name": matrix_name,
                     "poni_name": poni_name,
                     "poni_text": cls._as_text(poni_text, "") if poni_text is not None else None,
                     "integration_s": event.get("integration_s"),
@@ -842,6 +939,23 @@ class SessionOldFormatExporter:
             except Exception:
                 continue
         return text
+
+    @classmethod
+    def _distance_mm_from_token(cls, distance_token: str) -> int:
+        match = re.match(r"^\s*(\d+)\s*cm\s*$", str(distance_token or ""), re.IGNORECASE)
+        if match:
+            return int(match.group(1)) * 10
+        return 0
+
+    @classmethod
+    def _created_at_from_day_token(cls, day_token: str) -> str:
+        text = cls._as_text(day_token, "").strip()
+        for fmt in ("%Y%m%d", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+        return cls._iso_utc_now()
 
     @classmethod
     def _build_metadata_json(
@@ -873,14 +987,42 @@ class SessionOldFormatExporter:
         cls,
         *,
         distance_token: str,
+        day_token: str,
         entries: List[Dict[str, Any]],
+        calibration_group_hash: str,
+        machine_id: Optional[int] = None,
+        machine_name: str = "",
     ) -> Dict[str, Any]:
         payload_entries: List[Dict[str, Any]] = []
+        filetype_map: Dict[str, Any] = {}
+        primary_poni_text = ""
+        exposure_times = [
+            float(info["integration_s"])
+            for info in entries
+            if info.get("integration_s") is not None
+        ]
         for info in entries:
             event_type = cls._as_text(info.get("event_type"), "UNKNOWN").upper()
             alias = cls._as_text(info.get("alias"), "UNKNOWN").upper()
             selection_note = cls._as_text(info.get("selection_note"), "").strip()
             used_for_calibration = bool(info.get("is_primary"))
+            poni_text = cls._as_text(info.get("poni_text"), "")
+            if used_for_calibration and poni_text and not primary_poni_text:
+                primary_poni_text = poni_text
+            elif poni_text and not primary_poni_text:
+                primary_poni_text = poni_text
+            for file_name in list(info.get("frame_files") or []):
+                ext = Path(str(file_name)).suffix.lower()
+                if ext == ".poni":
+                    calibration_file_type = "LAB_PONI"
+                elif ext == ".dsc":
+                    calibration_file_type = f"{event_type}_DSC"
+                else:
+                    calibration_file_type = event_type
+                filetype_map[str(file_name)] = {
+                    "calibrationFileType": calibration_file_type,
+                    "detectorType": str(alias),
+                }
             payload_entries.append(
                 {
                     "scanType": cls.TECH_TYPE_METADATA_NAME.get(
@@ -904,7 +1046,28 @@ class SessionOldFormatExporter:
                     "selectionNote": selection_note or None,
                 }
             )
-        return {"distance": distance_token, "entries": payload_entries}
+        if calibration_group_hash:
+            filetype_map["CALIBRATION_GROUP_HASH"] = calibration_group_hash
+        distance_mm = cls._distance_mm_from_token(distance_token)
+        created_at = cls._created_at_from_day_token(day_token)
+        return {
+            "id": None,
+            "name": f"{distance_token}_calibration",
+            "exposureTime": exposure_times[0] if exposure_times else 0,
+            "distanceInMM": distance_mm,
+            "processingStatus": "REQUEST_FOR_VALIDATION",
+            "distance": distance_token,
+            "entries": payload_entries,
+            "filetypeMap": filetype_map,
+            "ponifile": primary_poni_text,
+            "machine": {
+                "id": machine_id,
+                "machineName": machine_name or None,
+            },
+            "createdAt": created_at,
+            "CALIBRATION_GROUP_HASH": calibration_group_hash,
+            "quantity": len([key for key in filetype_map if key != "CALIBRATION_GROUP_HASH"]),
+        }
 
     @classmethod
     def _folder_matches_data_files(cls, folder: Path, files: Dict[str, bytes]) -> bool:
@@ -1009,7 +1172,9 @@ class SessionOldFormatExporter:
         day_token: str,
         default_distance_int: int,
         calibration_group_hash: str,
+        config: Optional[Dict[str, Any]] = None,
     ) -> Tuple[int, str, Dict[Tuple[str, str], str], Dict[str, Dict[str, Any]], Optional[Path]]:
+        cfg = config or {}
         calibration_root = day_dir / "calibration"
         events, canonical_distance_int = cls._collect_technical_events(
             h5f=h5f,
@@ -1036,7 +1201,7 @@ class SessionOldFormatExporter:
         # Build technical meta payload in old format style.
         by_type_alias: Dict[str, Dict[str, str]] = {}
         for (event_type, alias), info in sorted(selected.items()):
-            by_type_alias.setdefault(event_type, {})[alias] = info["npy_name"]
+            by_type_alias.setdefault(event_type, {})[alias] = info["matrix_name"]
 
         detector_poni: Dict[str, Dict[str, Any]] = {}
         poni_lab: Dict[str, str] = {}
@@ -1084,7 +1249,16 @@ class SessionOldFormatExporter:
 
         calibration_data_payload = cls._build_calibration_data_payload(
             distance_token=distance_token,
+            day_token=day_token,
             entries=calibration_entries,
+            calibration_group_hash=calibration_group_hash,
+            machine_id=cls._safe_int(
+                h5f.attrs.get("matadorMachineId", cfg.get("matador_machine_id"))
+            ),
+            machine_name=cls._as_text(
+                h5f.attrs.get("machine_name", cfg.get("machine_name")),
+                "",
+            ).strip(),
         )
         calibration_data_path = tech_dir / "calibrationData.json"
         calibration_data_bytes = json.dumps(
@@ -1357,49 +1531,30 @@ class SessionOldFormatExporter:
                     else:
                         base = f"{sample_base_with_distance}_{ts_token}__{alias_token}_ATTENUATION0"
 
-                    npy_name = f"{base}.npy"
-                    cls._write_bytes_if_changed(
-                        sample_dir / npy_name,
-                        cls._npy_bytes(det_group[dataset_processed_signal][()]),
-                    )
-                    exported_path = str((sample_dir / npy_name).resolve())
-                    path_cache[cache_key] = exported_path
-                    exported += 1
-
                     blob_group = det_group.get("blob")
-                    has_txt_blob = False
+                    raw_blobs: Dict[str, bytes] = {}
                     if blob_group is not None:
                         for blob_name in sorted(blob_group.keys()):
                             if not str(blob_name).startswith("raw_"):
                                 continue
-                            ext = str(blob_name)[4:] or "bin"
-                            if ext == "txt":
-                                raw_name = f"{base}.txt"
-                                has_txt_blob = True
-                            elif ext == "dsc":
-                                raw_name = f"{base}.txt.dsc"
-                            else:
-                                raw_name = f"{base}.{ext}"
-                            cls._write_bytes_if_changed(
-                                sample_dir / raw_name,
-                                cls._read_blob_bytes(blob_group[blob_name]),
-                            )
-                            exported += 1
+                            raw_blobs[str(blob_name)] = cls._read_blob_bytes(blob_group[blob_name])
 
-                    if not has_txt_blob:
-                        try:
-                            txt_buffer = io.StringIO()
-                            np.savetxt(
-                                txt_buffer,
-                                np.asarray(det_group[dataset_processed_signal][()]),
-                            )
-                            cls._write_bytes_if_changed(
-                                sample_dir / f"{base}.txt",
-                                txt_buffer.getvalue().encode("utf-8"),
-                            )
-                            exported += 1
-                        except Exception:
-                            pass
+                    matrix_name, matrix_payload, _matrix_ext, dsc_payload = cls._select_matrix_payload(
+                        base=base,
+                        processed_signal=det_group[dataset_processed_signal][()],
+                        raw_blobs=raw_blobs,
+                    )
+                    matrix_path = sample_dir / matrix_name
+                    cls._write_bytes_if_changed(matrix_path, matrix_payload)
+                    exported_path = str(matrix_path.resolve())
+                    path_cache[cache_key] = exported_path
+                    exported += 1
+                    if dsc_payload:
+                        cls._write_bytes_if_changed(
+                            sample_dir / cls._measurement_dsc_sidecar_name(matrix_name),
+                            dsc_payload,
+                        )
+                        exported += 1
 
                 for point_index in point_indices:
                     point_uid = point_uid_by_session_index.get(int(point_index))
@@ -1514,44 +1669,27 @@ class SessionOldFormatExporter:
                         timestamp_token=ts_token,
                         detector_alias=detector_alias,
                     )
-                    npy_name = f"{base}.npy"
-                    txt_name = f"{base}.txt"
-
-                    npy_payload = cls._npy_bytes(det_group[dataset_processed_signal][()])
-                    cls._write_bytes_if_changed(sample_dir / npy_name, npy_payload)
-                    exported += 1
-
                     blob_group = det_group.get("blob")
-                    has_txt_blob = False
+                    raw_blobs: Dict[str, bytes] = {}
                     if blob_group is not None:
                         for blob_name in sorted(blob_group.keys()):
                             if not str(blob_name).startswith("raw_"):
                                 continue
-                            ext = str(blob_name)[4:] or "bin"
-                            if ext == "txt":
-                                raw_name = txt_name
-                                has_txt_blob = True
-                            elif ext == "dsc":
-                                raw_name = f"{base}.txt.dsc"
-                            else:
-                                raw_name = f"{base}.{ext}"
-                            cls._write_bytes_if_changed(
-                                sample_dir / raw_name,
-                                cls._read_blob_bytes(blob_group[blob_name]),
-                            )
-                            exported += 1
+                            raw_blobs[str(blob_name)] = cls._read_blob_bytes(blob_group[blob_name])
 
-                    if not has_txt_blob:
-                        # Keep old-style keying by .txt when session lacks raw txt blob.
-                        try:
-                            txt_buffer = io.StringIO()
-                            np.savetxt(txt_buffer, np.asarray(det_group[dataset_processed_signal][()]))
-                            txt_payload = txt_buffer.getvalue().encode("utf-8")
-                            cls._write_bytes_if_changed(sample_dir / txt_name, txt_payload)
-                            exported += 1
-                            has_txt_blob = True
-                        except Exception:
-                            has_txt_blob = False
+                    matrix_name, matrix_payload, _matrix_ext, dsc_payload = cls._select_matrix_payload(
+                        base=base,
+                        processed_signal=det_group[dataset_processed_signal][()],
+                        raw_blobs=raw_blobs,
+                    )
+                    cls._write_bytes_if_changed(sample_dir / matrix_name, matrix_payload)
+                    exported += 1
+                    if dsc_payload:
+                        cls._write_bytes_if_changed(
+                            sample_dir / cls._measurement_dsc_sidecar_name(matrix_name),
+                            dsc_payload,
+                        )
+                        exported += 1
 
                     integration_s = None
                     integration_ms = cls._to_float(
@@ -1561,8 +1699,8 @@ class SessionOldFormatExporter:
                         integration_s = integration_ms / 1000.0
 
                     existing_entry = (
-                        by_txt.get(txt_name)
-                        or by_npy.get(npy_name)
+                        by_txt.get(f"{base}.txt")
+                        or by_npy.get(f"{base}.npy")
                         or by_uid_alias.get((point_uid, detector_alias))
                         or by_uid_detector.get((point_uid, detector_id))
                     )
@@ -1595,8 +1733,7 @@ class SessionOldFormatExporter:
                             else:
                                 merged[state_key] = attr_value
 
-                    key_name = txt_name if has_txt_blob else npy_name
-                    measurements_meta[key_name] = merged
+                    measurements_meta[matrix_name] = merged
 
         return exported, measurements_meta
 
@@ -1653,9 +1790,12 @@ class SessionOldFormatExporter:
             measurements_root = day_dir / "measurements"
             measurements_root.mkdir(parents=True, exist_ok=True)
 
-            group_hash = cls._as_text(state_payload.get("CALIBRATION_GROUP_HASH"), "").strip()
-            if not group_hash:
-                group_hash = uuid.uuid4().hex[:16]
+            group_hash = cls._resolve_calibration_group_hash(
+                h5f,
+                state_payload=state_payload,
+                config=cfg,
+                fallback=source.stem,
+            )
             state_payload["CALIBRATION_GROUP_HASH"] = group_hash
 
             default_distance_int = cls._distance_int(
@@ -1668,6 +1808,7 @@ class SessionOldFormatExporter:
                 day_token=day_token,
                 default_distance_int=default_distance_int,
                 calibration_group_hash=group_hash,
+                config=cfg,
             )
 
             sample_folder_name = cls._derive_sample_folder_name(

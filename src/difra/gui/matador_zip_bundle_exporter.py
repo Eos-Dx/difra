@@ -404,42 +404,27 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
                             ),
                         }
 
-                    npy_name = f"{base}.npy"
-                    cls._write_bytes_if_changed(
-                        export_dir / npy_name,
-                        cls._npy_bytes(det_group[dataset_processed_signal][()]),
-                    )
-                    measurements_meta[npy_name] = dict(meta_entry)
-                    file_names.append(npy_name)
-                    exported += 1
-
                     blob_group = det_group.get("blob")
-                    if blob_group is None:
-                        continue
+                    raw_blobs: Dict[str, bytes] = {}
+                    if blob_group is not None:
+                        for blob_name in sorted(blob_group.keys()):
+                            if not str(blob_name).startswith("raw_"):
+                                continue
+                            raw_blobs[str(blob_name)] = cls._read_blob_bytes(blob_group[blob_name])
 
-                    for blob_name in sorted(blob_group.keys()):
-                        if not str(blob_name).startswith("raw_"):
-                            continue
-                        ext = str(blob_name)[4:] or "bin"
-                        if ext == "txt":
-                            raw_name = f"{base}.txt"
-                            measurements_meta[raw_name] = dict(meta_entry)
-                        elif ext == "dsc":
-                            raw_name = f"{base}.txt.dsc"
-                        elif ext in {"tif", "tiff"}:
-                            raw_name = f"{base}.tiff"
-                            measurements_meta[raw_name] = dict(meta_entry)
-                        elif ext == "gfrm":
-                            raw_name = f"{base}.gfrm"
-                            measurements_meta[raw_name] = dict(meta_entry)
-                        else:
-                            raw_name = f"{base}.{ext}"
-
-                        cls._write_bytes_if_changed(
-                            export_dir / raw_name,
-                            cls._read_blob_bytes(blob_group[blob_name]),
-                        )
-                        file_names.append(raw_name)
+                    matrix_name, matrix_payload, _matrix_ext, dsc_payload = cls._select_matrix_payload(
+                        base=base,
+                        processed_signal=det_group[dataset_processed_signal][()],
+                        raw_blobs=raw_blobs,
+                    )
+                    cls._write_bytes_if_changed(export_dir / matrix_name, matrix_payload)
+                    measurements_meta[matrix_name] = dict(meta_entry)
+                    file_names.append(matrix_name)
+                    exported += 1
+                    if dsc_payload:
+                        dsc_name = cls._measurement_dsc_sidecar_name(matrix_name)
+                        cls._write_bytes_if_changed(export_dir / dsc_name, dsc_payload)
+                        file_names.append(dsc_name)
                         exported += 1
 
         return exported, measurements_meta, file_names, machine_summary
@@ -560,6 +545,7 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
         bundle_base: str,
         distance_mm: int,
         machine_summary: Dict[str, Any],
+        calibration_group_hash: str,
     ) -> Dict[str, Any]:
         cfg = config or {}
         study_id = cls._coerce_optional_int(
@@ -665,7 +651,9 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
 
         return {
             "id": None,
+            "name": bundle_base,
             "distanceInMM": int(distance_mm),
+            "processingStatus": "REQUEST_FOR_VALIDATION",
             "study": {"id": study_id},
             "machineMeasur": {
                 "id": machine_id,
@@ -686,6 +674,7 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
             "specimen": {"id": specimen_info.get("specimen_id")},
             "createdAt": created_at,
             "measurementM": {"id": measurement_module_id},
+            "CALIBRATION_GROUP_HASH": calibration_group_hash,
         }
 
     @classmethod
@@ -785,7 +774,7 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
             calibration_group_hash = cls._as_text(
                 state_payload.get("CALIBRATION_GROUP_HASH"),
                 "",
-            ).strip() or hashlib.md5(bundle_base.encode("utf-8")).hexdigest()[:16]
+            ).strip() or cls._default_calibration_group_hash(h5f, fallback=bundle_base)
 
             raw_count, measurements_meta, raw_file_names, machine_summary = cls._export_regular_measurements(
                 h5f=h5f,
@@ -858,6 +847,7 @@ class MatadorZipBundleExporter(SessionOldFormatExporter):
                 bundle_base=bundle_base,
                 distance_mm=distance_mm,
                 machine_summary=machine_summary,
+                calibration_group_hash=calibration_group_hash,
             )
             measurement_data_path = export_dir / "measurementData.json"
             measurement_data_bytes = json.dumps(measurement_data_payload, indent=2).encode("utf-8")

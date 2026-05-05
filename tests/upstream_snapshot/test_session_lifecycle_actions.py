@@ -45,6 +45,12 @@ def _add_complete_session_payload(session_path: Path):
         measurement_data={"PRIMARY": np.ones((4, 4), dtype=np.float32)},
         detector_metadata={"PRIMARY": {"integration_time_ms": 100.0}},
         poni_alias_map={"PRIMARY": "PRIMARY"},
+        raw_files={
+            "PRIMARY": {
+                "raw_txt": b"1 2 3\n4 5 6\n",
+                "raw_dsc": b"[F0]\nType=i16\n",
+            }
+        },
     )
 
 
@@ -68,16 +74,41 @@ class _CountingMatadorUploadApi(StubMatadorUploadApi):
         return super().register_file(request)
 
 
-def test_matador_batch_group_key_is_readable_technical_id(tmp_path):
+def test_matador_batch_group_key_uses_session_bucket_and_hash_is_stable(tmp_path):
     _sid, session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A")
     with h5py.File(session_path, "a") as h5f:
         h5f.require_group("/entry/technical").attrs["source_container_id"] = (
             "technical 2cm / MOLI"
         )
 
+    group_hash = SessionLifecycleActions._read_calibration_group_hash_from_h5(session_path)
+
+    assert SessionLifecycleActions._matador_batch_group_key(session_path).startswith(
+        "session:2026-02-16:"
+    )
+    assert group_hash == "technical 2cm / MOLI"
+
+
+def test_calibration_group_hash_prefers_technical_id_over_embedded_state(tmp_path):
+    _sid_a, path_a = _create_session_file(tmp_path / "measurements", "SAMPLE_A")
+    _sid_b, path_b = _create_session_file(tmp_path / "measurements", "SAMPLE_B")
+
+    for idx, path in enumerate((path_a, path_b), start=1):
+        with h5py.File(path, "a") as h5f:
+            h5f.require_group("/entry/technical").attrs[
+                "source_container_id"
+            ] = "same_technical_container"
+            h5f.attrs["meta_json"] = json.dumps(
+                {"CALIBRATION_GROUP_HASH": f"state_hash_{idx}"}
+            )
+
     assert (
-        SessionLifecycleActions._matador_batch_group_key(session_path)
-        == "technical:technical 2cm / MOLI"
+        SessionLifecycleActions._read_calibration_group_hash_from_h5(path_a)
+        == "same_technical_container"
+    )
+    assert (
+        SessionLifecycleActions._read_calibration_group_hash_from_h5(path_b)
+        == "same_technical_container"
     )
 
 
@@ -360,7 +391,26 @@ def test_batch_send_uploads_one_calibration_for_shared_technical_container(tmp_p
     assert len(api.find_requests) == 1
     assert kinds.count("CALIBRATION") == 1
     assert kinds.count("MEASUREMENT") == 4
+    measurement_zip_names = {
+        request.file_name
+        for request in api.register_requests
+        if request.ingest_kind == "MEASUREMENT" and request.file_type == "ZIP_PAYLOAD"
+    }
+    measurement_h5_names = {
+        request.file_name
+        for request in api.register_requests
+        if request.ingest_kind == "MEASUREMENT" and request.file_type == "HDF5_CONTAINER"
+    }
+    assert {Path(name).stem for name in measurement_h5_names} == {
+        Path(name).stem for name in measurement_zip_names
+    }
     assert len(session_ids) == 1
+    manifest = json.loads((archive_folder / ".matador_uploaded").read_text(encoding="utf-8"))
+    distance_bucket = manifest["distances"]["170"]
+    assert len(distance_bucket["calibrations"]) == 1
+    calibration_key = next(iter(distance_bucket["calibrations"]))
+    assert calibration_key.endswith(":tech_shared")
+    assert distance_bucket["calibrations"][calibration_key]["uploadStatus"] == "HASH_VERIFIED"
 
 
 def test_batch_send_opens_one_matador_session_per_technical_group(tmp_path):
@@ -467,9 +517,15 @@ def test_separate_sends_reuse_existing_calibration_in_matador_session(tmp_path):
     assert kinds.count("CALIBRATION") == 1
     assert kinds.count("MEASUREMENT") == 4
     assert len(session_ids) == 1
+    manifest = json.loads((archive_folder / ".matador_uploaded").read_text(encoding="utf-8"))
+    distance_bucket = manifest["distances"]["20"]
+    assert len(distance_bucket["calibrations"]) == 1
+    calibration_key = next(iter(distance_bucket["calibrations"]))
+    assert calibration_key.endswith(":f65853c6aade40fc")
+    assert distance_bucket["calibrations"][calibration_key]["uploadStatus"] == "HASH_VERIFIED"
 
 
-def test_batch_send_does_not_share_group_without_technical_id(tmp_path):
+def test_batch_send_reuses_session_but_not_calibration_without_technical_id(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
@@ -509,11 +565,11 @@ def test_batch_send_does_not_share_group_without_technical_id(tmp_path):
 
     assert result.upload_success == 2
     assert result.upload_failed == 0
-    assert len(api.create_requests) == 2
-    assert len(api.find_requests) == 0
+    assert len(api.create_requests) == 0
+    assert len(api.find_requests) == 1
     assert kinds.count("CALIBRATION") == 2
     assert kinds.count("MEASUREMENT") == 4
-    assert len(session_ids) == 2
+    assert len(session_ids) == 1
 
 
 def test_send_and_archive_cleans_measurement_artifacts(tmp_path):

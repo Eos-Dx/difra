@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import difra.gui.main_window_ext.zone_measurements.logic.process_results_mixin as results_module
 from difra.gui.technical.widgets import DetectorProfilePreview
@@ -832,6 +833,112 @@ def test_on_capture_finished_success_without_session_spawns_postprocess(monkeypa
     assert owner._point_item.brushes
     assert owner._zone_item.brushes
     assert _FakeQTimer.calls and _FakeQTimer.calls[-1][0] == 1000
+
+
+def test_on_capture_finished_embeds_pixet_txt_and_dsc_blobs(monkeypatch, tmp_path):
+    _patch_pm(monkeypatch, with_ui=True)
+    npy_path = tmp_path / "capture_PRIMARY.npy"
+    txt_path = tmp_path / "capture_PRIMARY.txt"
+    dsc_path = tmp_path / "capture_PRIMARY.dsc"
+    np.save(npy_path, np.arange(4, dtype=np.float32).reshape(2, 2))
+    txt_path.write_text("1 2\n3 4\n", encoding="utf-8")
+    dsc_path.write_text("[F0]\nType=i16\n", encoding="utf-8")
+    complete_calls = []
+    manifest_calls = []
+
+    class _Controller:
+        def get_raw_file_patterns(self):
+            return ["*.txt", "*.dsc"]
+
+    owner = _ResultsHarness()
+    owner.current_measurement_sorted_index = 0
+    owner._current_session_point_index = lambda: 1
+    owner.sorted_indices = [0]
+    owner.session_manager = SimpleNamespace(
+        session_path="/tmp/session.h5",
+        is_session_active=lambda: True,
+        update_capture_manifest_files=lambda **kwargs: manifest_calls.append(kwargs),
+        complete_point_measurement=lambda **kwargs: complete_calls.append(kwargs) or "/entry/measurements/pt_001/meas_000000001",
+    )
+    owner.config = {"detectors": [{"alias": "PRIMARY", "id": "DET-PRIMARY"}]}
+    owner.detector_controller = {"PRIMARY": _Controller()}
+    owner.state_measurements = {
+        "measurements_meta": {},
+        "measurement_points": [{"unique_id": "1_deadbeef"}],
+    }
+    owner._x_mm = 1.0
+    owner._y_mm = 2.0
+    owner._base_name = "sample"
+    owner.integration_time = 1.0
+    owner._timestamp = "20260305_120000"
+    owner._dump_state_measurements = lambda: None
+    owner.state_path_measurements = str(tmp_path / "state.json")
+    owner.spawn_measurement_thread = lambda row, file_map: None
+    owner._point_item = _FakeBrushItem()
+    owner._zone_item = _FakeBrushItem()
+    owner.measurement_finished = lambda: None
+    owner._append_measurement_log = lambda message: None
+
+    owner.on_capture_finished(True, {"PRIMARY": str(npy_path)})
+
+    raw_files = complete_calls[0]["raw_files"]["DET-PRIMARY"]
+    assert raw_files["raw_txt"] == txt_path.read_bytes()
+    assert raw_files["raw_dsc"] == dsc_path.read_bytes()
+    raw_manifest = manifest_calls[0]["raw_files_by_alias"]["PRIMARY"]
+    assert raw_manifest["raw_txt"] == str(txt_path)
+    assert raw_manifest["raw_dsc"] == str(dsc_path)
+
+
+def test_on_capture_finished_finds_dsc_with_different_stem(monkeypatch, tmp_path):
+    _patch_pm(monkeypatch, with_ui=True)
+    npy_path = tmp_path / "measurement_PRIMARY.npy"
+    txt_path = tmp_path / "measurement_PRIMARY.txt"
+    dsc_path = tmp_path / "uuid_PRIMARY.txt.dsc"
+    np.save(npy_path, np.arange(4, dtype=np.float32).reshape(2, 2))
+    txt_path.write_text("1 2\n3 4\n", encoding="utf-8")
+    dsc_path.write_text("[F0]\nType=i16\n", encoding="utf-8")
+    complete_calls = []
+    manifest_calls = []
+
+    class _Controller:
+        def get_raw_file_patterns(self):
+            return ["*.txt", "*.dsc"]
+
+    owner = _ResultsHarness()
+    owner.current_measurement_sorted_index = 0
+    owner._current_session_point_index = lambda: 1
+    owner.sorted_indices = [0]
+    owner.session_manager = SimpleNamespace(
+        session_path="/tmp/session.h5",
+        is_session_active=lambda: True,
+        update_capture_manifest_files=lambda **kwargs: manifest_calls.append(kwargs),
+        complete_point_measurement=lambda **kwargs: complete_calls.append(kwargs) or "/entry/measurements/pt_001/meas_000000001",
+    )
+    owner.config = {"detectors": [{"alias": "PRIMARY", "id": "DET-PRIMARY"}]}
+    owner.detector_controller = {"PRIMARY": _Controller()}
+    owner.state_measurements = {
+        "measurements_meta": {},
+        "measurement_points": [{"unique_id": "1_deadbeef"}],
+    }
+    owner._x_mm = 1.0
+    owner._y_mm = 2.0
+    owner._base_name = "sample"
+    owner.integration_time = 1.0
+    owner._timestamp = "20260305_120000"
+    owner._dump_state_measurements = lambda: None
+    owner.state_path_measurements = str(tmp_path / "state.json")
+    owner.spawn_measurement_thread = lambda row, file_map: None
+    owner._point_item = _FakeBrushItem()
+    owner._zone_item = _FakeBrushItem()
+    owner.measurement_finished = lambda: None
+    owner._append_measurement_log = lambda message: None
+
+    owner.on_capture_finished(True, {"PRIMARY": str(npy_path)})
+
+    raw_files = complete_calls[0]["raw_files"]["DET-PRIMARY"]
+    assert raw_files["raw_txt"] == txt_path.read_bytes()
+    assert raw_files["raw_dsc"] == dsc_path.read_bytes()
+    assert manifest_calls[0]["raw_files_by_alias"]["PRIMARY"]["raw_dsc"] == str(dsc_path)
 
 
 def test_on_capture_finished_session_write_failure_marks_point_failed(monkeypatch):

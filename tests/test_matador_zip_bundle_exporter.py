@@ -249,6 +249,57 @@ def _create_session_with_duplicate_measurement_name_risk(tmp_path: Path) -> Path
     return Path(session_path)
 
 
+def _create_session_without_raw_txt(tmp_path: Path) -> Path:
+    technical_dir = tmp_path / "technical_no_txt"
+    measurements_dir = tmp_path / "measurements_no_txt"
+
+    _tech_id, tech_path = technical_container.create_technical_container(
+        folder=technical_dir,
+        distance_cm=17.0,
+    )
+    technical_container.write_detector_config(
+        file_path=tech_path,
+        detectors_config=[
+            {
+                "id": "DET-PRIMARY",
+                "alias": "PRIMARY",
+                "type": "Pixet",
+                "size": {"width": 4, "height": 4},
+                "pixel_size_um": [55.0, 55.0],
+            }
+        ],
+        active_detector_ids=["DET-PRIMARY"],
+    )
+
+    _sid, session_path = session_writer.create_session_container(
+        folder=measurements_dir,
+        sample_id="378897__377557",
+        study_name="STUDY_MATADOR",
+        operator_id="339001",
+        site_id="ULSTER",
+        machine_name="XENA",
+        beam_energy_keV=17.5,
+        acquisition_date="2026-03-31",
+        patient_id="377557",
+    )
+    session_writer.copy_technical_to_session(tech_path, session_path)
+    session_writer.add_point(
+        file_path=session_path,
+        point_index=1,
+        pixel_coordinates=[123.0, 456.0],
+        physical_coordinates_mm=[1.25, 2.5],
+    )
+    session_writer.add_measurement(
+        file_path=session_path,
+        point_index=1,
+        measurement_data={"DET-PRIMARY": np.arange(16).reshape(4, 4).astype(np.float32)},
+        detector_metadata={"DET-PRIMARY": {"integration_time_ms": 5000.0}},
+        poni_alias_map={"PRIMARY": "DET-PRIMARY"},
+        raw_files={"DET-PRIMARY": {"raw_dsc": b"[F0]\nType=i16\n"}},
+    )
+    return Path(session_path)
+
+
 def test_export_bundle_creates_flat_payload_and_keeps_attenuation(tmp_path: Path):
     session_path = _create_session_with_measurements_and_attenuation(tmp_path)
 
@@ -290,6 +341,9 @@ def test_export_bundle_creates_flat_payload_and_keeps_attenuation(tmp_path: Path
 
     measurement_data = json.loads(summary.measurement_data_path.read_text(encoding="utf-8"))
     assert measurement_data["distanceInMM"] == 170
+    assert measurement_data["name"] == measurement_data["measurementName"]
+    assert measurement_data["processingStatus"] == "REQUEST_FOR_VALIDATION"
+    assert measurement_data["CALIBRATION_GROUP_HASH"]
     assert measurement_data["study"]["id"] == 377501
     assert measurement_data["machineMeasur"]["id"] == 1251
     assert measurement_data["patient"]["id"] == 377557
@@ -309,6 +363,19 @@ def test_export_bundle_keeps_measurement_filenames_unique_when_point_and_time_ma
 
     assert len(txt_files) == 2
     assert len(set(txt_files)) == 2
-    assert len(npy_files) == 2
-    assert len(set(npy_files)) == 2
+    assert len(npy_files) == 0
     assert any("_meas_" in name for name in txt_files)
+
+
+def test_export_bundle_uses_npy_when_raw_txt_is_missing(tmp_path: Path):
+    session_path = _create_session_without_raw_txt(tmp_path)
+
+    summary = MatadorZipBundleExporter.export_from_session_container(
+        session_path,
+        target_root=tmp_path / "bundle_root_no_txt",
+    )
+
+    files = sorted(path.name for path in summary.export_dir.iterdir() if path.is_file())
+
+    assert any(name.endswith(".npy") for name in files)
+    assert not any(name.endswith(".txt") for name in files)
