@@ -692,6 +692,8 @@ def test_capture_attenuation_background_saves_results_and_records_session(monkey
     assert logs[-1] == "I0 saved for 1 detector(s)"
     assert session_calls and session_calls[0]["mode"] == "without"
     assert "A1" in session_calls[0]["measurement_data"]
+    assert session_calls[0]["raw_files"]["A1"]["raw_txt"] == out_npy.with_suffix(".txt").read_bytes()
+    assert session_calls[0]["raw_files"]["A1"]["raw_dsc"] == Path(str(out_npy.with_suffix(".txt")) + ".dsc").read_bytes()
     assert any("I0 saved to session container" in entry for entry in session_logs)
 
 
