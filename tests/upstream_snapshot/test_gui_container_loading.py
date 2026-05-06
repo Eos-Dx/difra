@@ -2105,6 +2105,96 @@ def test_replacement_archive_remaps_aux_table_h5refs_to_archived_file(qapp, tmp_
     assert source_info.get("container_path") == str(archived_path)
 
 
+def test_replacement_archive_folder_uses_technical_filename_stem(qapp, tmp_path):
+    technical_folder = tmp_path / "technical_replace_stem_folder"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+    lock_container(tech_path, user_id="sad")
+
+    harness = _TechnicalLoadHarness(
+        config={"technical_archive_folder": str(archive_folder)},
+        work_dir=technical_folder,
+    )
+
+    archived_path = harness._archive_existing_technical_container_for_replacement(
+        tech_path
+    )
+
+    expected_prefix = harness._safe_archive_token(tech_path.stem, "technical")
+    assert archived_path.parent.name.startswith(f"{expected_prefix}_")
+
+
+def test_replacement_archive_reuses_lock_companion_folder(qapp, tmp_path):
+    technical_folder = tmp_path / "technical_replace_companion"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+    raw_path = technical_folder / "archive_me.txt"
+    raw_path.write_text("raw", encoding="utf-8")
+
+    companion_dir = archive_folder / (
+        f"{_TechnicalLoadHarness._safe_archive_token(tech_path.stem, 'technical')}_"
+        "sad_20260213_120000"
+    )
+    companion_dir.mkdir(parents=True, exist_ok=True)
+    moved_raw = companion_dir / raw_path.name
+    shutil.move(str(raw_path), str(moved_raw))
+    with h5py.File(tech_path, "a") as h5f:
+        h5f["/entry/technical/tech_evt_000001/det_primary"].attrs["source_file"] = str(moved_raw)
+    lock_container(tech_path, user_id="sad")
+
+    harness = _TechnicalLoadHarness(
+        config={"technical_archive_folder": str(archive_folder)},
+        work_dir=technical_folder,
+    )
+
+    archived_path = harness._archive_existing_technical_container_for_replacement(
+        tech_path
+    )
+
+    assert archived_path.parent == companion_dir
+    assert moved_raw.exists()
+
+
+def test_lock_container_archives_companions_to_technical_filename_stem_folder(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+
+    technical_folder = tmp_path / "technical_lock_companions"
+    archive_folder = tmp_path / "archive" / "technical"
+    tech_path = _make_technical_container(technical_folder)
+    raw_path = technical_folder / "archive_me.txt"
+    raw_path.write_text("raw", encoding="utf-8")
+
+    harness = _TechnicalLoadHarness(
+        config={
+            "technical_archive_folder": str(archive_folder),
+            "technical_archive_patterns": ["*.txt"],
+            "operator_id": "sad",
+        },
+        work_dir=technical_folder,
+    )
+    harness._ensure_poni_before_lock = lambda *_args, **_kwargs: True
+    harness._validate_container_before_lock = lambda *_args, **_kwargs: True
+    harness._confirm_poni_center_preview_before_lock = lambda *_args, **_kwargs: True
+
+    with h5py.File(tech_path, "r") as h5f:
+        container_id = str(h5f.attrs["container_id"])
+
+    locked = h5_management_lock_actions.lock_container(
+        harness,
+        str(tech_path),
+        container_id,
+    )
+
+    assert locked is True
+    archive_dirs = [path for path in archive_folder.iterdir() if path.is_dir()]
+    assert len(archive_dirs) == 1
+    expected_prefix = harness._safe_archive_token(tech_path.stem, "technical")
+    assert archive_dirs[0].name.startswith(f"{expected_prefix}_")
+    assert (archive_dirs[0] / raw_path.name).exists()
+
+
 def test_archive_active_container_locks_then_archives_container_and_related_files(
     qapp, tmp_path, monkeypatch
 ):
