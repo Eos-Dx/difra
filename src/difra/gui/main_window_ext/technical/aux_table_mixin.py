@@ -354,6 +354,16 @@ class TechnicalAuxTableMixin:
         finally:
             self._restoring_aux_table = False
 
+        # Recovery workflow step: ask distances before writing reconstructed rows.
+        configure_distances = getattr(self, "configure_detector_distances", None)
+        if callable(configure_distances):
+            try:
+                setattr(self, "_suppress_distance_auto_container_creation", True)
+                configure_distances()
+                setattr(self, "_use_draft_distances_for_next_sync", True)
+            finally:
+                setattr(self, "_suppress_distance_auto_container_creation", False)
+
         if hasattr(self, "_sync_active_technical_container_from_table"):
             setattr(self, "_skip_distance_prompt_once", True)
             try:
@@ -384,22 +394,8 @@ class TechnicalAuxTableMixin:
             self,
             "Recovery Mode",
             "Technical files were loaded in recovery mode.\n\n"
-            "Next steps: confirm distances, then load PONI files.",
+            "Next step: load PONI files.",
         )
-
-        # Recovery workflow step: ask distances after file-based reconstruction.
-        configure_distances = getattr(self, "configure_detector_distances", None)
-        if callable(configure_distances):
-            try:
-                setattr(self, "_suppress_distance_auto_container_creation", True)
-                configure_distances()
-            finally:
-                setattr(self, "_suppress_distance_auto_container_creation", False)
-            sync_state = getattr(self, "_sync_container_state", None)
-            if callable(sync_state):
-                active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
-                if active_path:
-                    sync_state(Path(active_path), reason="recovery_distances_step")
 
         update_poni = getattr(self, "update_active_technical_container_poni", None)
         if callable(update_poni):

@@ -275,6 +275,10 @@ def _ensure_distances_configured(owner, *, action_name: str) -> bool:
             configure_distances()
         finally:
             setattr(owner, "_suppress_distance_auto_container_creation", False)
+        sync_table = getattr(owner, "_sync_active_technical_container_from_table", None)
+        if callable(sync_table):
+            setattr(owner, "_use_draft_distances_for_next_sync", True)
+            sync_table(show_errors=True)
 
     distance_map = {}
     if callable(get_distance_map):

@@ -337,6 +337,22 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     assert any(name.startswith("technical_meta_") for name in calibration_manifest["fileNames"])
 
 
+def test_export_session_to_old_format_uses_root_distance_for_calibration_folder(tmp_path):
+    session_path = _create_session_with_technical_and_measurement(tmp_path, tag="root_distance")
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["distance_cm"] = 2.0
+    old_format_root = tmp_path / "Data" / "difra" / "Old_format"
+
+    summary = SessionOldFormatExporter.export_from_session_container(
+        session_path,
+        config={"old_format_export_folder": str(old_format_root)},
+    )
+
+    calibration_root = summary.export_dir / "calibration"
+    assert (calibration_root / "2cm").exists()
+    assert not (calibration_root / "17cm").exists()
+
+
 def test_export_session_to_old_format_keeps_measurement_filenames_unique(tmp_path):
     session_path = _create_session_with_technical_and_measurement(
         tmp_path,

@@ -747,6 +747,7 @@ class SessionLifecycleActions:
         *,
         archive_folder: Path,
         config: Optional[Dict[str, Any]] = None,
+        persist_old_format: bool = True,
     ):
         stamp = time.strftime("%Y%m%d_%H%M%S")
         payload_names = cls._read_upload_payload_names(Path(session_path))
@@ -815,6 +816,9 @@ class SessionLifecycleActions:
                 exc_info=True,
             )
 
+        if not persist_old_format:
+            return summary, None, zip_path, calibration_zip_paths
+
         old_format_root = cls._resolve_old_format_archive_root(
             config=config,
             archive_folder=archive_folder,
@@ -828,7 +832,8 @@ class SessionLifecycleActions:
         except FileNotFoundError:
             pass
 
-        for child in sorted(old_format_root.iterdir()):
+        old_format_group = old_format_root / export_dir.name
+        for child in [old_format_group] if old_format_group.exists() else []:
             try:
                 if child.is_dir():
                     shutil.rmtree(child)
@@ -841,7 +846,6 @@ class SessionLifecycleActions:
                     exc_info=True,
                 )
 
-        old_format_group = old_format_root / export_dir.name
         old_format_group.mkdir(parents=True, exist_ok=True)
         old_format_measurements_root = old_format_group / "measurements"
         old_format_measurements_root.mkdir(parents=True, exist_ok=True)
@@ -2197,6 +2201,7 @@ class SessionLifecycleActions:
             export_old_format = bool(
                 (config or {}).get("enable_old_format_export", True)
             )
+        persist_old_format = bool((config or {}).get("persist_old_format_export", False))
         resolved_uploader_id = cls._resolve_uploader_id(
             explicit_uploader_id=uploader_id,
             lock_user=lock_user,
@@ -2301,9 +2306,11 @@ class SessionLifecycleActions:
                                 candidate,
                                 archive_folder=archive_folder,
                                 config=config,
+                                persist_old_format=persist_old_format,
                             )
                         )
-                        result.old_format_paths.append(old_format_group)
+                        if old_format_group is not None:
+                            result.old_format_paths.append(old_format_group)
                         cls._notify_progress(
                             progress_callback,
                             message=f"[{item_index}/{total_containers}] {candidate.name}: ZIP folder with old-format data is ready.",
@@ -2560,6 +2567,7 @@ class SessionLifecycleActions:
             export_old_format = bool(
                 (config or {}).get("enable_old_format_export", True)
             )
+        persist_old_format = bool((config or {}).get("persist_old_format_export", False))
 
         resolved_uploader_id = cls._resolve_uploader_id(
             explicit_uploader_id=uploader_id,
@@ -2651,9 +2659,11 @@ class SessionLifecycleActions:
                                 candidate,
                                 archive_folder=candidate.parent,
                                 config=config,
+                                persist_old_format=persist_old_format,
                             )
                         )
-                        result.old_format_paths.append(old_format_group)
+                        if old_format_group is not None:
+                            result.old_format_paths.append(old_format_group)
                     except Exception as exc:
                         result.old_format_failed.append(f"{candidate.name}: {exc}")
                         old_format_zip_path = None

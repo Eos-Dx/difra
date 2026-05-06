@@ -918,6 +918,29 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
                 f"Technical container is not locked: {tech_path}\n"
                 "Please lock the technical container before creating sessions."
             )
+
+        try:
+            with h5py.File(tech_path, "r") as technical_file:
+                technical_distance_cm = float(
+                    technical_file.attrs[self.schema.ATTR_DISTANCE_CM]
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Technical container has no readable root distance_cm: {tech_path}"
+            ) from exc
+
+        try:
+            requested_distance_cm = float(distance_cm)
+            if abs(requested_distance_cm - technical_distance_cm) > 1e-6:
+                logger.warning(
+                    "Session distance overridden by selected technical container",
+                    requested_distance_cm=requested_distance_cm,
+                    technical_distance_cm=technical_distance_cm,
+                    technical_container=str(tech_path),
+                )
+        except Exception:
+            pass
+        distance_cm = technical_distance_cm
         
         # Build session attributes from provided kwargs and config defaults
         # Required attributes from schema
