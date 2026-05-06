@@ -1023,13 +1023,13 @@ class SessionLifecycleActions:
         }
 
     @classmethod
-    def _matador_session_has_reusable_file(
+    def _matador_find_reusable_file(
         cls,
         upload_api: Any,
         *,
         ingest_session_id: int,
         file_name: str,
-    ) -> bool:
+    ) -> Optional[Any]:
         try:
             session_files = upload_api.list_session_files(int(ingest_session_id))
         except Exception:
@@ -1037,14 +1037,14 @@ class SessionLifecycleActions:
                 "Failed to list Matador ingest session files before calibration upload",
                 exc_info=True,
             )
-            return False
+            return None
         target_name = str(file_name or "").strip()
         for status in session_files:
             if str(getattr(status, "file_name", "") or "").strip() != target_name:
                 continue
             if cls._uploaded_file_is_reusable(status):
-                return True
-        return False
+                return status
+        return None
 
     @staticmethod
     def _matador_manifest_now() -> str:
@@ -1369,7 +1369,52 @@ class SessionLifecycleActions:
         calibration_zip_paths_to_upload: List[Path] = []
         if upload_calibration:
             for calibration_zip_path in calibration_zip_paths:
-                calibration_zip_paths_to_upload.append(Path(calibration_zip_path))
+                calibration_zip_path = Path(calibration_zip_path)
+                reusable_status = cls._matador_find_reusable_file(
+                    upload_backend,
+                    ingest_session_id=int(ingest_session.id),
+                    file_name=calibration_zip_path.name,
+                )
+                if reusable_status is not None:
+                    remote_sha256 = (
+                        str(getattr(reusable_status, "actual_sha256", "") or "").strip()
+                        or str(getattr(reusable_status, "expected_sha256", "") or "").strip()
+                        or sha256_file(calibration_zip_path)
+                    )
+                    cls._record_matador_uploaded_file(
+                        manifest_path=matador_manifest_path,
+                        session_metadata=session_metadata,
+                        session_id=int(ingest_session.id),
+                        file_path=calibration_zip_path,
+                        file_id=int(getattr(reusable_status, "id")),
+                        file_type=str(
+                            getattr(reusable_status, "file_type", "") or "ZIP_PAYLOAD"
+                        ),
+                        ingest_kind="CALIBRATION",
+                        sha256=remote_sha256,
+                        size_bytes=int(calibration_zip_path.stat().st_size),
+                        upload_status=str(getattr(reusable_status, "upload_status", "")),
+                        processing_status=str(
+                            getattr(reusable_status, "processing_status", "") or ""
+                        ),
+                        calibration_key=calibration_manifest_key,
+                    )
+                    if batch_calibration_uploaded is not None:
+                        batch_calibration_uploaded.add(calibration_manifest_key)
+                    cls._notify_progress(
+                        progress_callback,
+                        message=(
+                            f"{Path(archived_path).name}: Calibration already present "
+                            f"in Matador session {ingest_session.id}; reusing file "
+                            f"{int(getattr(reusable_status, 'id'))}."
+                        ),
+                        current=current,
+                        total=total,
+                        kind="skip_calibration_remote",
+                        container_path=Path(archived_path),
+                    )
+                    continue
+                calibration_zip_paths_to_upload.append(calibration_zip_path)
 
         for calibration_zip_path in calibration_zip_paths_to_upload:
             calibration_checksum = sha256_file(Path(calibration_zip_path))
