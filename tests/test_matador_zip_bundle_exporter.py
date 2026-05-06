@@ -105,6 +105,12 @@ def _create_session_with_measurements_and_attenuation(tmp_path: Path) -> Path:
         poni_alias_map={"PRIMARY": "DET-PRIMARY"},
         analysis_type="attenuation",
         analysis_role="i0",
+        raw_files={
+            "DET-PRIMARY": {
+                "raw_txt": b"i0 txt\n",
+                "raw_dsc": b"i0 dsc\n",
+            }
+        },
         timestamp_start="2026-03-31 10:10:00",
     )
     i_path = session_writer.add_analytical_measurement(
@@ -120,6 +126,12 @@ def _create_session_with_measurements_and_attenuation(tmp_path: Path) -> Path:
         poni_alias_map={"PRIMARY": "DET-PRIMARY"},
         analysis_type="attenuation",
         analysis_role="i",
+        raw_files={
+            "DET-PRIMARY": {
+                "raw_txt": b"i txt\n",
+                "raw_dsc": b"i dsc\n",
+            }
+        },
         timestamp_start="2026-03-31 10:11:00",
     )
     session_writer.link_analytical_measurement_to_point(
@@ -313,7 +325,6 @@ def test_export_bundle_creates_flat_payload_and_keeps_attenuation(tmp_path: Path
     assert "metadata.json" in files
     assert "measurementData.json" in files
     assert any(name.endswith("_state.json") for name in files)
-    assert any(name.endswith(".npy") for name in files)
     assert any(name.endswith(".txt") for name in files)
     assert any(name.endswith(".txt.dsc") for name in files)
     assert any("ATTENUATION" in name for name in files)
@@ -328,7 +339,9 @@ def test_export_bundle_creates_flat_payload_and_keeps_attenuation(tmp_path: Path
     assert "poni_path" not in state["detector_poni"]["PRIMARY"]
     assert "file_path" not in state["technical_aux"][0]
     attenuation_file = state["attenuation_files"]["7ccbcf0e1c85fa4c"]["without_sample"]["PRIMARY"]
-    assert attenuation_file.endswith(".npy")
+    assert attenuation_file.endswith(".txt")
+    assert Path(attenuation_file).name in files
+    assert f"{Path(attenuation_file).name}.dsc" in files
     assert "/" not in attenuation_file
 
     manifest = json.loads(summary.metadata_path.read_text(encoding="utf-8"))

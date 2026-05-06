@@ -313,6 +313,7 @@ array
         poni_alias_map: Dict[str, str],
         analysis_type: str,
         analysis_role: str = None,
+        raw_files: Optional[Dict[str, Dict[str, bytes]]] = None,
         timestamp_start: Optional[str] = None,
         timestamp_end: Optional[str] = None,
     ) -> str:
@@ -340,6 +341,7 @@ array
             poni_alias_map=poni_alias_map,
             analysis_type=analysis_type,
             analysis_role=analysis_role or self.schema.ANALYSIS_ROLE_UNSPECIFIED,
+            raw_files=raw_files,
             timestamp_start=timestamp_start,
             timestamp_end=timestamp_end,
         )

@@ -348,6 +348,7 @@ def test_session_manager_attenuation_workflow(temp_dir, technical_container):
         measurement_data=i0_data,
         detector_metadata=i0_metadata,
         poni_alias_map={"DET1": "DET1"},
+        raw_files={"DET1": {"raw_txt": b"i0 txt", "raw_dsc": b"i0 dsc"}},
         mode="without",
     )
     
@@ -362,6 +363,7 @@ def test_session_manager_attenuation_workflow(temp_dir, technical_container):
         measurement_data=i_data,
         detector_metadata=i_metadata,
         poni_alias_map={"DET1": "DET1"},
+        raw_files={"DET1": {"raw_txt": b"i txt", "raw_dsc": b"i dsc"}},
         mode="with",
     )
     
@@ -380,6 +382,8 @@ def test_session_manager_attenuation_workflow(temp_dir, technical_container):
         assert session_file[i_path].attrs[schema.ATTR_ANALYSIS_TYPE] == schema.ANALYSIS_TYPE_ATTENUATION
         assert session_file[i0_path].attrs[schema.ATTR_ANALYSIS_ROLE] == schema.ANALYSIS_ROLE_I0
         assert session_file[i_path].attrs[schema.ATTR_ANALYSIS_ROLE] == schema.ANALYSIS_ROLE_I
+        assert sorted(session_file[f"{i0_path}/det_det1/blob"].keys()) == ["raw_dsc", "raw_txt"]
+        assert sorted(session_file[f"{i_path}/det_det1/blob"].keys()) == ["raw_dsc", "raw_txt"]
 
         assert schema.ATTR_ANALYTICAL_MEASUREMENT_IDS in session_file[pt_path].attrs
         linked_ids = list(session_file[pt_path].attrs[schema.ATTR_ANALYTICAL_MEASUREMENT_IDS])

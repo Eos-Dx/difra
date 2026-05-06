@@ -63,6 +63,59 @@ def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = T
             shutil.copy2(src_dsc, dst_dsc)
 
 
+def _find_capture_dsc(folder: Path, *, base_name: str, alias: str, reference_path: Path) -> Path | None:
+    candidates = [
+        folder / f"{base_name}.txt.dsc",
+        folder / f"{base_name}.dsc",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    alias_token = str(alias or "").strip().upper()
+    nearby = []
+    for candidate in folder.glob("*.dsc"):
+        if alias_token and alias_token not in candidate.name.upper():
+            continue
+        nearby.append(candidate)
+    if not nearby:
+        return None
+
+    try:
+        reference_mtime = reference_path.stat().st_mtime
+    except (OSError, RuntimeError):
+        return sorted(nearby, key=lambda path: path.name)[0]
+    return min(nearby, key=lambda path: abs(path.stat().st_mtime - reference_mtime))
+
+
+def _read_capture_raw_sidecars(npy_file: str, alias: str) -> tuple[dict, dict]:
+    npy_path = Path(npy_file)
+    folder = npy_path.parent
+    base_name = npy_path.stem
+    raw_files = {}
+    raw_paths = {}
+
+    txt_path = next(
+        (path for path in (folder / f"{base_name}.txt", folder / base_name) if path.exists()),
+        None,
+    )
+    if txt_path is not None:
+        raw_files["raw_txt"] = txt_path.read_bytes()
+        raw_paths["raw_txt"] = str(txt_path)
+
+    dsc_path = _find_capture_dsc(
+        folder,
+        base_name=base_name,
+        alias=alias,
+        reference_path=npy_path,
+    )
+    if dsc_path is not None:
+        raw_files["raw_dsc"] = dsc_path.read_bytes()
+        raw_paths["raw_dsc"] = str(dsc_path)
+
+    return raw_files, raw_paths
+
+
 class ZoneMeasurementsProcessCaptureMixin:
     def _start_capture_progress_logging(
         self,
@@ -649,6 +702,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                     measurement_data = {}
                     detector_metadata = {}
                     poni_alias_map = {}
+                    raw_files_by_detector_id = {}
                     for alias, signal in all_data.items():
                         detector_meta = detector_lookup.get(alias, {})
                         detector_id = detector_meta.get("id", alias)
@@ -661,11 +715,18 @@ class ZoneMeasurementsProcessCaptureMixin:
                             "n_frames": frames,
                         }
                         poni_alias_map[alias] = detector_id
+                        raw_files, _raw_paths = _read_capture_raw_sidecars(
+                            results[alias],
+                            alias,
+                        )
+                        if raw_files:
+                            raw_files_by_detector_id[detector_id] = raw_files
 
                     self.session_manager.add_attenuation_measurement(
                         measurement_data=measurement_data,
                         detector_metadata=detector_metadata,
                         poni_alias_map=poni_alias_map,
+                        raw_files=raw_files_by_detector_id,
                         mode="without",
                     )
                     pm.logger.info("Added I₀ (without sample) to session container", detectors=list(all_data.keys()))
@@ -797,6 +858,7 @@ class ZoneMeasurementsProcessCaptureMixin:
                         measurement_data = {}
                         detector_metadata = {}
                         poni_alias_map = {}
+                        raw_files_by_detector_id = {}
                         for alias, signal in all_data.items():
                             detector_meta = detector_lookup.get(alias, {})
                             detector_id = detector_meta.get("id", alias)
@@ -809,11 +871,18 @@ class ZoneMeasurementsProcessCaptureMixin:
                                 "n_frames": frames,
                             }
                             poni_alias_map[alias] = detector_id
+                            raw_files, _raw_paths = _read_capture_raw_sidecars(
+                                moved_map[alias],
+                                alias,
+                            )
+                            if raw_files:
+                                raw_files_by_detector_id[detector_id] = raw_files
 
                         self.session_manager.add_attenuation_measurement(
                             measurement_data=measurement_data,
                             detector_metadata=detector_metadata,
                             poni_alias_map=poni_alias_map,
+                            raw_files=raw_files_by_detector_id,
                             mode="with",
                         )
                         session_point_index = self._current_session_point_index()

@@ -124,6 +124,7 @@ class SessionManagerMeasurementOpsMixin:
         detector_metadata: Dict,
         poni_alias_map: Dict,
         mode: str,  # "without" or "with"
+        raw_files: Dict | None = None,
     ) -> int:
         """Add attenuation measurement (I₀ or I) to session container."""
         self._check_active()
@@ -139,6 +140,7 @@ class SessionManagerMeasurementOpsMixin:
                 if mode == "without"
                 else self.schema.ANALYSIS_ROLE_I
             ),
+            raw_files=raw_files,
             timestamp_start=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
