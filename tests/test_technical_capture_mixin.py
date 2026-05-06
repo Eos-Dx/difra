@@ -237,6 +237,26 @@ def test_technical_capture_base_stem_includes_distance_and_contract_order():
     assert stem == "AgBH_17cm_003_20260506_085558_1.000000s_1frames"
 
 
+def test_technical_capture_distance_prefers_active_container_root_attr(tmp_path):
+    harness = _Harness()
+    harness._detector_distances = {"SAXS": 17.0}
+    container_path = tmp_path / "technical_abc_2cm_20260506.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        h5f.attrs["distance_cm"] = 2.0
+    harness._active_technical_container_path = str(container_path)
+
+    stem = harness._technical_capture_base_stem(
+        typ="AGBH",
+        count=1,
+        timestamp_token="20260506_085558",
+        integration_time_s=1.0,
+        frames=1,
+    )
+
+    assert "_2cm_003_" in stem
+    assert "_17cm_" not in stem
+
+
 def test_start_capture_passes_distance_aware_base_to_worker(monkeypatch):
     _FakeWorker.instances.clear()
     _patch_tm(monkeypatch)

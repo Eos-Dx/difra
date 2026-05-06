@@ -233,11 +233,14 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
         owner.config if hasattr(owner, "config") else None
     )
 
-    root_distance_cm = (
-        float(next(iter(distances_by_alias.values())))
-        if distances_by_alias
-        else float((owner.config or {}).get("default_technical_distance_cm", 17.0))
-    )
+    def _root_distance_cm(distance_map):
+        return (
+            float(next(iter(distance_map.values())))
+            if distance_map
+            else float((owner.config or {}).get("default_technical_distance_cm", 17.0))
+        )
+
+    root_distance_cm = _root_distance_cm(distances_by_alias)
     storage_containers = owner._list_storage_technical_containers(storage_folder)
     active_path = owner._active_technical_container_path_obj()
 
@@ -329,6 +332,7 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
             refreshed_distances = owner._distance_map_by_alias()
         except Exception:
             refreshed_distances = {}
+        root_distance_cm = _root_distance_cm(refreshed_distances)
         if refreshed_distances:
             owner._log_technical_event(
                 f"Detector distances confirmed before new container creation: {refreshed_distances}"
