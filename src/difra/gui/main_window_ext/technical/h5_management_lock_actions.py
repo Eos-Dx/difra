@@ -67,6 +67,14 @@ from difra.gui.container_api import get_container_manager
 logger = logging.getLogger(__name__)
 
 
+def _safe_archive_token(value: str, fallback: str = "unknown") -> str:
+    token = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_"
+        for ch in str(value or "")
+    ).strip("_")
+    return token or fallback
+
+
 def _rewrite_technical_source_paths(container_path: Path, archive_folder: Path) -> int:
     """Repoint embedded source_file/source_ref attrs to archived raw files."""
     import h5py
@@ -407,7 +415,10 @@ def archive_existing_containers(owner, storage_folder: str) -> int:
                 archive_base,
             )
             if archive_folder is None:
-                archive_folder = archive_base / f"{container_id}_{archive_operator}_{timestamp}"
+                archive_folder = archive_base / (
+                    f"{_safe_archive_token(h5_file.stem, 'technical')}_"
+                    f"{archive_operator}_{timestamp}"
+                )
                 archive_folder.mkdir(parents=True, exist_ok=True)
             else:
                 archive_folder.mkdir(parents=True, exist_ok=True)
@@ -469,6 +480,15 @@ def archive_existing_containers(owner, storage_folder: str) -> int:
                 )
 
                 if raw_file_count > 0:
+                    try:
+                        _rewrite_technical_source_paths(dest_h5, archive_folder)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to rewrite archived source paths for %s: %s",
+                            dest_h5,
+                            exc,
+                            exc_info=True,
+                        )
                     owner._log_technical_event(
                         f"Archived {raw_file_count} data file(s) with container"
                     )
@@ -1041,7 +1061,10 @@ def lock_container(owner, container_path: str, container_id: str):
                 ).strip("_")
                 or "unknown"
             )
-            archive_subdir = archive_folder / f"{container_id}_{operator_token}_{timestamp}"
+            archive_subdir = archive_folder / (
+                f"{_safe_archive_token(Path(container_path).stem, 'technical')}_"
+                f"{operator_token}_{timestamp}"
+            )
 
             file_patterns = None
             if hasattr(owner, "config") and owner.config:

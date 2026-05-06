@@ -551,16 +551,15 @@ class H5ManagementLoadingMixin:
         )
         if archive_dir is None:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
+            container_token = self._safe_archive_token(Path(existing_path).stem, "technical")
             archive_dir = archive_base / (
-                f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
-                f"{operator_token}_{timestamp}"
+                f"{container_token}_{operator_token}_{timestamp}"
             )
             suffix = 1
             while archive_dir.exists():
                 suffix += 1
                 archive_dir = archive_base / (
-                    f"{self._safe_archive_token(Path(existing_path).stem, 'technical')}_"
-                    f"{operator_token}_{timestamp}_{suffix}"
+                    f"{container_token}_{operator_token}_{timestamp}_{suffix}"
                 )
             archive_dir.mkdir(parents=True, exist_ok=False)
         else:
@@ -605,6 +604,17 @@ class H5ManagementLoadingMixin:
                     exc_info=True,
                 )
         if archived_count > 0:
+            try:
+                from .h5_management_lock_actions import _rewrite_technical_source_paths
+
+                _rewrite_technical_source_paths(destination, archive_dir)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to rewrite archived technical source paths for %s: %s",
+                    destination,
+                    exc,
+                    exc_info=True,
+                )
             self._log_technical_event(
                 f"Archived {archived_count} technical companion file(s) to {archive_dir.name}"
             )
