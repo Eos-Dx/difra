@@ -442,6 +442,7 @@ class TechnicalPanelMixin:
         )
 
         if dialog.exec_() == tm.QDialog.Accepted:
+            previous_distances = getattr(self, "_detector_distances", {})
             distances = dialog.get_distances()
             self._detector_distances = distances
 
@@ -449,14 +450,20 @@ class TechnicalPanelMixin:
                 f"{d.get('alias', d['id'])}: {distances.get(d['id'], 'N/A')} cm"
                 for d in active_detector_configs
             )
+            if hasattr(self, "_on_detector_distances_updated"):
+                try:
+                    setattr(self, "_skip_distance_prompt_once", True)
+                    self._on_detector_distances_updated()
+                except Exception as exc:
+                    self._detector_distances = previous_distances
+                    logger.warning("Distance update hook failed: %s", exc, exc_info=True)
+                    return
+                finally:
+                    setattr(self, "_skip_distance_prompt_once", False)
+
             self._log_technical_event(f"Configured distances: {dist_str}")
             self._update_window_title_with_distances()
             self._update_distance_dependent_controls()
-            if hasattr(self, "_on_detector_distances_updated"):
-                try:
-                    self._on_detector_distances_updated()
-                except Exception as exc:
-                    logger.warning("Distance update hook failed: %s", exc, exc_info=True)
 
             tm.QMessageBox.information(
                 self,

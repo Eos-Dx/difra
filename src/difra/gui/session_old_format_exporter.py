@@ -1211,6 +1211,12 @@ class SessionOldFormatExporter:
             day_token=day_token,
             default_distance_int=default_distance_int,
         )
+        root_distance = cls._extract_distance_from_attrs(h5f.attrs)
+        if root_distance is not None:
+            canonical_distance_int = cls._distance_int(
+                root_distance,
+                default=default_distance_int,
+            )
 
         distance_token, data_files, selected, reused_existing = cls._choose_technical_distance_token(
             calibration_root=calibration_root,

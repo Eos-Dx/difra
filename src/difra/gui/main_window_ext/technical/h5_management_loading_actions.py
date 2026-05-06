@@ -224,14 +224,23 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     """Create or reuse the active technical container for the current detector setup."""
     from .helpers import _get_technical_storage_folder
 
-    distances_by_alias = owner._distance_map_by_alias()
-
     storage_folder = _get_technical_storage_folder(
         owner.config if hasattr(owner, "config") else None
     )
     technical_container = get_technical_container(
         owner.config if hasattr(owner, "config") else None
     )
+
+    def _owner_distance_map(*, prefer_draft: bool = False):
+        getter = getattr(owner, "_distance_map_by_alias", None)
+        if not callable(getter):
+            return {}
+        try:
+            return dict(getter(prefer_draft=prefer_draft) or {})
+        except TypeError:
+            return dict(getter() or {})
+        except Exception:
+            return {}
 
     def _root_distance_cm(distance_map):
         return (
@@ -240,6 +249,35 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
             else float((owner.config or {}).get("default_technical_distance_cm", 17.0))
         )
 
+    distances_by_alias = _owner_distance_map(prefer_draft=True)
+    refreshed_distances = dict(distances_by_alias or {})
+
+    if hasattr(owner, "configure_detector_distances") and not bool(
+        getattr(owner, "_skip_distance_prompt_once", False)
+    ):
+        setattr(owner, "_suppress_distance_auto_container_creation", True)
+        try:
+            owner.configure_detector_distances()
+        except Exception as exc:
+            logger.warning(
+                "Distance configuration dialog failed before new technical container creation: %s",
+                exc,
+                exc_info=True,
+            )
+        finally:
+            setattr(owner, "_suppress_distance_auto_container_creation", False)
+
+        refreshed_distances = _owner_distance_map(prefer_draft=True)
+        if refreshed_distances:
+            owner._log_technical_event(
+                f"Detector distances confirmed before new container creation: {refreshed_distances}"
+            )
+        else:
+            owner._log_technical_event(
+                "Detector distances were not confirmed at creation time; deferred until PONI/lock."
+            )
+
+    distances_by_alias = refreshed_distances
     root_distance_cm = _root_distance_cm(distances_by_alias)
     storage_containers = owner._list_storage_technical_containers(storage_folder)
     active_path = owner._active_technical_container_path_obj()
@@ -308,40 +346,6 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
         if not active_is_stale and not finalize_active_session_for_new_technical_container(owner):
             return None
 
-    refreshed_distances = dict(distances_by_alias or {})
-
-    # For new container creation always prompt distance configuration first.
-    # If user cancels, creation still continues, but lock/PONI flows will require
-    # configured distances later.
-    if hasattr(owner, "configure_detector_distances") and not bool(
-        getattr(owner, "_skip_distance_prompt_once", False)
-    ):
-        setattr(owner, "_suppress_distance_auto_container_creation", True)
-        try:
-            owner.configure_detector_distances()
-        except Exception as exc:
-            logger.warning(
-                "Distance configuration dialog failed before new technical container creation: %s",
-                exc,
-                exc_info=True,
-            )
-        finally:
-            setattr(owner, "_suppress_distance_auto_container_creation", False)
-
-        try:
-            refreshed_distances = owner._distance_map_by_alias()
-        except Exception:
-            refreshed_distances = {}
-        root_distance_cm = _root_distance_cm(refreshed_distances)
-        if refreshed_distances:
-            owner._log_technical_event(
-                f"Detector distances confirmed before new container creation: {refreshed_distances}"
-            )
-        else:
-            owner._log_technical_event(
-                "Detector distances were not confirmed at creation time; deferred until PONI/lock."
-            )
-
     container_id, file_path = technical_container.create_technical_container(
         folder=storage_folder,
         distance_cm=root_distance_cm,
@@ -375,7 +379,8 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     if clear_table and hasattr(owner, "auxTable") and owner.auxTable is not None:
         owner.auxTable.setRowCount(0)
 
-    owner._sync_active_technical_container_from_table(show_errors=True)
+    if refreshed_distances:
+        owner._sync_active_technical_container_from_table(show_errors=True)
     return Path(file_path)
 
 

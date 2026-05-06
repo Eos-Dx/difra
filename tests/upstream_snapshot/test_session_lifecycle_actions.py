@@ -315,9 +315,8 @@ def test_send_and_archive_session_containers_tracks_active_session(tmp_path):
     assert len(result.archived_paths) == 2
     assert all(path.exists() for path in result.archived_paths)
     assert result.old_format_failed == []
-    assert len(result.old_format_paths) == 2
-    assert all(path.exists() for path in result.old_format_paths)
-    assert all(path.parent == old_format_folder for path in result.old_format_paths)
+    assert result.old_format_paths == []
+    assert not old_format_folder.exists() or not any(old_format_folder.iterdir())
     assert path_a.exists() is False
     assert path_b.exists() is False
     parent_names = {p.parent.name for p in result.archived_paths}
@@ -820,7 +819,7 @@ def test_reupload_archived_container_can_override_composite_specimen_mapping(tmp
         assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
 
 
-def test_send_and_archive_old_format_export_enabled_by_default(tmp_path):
+def test_send_and_archive_does_not_persist_old_format_by_default(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"
     old_format_folder = tmp_path / "old_format"
@@ -833,6 +832,30 @@ def test_send_and_archive_old_format_export_enabled_by_default(tmp_path):
         lock_user="sad",
         session_ids={str(path_a): sid_a},
         config={"old_format_export_folder": str(old_format_folder)},
+    )
+
+    assert result.moved == 1
+    assert result.old_format_paths == []
+    assert result.old_format_failed == []
+    assert not old_format_folder.exists() or not any(old_format_folder.iterdir())
+
+
+def test_send_and_archive_can_persist_old_format_when_explicitly_requested(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "old_format"
+    sid_a, path_a = _create_session_file(measurements, "SAMPLE_A")
+
+    result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "persist_old_format_export": True,
+        },
     )
 
     assert result.moved == 1

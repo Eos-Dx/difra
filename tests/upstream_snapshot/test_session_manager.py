@@ -106,6 +106,40 @@ def test_session_manager_create_session(temp_dir, technical_container):
     assert manager.get_session_info()["technical_container_id"] == technical_id
 
 
+def test_session_manager_copies_distance_from_selected_technical_container(temp_dir):
+    raw_file = temp_dir / "dark_2cm.npy"
+    np.save(raw_file, np.ones((8, 8), dtype=np.float32))
+    _tech_id, tech_path = generate_from_aux_table(
+        folder=temp_dir,
+        aux_measurements={"DARK": {"PRIMARY": str(raw_file)}},
+        poni_data={},
+        detector_config=[
+            {
+                "id": "det_primary",
+                "alias": "PRIMARY",
+                "type": "Advacam",
+                "size": {"width": 8, "height": 8},
+                "pixel_size_um": [55.0, 55.0],
+            }
+        ],
+        active_detector_ids=["det_primary"],
+        distances_cm={"PRIMARY": 2.0},
+    )
+    lock_container(tech_path)
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="TEST_SAMPLE_2CM",
+        distance_cm=17.0,
+        operator_id="test_operator",
+        technical_container_path=tech_path,
+    )
+
+    with h5py.File(session_path, "r") as session_file:
+        assert float(session_file.attrs["distance_cm"]) == 2.0
+
+
 def test_session_manager_create_session_with_study(temp_dir, technical_container):
     """Test creating a session with explicit study_name."""
     manager = SessionManager(config={"technical_folder": str(temp_dir)})

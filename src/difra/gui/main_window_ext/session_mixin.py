@@ -81,6 +81,17 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         self._append_compact_log("TECH", message)
 
     def _default_session_distance_cm(self):
+        active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+        if active_path:
+            try:
+                import h5py
+
+                with h5py.File(active_path, "r") as h5f:
+                    distance = h5f.attrs.get("distance_cm")
+                    if distance is not None:
+                        return float(distance)
+            except Exception as exc:
+                logger.debug("Failed to read active technical distance: %s", exc, exc_info=True)
         try:
             distances = getattr(self, "_detector_distances", {}) or {}
             if distances:

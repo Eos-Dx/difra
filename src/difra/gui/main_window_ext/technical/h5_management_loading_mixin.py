@@ -58,26 +58,112 @@ class H5ManagementLoadingMixin:
             return None, None
         return container_path, dataset_path
 
-    def _distance_map_by_alias(self):
+    def _distance_map_by_alias(self, *, prefer_draft: bool = False):
         detector_configs = self.config.get("detectors", []) if hasattr(self, "config") else []
-        by_alias = {}
-        by_id = getattr(self, "_detector_distances", {}) or {}
-        for detector in detector_configs:
-            detector_id = detector.get("id")
-            alias = detector.get("alias")
-            if not detector_id or not alias:
-                continue
-            if detector_id in by_id:
-                try:
-                    by_alias[str(alias)] = float(by_id[detector_id])
-                except (TypeError, ValueError) as exc:
-                    logger.warning(
-                        "Failed to parse detector distance for alias=%s id=%s: %s",
-                        alias,
-                        detector_id,
-                        exc,
-                    )
-        return by_alias
+        try:
+            active_ids = set(
+                str(value)
+                for value in (
+                    getattr(self, "_get_active_detector_ids", lambda: [])() or []
+                )
+            )
+        except Exception:
+            active_ids = set()
+        active_aliases = [
+            str(detector.get("alias") or detector.get("id") or "").strip()
+            for detector in detector_configs
+            if not active_ids or str(detector.get("id") or "").strip() in active_ids
+        ]
+
+        def _draft_distance_map():
+            by_alias = {}
+            by_id = getattr(self, "_detector_distances", {}) or {}
+            for detector in detector_configs:
+                detector_id = detector.get("id")
+                alias = detector.get("alias")
+                if not detector_id or not alias:
+                    continue
+                if detector_id in by_id:
+                    try:
+                        by_alias[str(alias)] = float(by_id[detector_id])
+                    except (TypeError, ValueError) as exc:
+                        logger.warning(
+                            "Failed to parse detector distance for alias=%s id=%s: %s",
+                            alias,
+                            detector_id,
+                            exc,
+                        )
+            return by_alias
+
+        if prefer_draft:
+            draft = _draft_distance_map()
+            if draft:
+                return draft
+
+        active_path = None
+        active_getter = getattr(self, "_active_technical_container_path_obj", None)
+        if callable(active_getter):
+            try:
+                active_path = active_getter()
+            except Exception:
+                active_path = None
+        if active_path is None:
+            raw_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
+            active_path = Path(raw_path) if raw_path else None
+
+        if active_path is not None and Path(active_path).exists():
+            container_distances = self._read_technical_container_distances_by_alias(
+                Path(active_path),
+                active_aliases=active_aliases,
+            )
+            if container_distances:
+                return container_distances
+
+        return _draft_distance_map()
+
+    def _read_technical_container_distances_by_alias(self, container_path: Path, *, active_aliases=None):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        aliases = [str(alias).strip() for alias in (active_aliases or []) if str(alias).strip()]
+        distances = {}
+        root_distance = None
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                root_attr = h5f.attrs.get(schema.ATTR_DISTANCE_CM)
+                if root_attr is not None:
+                    root_distance = float(root_attr)
+
+                def _record(attrs, fallback_alias=""):
+                    alias = str(
+                        attrs.get(getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias"), "")
+                        or fallback_alias
+                    ).strip()
+                    distance_attr = attrs.get(schema.ATTR_DISTANCE_CM)
+                    if alias and distance_attr is not None:
+                        distances[alias] = float(distance_attr)
+
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is not None:
+                    for ds_name in sorted(poni_group.keys()):
+                        _record(poni_group[ds_name].attrs)
+
+                technical_group = h5f.get(schema.GROUP_TECHNICAL)
+                if technical_group is not None:
+                    for event_name in sorted(technical_group.keys()):
+                        event_group = technical_group[event_name]
+                        for det_name in sorted(event_group.keys()):
+                            detector_group = event_group[det_name]
+                            fallback = schema.parse_detector_role(det_name) if str(det_name).startswith("det_") else ""
+                            _record(detector_group.attrs, fallback_alias=fallback)
+        except Exception:
+            logger.debug("Failed to read technical container distances from %s", container_path, exc_info=True)
+            return {}
+
+        if not distances and root_distance is not None:
+            for alias in aliases:
+                distances[alias] = root_distance
+        return distances
 
     def _collect_poni_data_by_alias(self):
         poni_data = {}
@@ -1029,13 +1115,33 @@ class H5ManagementLoadingMixin:
                 poni_group = h5f.create_group(schema.GROUP_TECHNICAL_PONI)
                 poni_group.attrs[schema.ATTR_NX_CLASS] = schema.NX_CLASS_COLLECTION
 
-            distances_by_alias = self._distance_map_by_alias()
-            if distances_by_alias:
-                distances_for_write = distances_by_alias
-            elif alias_to_detector_id:
-                distances_for_write = {alias: 0.0 for alias in alias_to_detector_id.keys()}
-            else:
-                distances_for_write = 0.0
+            prefer_draft_distances = bool(
+                getattr(self, "_use_draft_distances_for_next_sync", False)
+            )
+            if prefer_draft_distances:
+                setattr(self, "_use_draft_distances_for_next_sync", False)
+            distances_by_alias = self._distance_map_by_alias(
+                prefer_draft=prefer_draft_distances
+            )
+            if not distances_by_alias:
+                set_state = getattr(self, "_set_container_state", None)
+                if callable(set_state):
+                    set_state(
+                        Path(active_path),
+                        state=getattr(self, "STATE_PENDING_DISTANCES", "pending_distances"),
+                        reason="missing_distances_before_table_sync",
+                    )
+                if show_errors:
+                    QMessageBox.warning(
+                        self,
+                        "Technical Container Sync",
+                        "Cannot sync active technical container without a real distance_cm.",
+                    )
+                self._log_technical_event(
+                    "Technical container sync blocked: missing distance_cm"
+                )
+                return False
+            distances_for_write = distances_by_alias
 
             try:
                 technical_container.write_detector_config(
@@ -1292,14 +1398,15 @@ class H5ManagementLoadingMixin:
 
     def _on_detector_distances_updated(self):
         if bool(getattr(self, "_suppress_distance_auto_container_creation", False)):
-            return
+            return None
         active_path = self._create_new_active_technical_container(clear_table=False)
         if active_path is None:
-            return
+            return None
         self._sync_active_technical_container_from_table(show_errors=False)
         sync_state = getattr(self, "_sync_container_state", None)
         if callable(sync_state):
             sync_state(Path(active_path), reason="distances_updated")
+        return Path(active_path)
 
     def _extract_rows_from_runtime_group(self, h5f, schema, h5_path: str):
         candidates = [
