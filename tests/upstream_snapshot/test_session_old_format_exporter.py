@@ -242,6 +242,24 @@ def test_technical_calibration_filenames_use_contract_type_order():
     assert "AgBH_17cm_003_20260331_092600_300.000000s_1frames_PRIMARY.txt.dsc" in files
 
 
+def test_measurement_filename_base_uses_contract_parts():
+    base = SessionOldFormatExporter._measurement_file_base(
+        bundle_base="378891__377551_17cm",
+        point_name="pt_001",
+        point_unique_id="377551",
+        measurement_name="meas_000000001",
+        x_mm=4.86,
+        y_mm=-8.97,
+        timestamp_token="20260331_105903",
+        detector_alias="PRIMARY",
+    )
+
+    assert (
+        base
+        == "378891__377551_17cm_377551_meas_000000001_4.86_-8.97_20260331_105903_PRIMARY"
+    )
+
+
 def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     session_path = _create_session_with_technical_and_measurement(tmp_path, tag="layout")
     old_format_root = tmp_path / "Data" / "difra" / "Old_format"
@@ -267,6 +285,11 @@ def test_export_session_to_old_format_creates_expected_layout(tmp_path):
     sample_files = {path.name for path in summary.state_path.parent.iterdir() if path.is_file()}
     assert any(name.endswith(".txt") for name in sample_files)
     assert any(name.endswith(".txt.dsc") for name in sample_files)
+    assert any(
+        name.startswith("SAMPLE_OLD_FMT_17cm_pt_001_meas_000000001_1.25_2.50_")
+        and name.endswith("_PRIMARY.txt")
+        for name in sample_files
+    )
     assert not any(
         name.endswith(".dsc") and not name.endswith(".txt.dsc")
         for name in sample_files

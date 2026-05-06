@@ -224,6 +224,7 @@ def test_start_capture_enables_continuous_movement_for_agbh(monkeypatch):
 
 def test_technical_capture_base_stem_includes_distance_and_contract_order():
     harness = _Harness()
+    harness._file_base = lambda _typ: "AgBH"
 
     stem = harness._technical_capture_base_stem(
         typ="AGBH",
@@ -233,7 +234,7 @@ def test_technical_capture_base_stem_includes_distance_and_contract_order():
         frames=1,
     )
 
-    assert stem == "agbh_base_17cm_003_20260506_085558_1.000000s_1frames"
+    assert stem == "AgBH_17cm_003_20260506_085558_1.000000s_1frames"
 
 
 def test_start_capture_passes_distance_aware_base_to_worker(monkeypatch):
