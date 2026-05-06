@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -299,11 +301,34 @@ class SessionTabMixin:
         self.refresh_archive_btn = QPushButton("Refresh")
         self.refresh_archive_btn.clicked.connect(self._refresh_session_container_lists)
         filter_row.addWidget(self.refresh_archive_btn)
+
+        self.open_archive_window_btn = QPushButton("Open Full Window")
+        self.open_archive_window_btn.clicked.connect(self._show_archive_window)
+        filter_row.addWidget(self.open_archive_window_btn)
         layout.addLayout(filter_row)
 
-        self.archived_sessions_table = QTableWidget()
-        self.archived_sessions_table.setColumnCount(10)
-        self.archived_sessions_table.setHorizontalHeaderLabels(
+        self.archived_sessions_table = self._create_archive_table()
+        self.archived_sessions_table.itemSelectionChanged.connect(
+            self._update_archive_action_buttons
+        )
+        layout.addWidget(self.archived_sessions_table, 1)
+
+        archive_actions_row = QHBoxLayout()
+        self.send_archived_btn = QPushButton("Send Selected")
+        self.send_archived_btn.clicked.connect(
+            self._on_send_selected_archived_sessions
+        )
+        self.send_archived_btn.setEnabled(False)
+        archive_actions_row.addWidget(self.send_archived_btn)
+        archive_actions_row.addStretch()
+        layout.addLayout(archive_actions_row)
+
+        self.tabs.addTab(tab, "Archive")
+
+    def _create_archive_table(self) -> QTableWidget:
+        table = QTableWidget()
+        table.setColumnCount(10)
+        table.setHorizontalHeaderLabels(
             [
                 "File",
                 "Specimen",
@@ -317,33 +342,99 @@ class SessionTabMixin:
                 "Path",
             ]
         )
-        self.archived_sessions_table.setColumnHidden(9, True)
-        self.archived_sessions_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.archived_sessions_table.setSelectionMode(
-            QAbstractItemView.ExtendedSelection
+        table.setColumnHidden(9, True)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(
+            lambda pos, source_table=table: self._show_archived_sessions_context_menu(
+                pos, table=source_table
+            )
         )
-        self.archived_sessions_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.archived_sessions_table.customContextMenuRequested.connect(
-            self._show_archived_sessions_context_menu
-        )
-        self.archived_sessions_table.itemSelectionChanged.connect(
-            self._update_archive_action_buttons
-        )
-        self.archived_sessions_table.setSortingEnabled(True)
-        layout.addWidget(self.archived_sessions_table)
+        table.setSortingEnabled(True)
+        table.setWordWrap(False)
+        table.setAlternatingRowColors(True)
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        table.setMinimumHeight(420)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
-        archive_actions_row = QHBoxLayout()
-        self.send_archived_btn = QPushButton("Send Selected")
-        self.send_archived_btn.clicked.connect(
-            self._on_send_selected_archived_sessions
-        )
-        self.send_archived_btn.setEnabled(False)
-        archive_actions_row.addWidget(self.send_archived_btn)
-        archive_actions_row.addStretch()
-        layout.addLayout(archive_actions_row)
-        layout.addStretch()
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(True)
+        for column, width in enumerate([320, 110, 180, 260, 140, 140, 150, 150, 110, 0]):
+            table.setColumnWidth(column, width)
+        table.verticalHeader().setDefaultSectionSize(24)
+        return table
 
-        self.tabs.addTab(tab, "Archive")
+    def _show_archive_window(self):
+        dialog = getattr(self, "_archive_window_dialog", None)
+        if dialog is not None and dialog.isVisible():
+            self._populate_archive_window_table()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Archived Sessions")
+        dialog.setModal(False)
+        dialog.resize(1500, 900)
+        layout = QVBoxLayout(dialog)
+
+        self.archive_window_path_label = QLabel("")
+        self.archive_window_path_label.setStyleSheet("color: #555; padding: 4px;")
+        layout.addWidget(self.archive_window_path_label)
+
+        table = self._create_archive_table()
+        table.itemSelectionChanged.connect(self._update_archive_action_buttons)
+        self.archive_window_table = table
+        layout.addWidget(table, 1)
+
+        actions = QHBoxLayout()
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self._refresh_session_container_lists)
+        actions.addWidget(refresh_button)
+
+        self.send_archived_window_btn = QPushButton("Send Selected")
+        self.send_archived_window_btn.clicked.connect(
+            lambda: self._send_archived_sessions(
+                self._selected_paths_from_archive_table(table)
+            )
+        )
+        self.send_archived_window_btn.setEnabled(False)
+        actions.addWidget(self.send_archived_window_btn)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        dialog.finished.connect(self._clear_archive_window_refs)
+        self._archive_window_dialog = dialog
+        self._populate_archive_window_table()
+        dialog.show()
+
+    def _clear_archive_window_refs(self):
+        self._archive_window_dialog = None
+        self.archive_window_table = None
+        self.archive_window_path_label = None
+        self.send_archived_window_btn = None
+
+    def _populate_archive_window_table(self):
+        table = getattr(self, "archive_window_table", None)
+        if table is None:
+            return
+        rows = list(
+            getattr(
+                self,
+                "_archived_rows_filtered",
+                getattr(self, "_archived_rows_all", []),
+            )
+            or []
+        )
+        SessionTabPresenter.populate_archive_table(table, rows)
+        label = getattr(self, "archive_window_path_label", None)
+        if label is not None:
+            label.setText(f"Archive folder: {self._get_session_archive_folder()}")
+        self._update_archive_action_buttons()
 
     def _get_measurements_folder_for_queue(self) -> Path:
         if hasattr(self, "config") and self.config:
@@ -493,7 +584,9 @@ class SessionTabMixin:
             now=datetime.now(),
         )
 
+        self._archived_rows_filtered = list(filtered)
         SessionTabPresenter.populate_archive_table(self.archived_sessions_table, filtered)
+        self._populate_archive_window_table()
         self._update_archive_action_buttons()
 
     def _selected_pending_container(self) -> Optional[Path]:
@@ -521,9 +614,18 @@ class SessionTabMixin:
         self, *, fallback_path: Optional[Path] = None
     ) -> List[Path]:
         table = getattr(self, "archived_sessions_table", None)
+        return self._selected_paths_from_archive_table(
+            table, fallback_path=fallback_path
+        )
+
+    def _selected_paths_from_archive_table(
+        self,
+        table: Optional[QTableWidget],
+        *,
+        fallback_path: Optional[Path] = None,
+    ) -> List[Path]:
         if table is None:
             return [Path(fallback_path)] if fallback_path is not None else []
-
         selected_rows = sorted({index.row() for index in table.selectedIndexes()})
         selected_paths: List[Path] = []
         for row in selected_rows:
@@ -545,6 +647,12 @@ class SessionTabMixin:
         send_button = getattr(self, "send_archived_btn", None)
         if send_button is not None:
             send_button.setEnabled(bool(self._selected_archived_containers()))
+        window_button = getattr(self, "send_archived_window_btn", None)
+        window_table = getattr(self, "archive_window_table", None)
+        if window_button is not None:
+            window_button.setEnabled(
+                bool(self._selected_paths_from_archive_table(window_table))
+            )
 
     def _confirm_archive_metadata_edit_password(self) -> bool:
         if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
@@ -807,8 +915,8 @@ class SessionTabMixin:
             specimen_overrides[str(Path(container_path))] = int(override)
         return specimen_overrides
 
-    def _show_archived_sessions_context_menu(self, pos):
-        table = self.archived_sessions_table
+    def _show_archived_sessions_context_menu(self, pos, *, table=None):
+        table = table or self.archived_sessions_table
         row = table.rowAt(pos.y())
         if row < 0:
             return
@@ -836,11 +944,15 @@ class SessionTabMixin:
             self._open_session_container_path(container_path)
         elif selected == edit_action:
             self._edit_archived_sessions(
-                self._selected_archived_containers(fallback_path=container_path)
+                self._selected_paths_from_archive_table(
+                    table, fallback_path=container_path
+                )
             )
         elif selected == send_action:
             self._send_archived_sessions(
-                self._selected_archived_containers(fallback_path=container_path)
+                self._selected_paths_from_archive_table(
+                    table, fallback_path=container_path
+                )
             )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
