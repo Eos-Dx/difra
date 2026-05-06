@@ -42,6 +42,33 @@ class TechnicalCaptureMixin:
         return f"{token}cm"
 
     def _technical_capture_distance_token(self) -> str:
+        active_path = None
+        active_getter = getattr(self, "_active_technical_container_path_obj", None)
+        if callable(active_getter):
+            try:
+                active_path = active_getter()
+            except Exception:
+                active_path = None
+        if active_path is None:
+            raw_active_path = str(
+                getattr(self, "_active_technical_container_path", "") or ""
+            ).strip()
+            active_path = Path(raw_active_path) if raw_active_path else None
+        if active_path is not None:
+            try:
+                import h5py
+
+                with h5py.File(active_path, "r") as h5f:
+                    token = self._format_distance_token_cm(h5f.attrs.get("distance_cm"))
+                    if token != "unknowncm":
+                        return token
+            except Exception:
+                logger.debug(
+                    "Failed to read active technical container distance from %s",
+                    active_path,
+                    exc_info=True,
+                )
+
         distances = getattr(self, "_detector_distances", {}) or {}
         for value in distances.values():
             token = self._format_distance_token_cm(value)
