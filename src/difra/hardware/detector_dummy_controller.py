@@ -60,7 +60,7 @@ class DummyDetectorController(DetectorController):
             frames=Nframes,
         )
 
-        dsc_filename = filename.replace(".txt", ".dsc")
+        dsc_filename = f"{filename}.dsc"
         self._generate_fake_dsc(dsc_filename, Nseconds, Nframes, integrated)
 
         elapsed = time.perf_counter() - started_at

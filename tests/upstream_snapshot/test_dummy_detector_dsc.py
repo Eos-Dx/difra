@@ -29,9 +29,9 @@ def test_dummy_detector_generates_dsc_file():
         txt_file = Path(f"{filename_base}.txt")
         assert txt_file.exists(), f"Expected .txt file at {txt_file}"
         
-        # Verify .dsc file exists
-        dsc_file = Path(f"{filename_base}.dsc")
-        assert dsc_file.exists(), f"Expected .dsc file at {dsc_file}"
+        # Verify .txt.dsc file exists
+        dsc_file = Path(f"{filename_base}.txt.dsc")
+        assert dsc_file.exists(), f"Expected .txt.dsc file at {dsc_file}"
         
         # Verify .dsc content
         dsc_content = dsc_file.read_text()
@@ -63,7 +63,7 @@ def test_dsc_file_metadata_accuracy():
         detector.capture_point(Nframes=Nframes, Nseconds=Nseconds, filename_base=filename_base)
         
         # Read .dsc file
-        dsc_file = Path(f"{filename_base}.dsc")
+        dsc_file = Path(f"{filename_base}.txt.dsc")
         dsc_content = dsc_file.read_text()
         
         # Verify dimensions
@@ -98,7 +98,7 @@ def test_multiple_captures_unique_dsc_files():
             detector.capture_point(Nframes=1, Nseconds=0.1, filename_base=filename_base)
             
             txt_file = Path(f"{filename_base}.txt")
-            dsc_file = Path(f"{filename_base}.dsc")
+            dsc_file = Path(f"{filename_base}.txt.dsc")
             
             assert txt_file.exists()
             assert dsc_file.exists()

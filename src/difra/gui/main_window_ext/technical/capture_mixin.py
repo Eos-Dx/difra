@@ -22,6 +22,61 @@ def _tm():
 
 
 class TechnicalCaptureMixin:
+    TECHNICAL_TYPE_ORDER = {
+        "DARK": "001",
+        "EMPTY": "002",
+        "AGBH": "003",
+        "BACKGROUND": "004",
+    }
+
+    @staticmethod
+    def _format_distance_token_cm(distance_cm) -> str:
+        try:
+            value = float(distance_cm)
+        except (TypeError, ValueError):
+            return "unknowncm"
+        if abs(value - round(value)) < 1e-6:
+            return f"{int(round(value))}cm"
+        token = f"{value:.6f}".rstrip("0").rstrip(".")
+        token = token.replace("-", "m").replace(".", "p")
+        return f"{token}cm"
+
+    def _technical_capture_distance_token(self) -> str:
+        distances = getattr(self, "_detector_distances", {}) or {}
+        for value in distances.values():
+            token = self._format_distance_token_cm(value)
+            if token != "unknowncm":
+                return token
+        standard_distances = getattr(self, "config", {}).get("standard_distances", {}) or {}
+        if isinstance(standard_distances, dict):
+            for value in standard_distances.values():
+                token = self._format_distance_token_cm(value)
+                if token != "unknowncm":
+                    return token
+        return "unknowncm"
+
+    def _technical_capture_order_token(self, typ: str, count: int) -> str:
+        key = str(typ or "").strip().upper()
+        return self.TECHNICAL_TYPE_ORDER.get(key, f"{int(count):03d}")
+
+    def _technical_capture_base_stem(
+        self,
+        *,
+        typ: str,
+        count: int,
+        timestamp_token: str,
+        integration_time_s: float,
+        frames: int,
+    ) -> str:
+        base = self._file_base(typ)
+        distance_token = self._technical_capture_distance_token()
+        order_token = self._technical_capture_order_token(typ, count)
+        time_token = f"{float(integration_time_s):.6f}s"
+        return (
+            f"{base}_{distance_token}_{order_token}_{timestamp_token}_"
+            f"{time_token}_{int(frames)}frames"
+        )
+
     @staticmethod
     def _normalize_technical_alias_candidates(alias: str | None):
         token = str(alias or "").strip().upper()
@@ -910,15 +965,18 @@ class TechnicalCaptureMixin:
 
         validate_folder = self._get_technical_module("validate_folder")
         folder = validate_folder(self._current_technical_output_folder())
-        base = self._file_base(typ)
-        base_with_count = f"{base}_{count:03d}"
         ts = time.strftime("%Y%m%d_%H%M%S")
         integration_time_s = float(self.integrationTimeSpin.value())
         frames = int(self.captureFramesSpin.value())
-        t_token = f"{integration_time_s:.6f}s"
         txt_filename_base = os.path.join(
             folder,
-            f"{base_with_count}_{ts}_{t_token}_{frames}frames",
+            self._technical_capture_base_stem(
+                typ=typ,
+                count=count,
+                timestamp_token=ts,
+                integration_time_s=integration_time_s,
+                frames=frames,
+            ),
         )
 
         stage_controller = self._resolve_capture_stage_controller()
