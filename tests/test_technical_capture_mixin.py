@@ -114,6 +114,7 @@ class _Harness(TechnicalCaptureMixin):
         self.integrationTimeSpin = _FakeSpin(3.0)
         self.captureFramesSpin = _FakeSpin(4)
         self.detector_controller = {"SAXS": object()}
+        self._detector_distances = {"SAXS": 17.0, "WAXS": 17.0}
         self.continuous_movement_controller = None
         self._capture_workers = []
         self.logged_events = []
@@ -219,6 +220,33 @@ def test_start_capture_enables_continuous_movement_for_agbh(monkeypatch):
         worker.kwargs["continuous_movement_controller"].stage_controller
         is harness.hardware_client.stage_controller
     )
+
+
+def test_technical_capture_base_stem_includes_distance_and_contract_order():
+    harness = _Harness()
+
+    stem = harness._technical_capture_base_stem(
+        typ="AGBH",
+        count=1,
+        timestamp_token="20260506_085558",
+        integration_time_s=1.0,
+        frames=1,
+    )
+
+    assert stem == "agbh_base_17cm_003_20260506_085558_1.000000s_1frames"
+
+
+def test_start_capture_passes_distance_aware_base_to_worker(monkeypatch):
+    _FakeWorker.instances.clear()
+    _patch_tm(monkeypatch)
+    harness = _Harness(checked=False)
+
+    harness._start_capture("AGBH")
+
+    assert len(_FakeWorker.instances) == 1
+    txt_filename_base = Path(_FakeWorker.instances[0].kwargs["txt_filename_base"]).name
+    assert txt_filename_base.startswith("agbh_base_17cm_003_")
+    assert txt_filename_base.endswith("_3.000000s_4frames")
 
 
 def test_start_capture_does_not_enable_continuous_movement_for_non_agbh(monkeypatch):
