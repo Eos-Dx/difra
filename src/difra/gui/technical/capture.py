@@ -12,7 +12,7 @@ import numpy as np
 import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -1557,74 +1557,19 @@ def show_auto_poni_review_window(
         ax.set_ylim(0.0, float(height))
         full_view_by_alias[alias] = (0.0, float(width), 0.0, float(height))
 
-        ring_positions = _ring_positions_deg(
-            poni_text=poni_text,
-            first_ring=first_ring,
-            count=_rings_to_show_for_alias(alias),
-        )
-        cake, curve = _integrate_with_poni(review, data)
-
-        if cake is not None:
-            cake_data = np.asarray(cake.intensity, dtype=float)
-            cake_display = np.log1p(np.clip(cake_data, a_min=0.0, a_max=None))
-            radial = np.asarray(cake.radial, dtype=float)
-            azimuthal = np.asarray(cake.azimuthal, dtype=float)
-            cake_ax.imshow(
-                cake_display,
-                origin="lower",
-                aspect="auto",
-                cmap="magma",
-                extent=(
-                    float(np.nanmin(radial)),
-                    float(np.nanmax(radial)),
-                    float(np.nanmin(azimuthal)),
-                    float(np.nanmax(azimuthal)),
-                ),
-            )
-            cake_ax.set_title(f"{alias} cake")
-            cake_ax.set_xlabel("2theta (deg)")
-            cake_ax.set_ylabel("azimuth (deg)")
-            for ring_index, two_theta_deg in ring_positions:
-                cake_ax.axvline(
-                    two_theta_deg,
-                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
-                    linewidth=1.0 if ring_index == first_ring else 0.75,
-                    alpha=0.9,
-                )
-        else:
-            cake_ax.set_title(f"{alias} cake unavailable")
-            cake_ax.axis("off")
-
-        if curve is not None:
-            radial = np.asarray(curve.radial, dtype=float)
-            intensity = np.asarray(curve.intensity, dtype=float)
-            curve_ax.plot(radial, intensity, color="#35d0ff", linewidth=1.0)
-            curve_ax.set_yscale("log")
-            curve_ax.set_title(f"{alias} radial integration")
-            curve_ax.set_xlabel("2theta (deg)")
-            curve_ax.set_ylabel("I")
-            for ring_index, two_theta_deg in ring_positions:
-                curve_ax.axvline(
-                    two_theta_deg,
-                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
-                    linewidth=1.0 if ring_index == first_ring else 0.75,
-                    alpha=0.9,
-                )
-                curve_ax.text(
-                    two_theta_deg,
-                    0.96,
-                    str(ring_index),
-                    transform=curve_ax.get_xaxis_transform(),
-                    va="top",
-                    ha="center",
-                    fontsize=8,
-                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
-                )
-        else:
-            curve_ax.set_title(f"{alias} radial integration unavailable")
-            curve_ax.axis("off")
+        cake_ax.set_title(f"{alias} cake pending")
+        cake_ax.axis("off")
+        curve_ax.set_title(f"{alias} radial integration pending")
+        curve_ax.axis("off")
 
     fig.tight_layout()
+
+    def _draw_all_integrations():
+        _set_status("Computing Auto PONI integrations...")
+        for alias in aliases:
+            _draw_integrations(alias)
+            canvas.draw_idle()
+        _set_status("Clicked ring points: none")
 
     def _save_clicked_points(alias: str):
         points = manual_points_by_alias.get(alias) or []
@@ -1937,6 +1882,7 @@ def show_auto_poni_review_window(
     cancel_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
     dialog.resize(max(900, 560 * cols), 980)
+    QTimer.singleShot(250, _draw_all_integrations)
     result = dialog.exec_()
     if result != QDialog.Accepted:
         decision["value"] = "cancel"
