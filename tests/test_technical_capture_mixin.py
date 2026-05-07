@@ -4,7 +4,13 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 
-from difra.gui.main_window_ext.technical.capture_mixin import TechnicalCaptureMixin
+from difra.gui.main_window_ext.technical.capture_mixin import (
+    TechnicalCaptureMixin,
+)
+from difra.gui.technical.pyfai_calibration import (
+    PyfaiCalib2Review,
+    normalized_auto_poni_config,
+)
 
 
 class _FakeSignal:
@@ -255,6 +261,164 @@ def test_technical_capture_distance_prefers_active_container_root_attr(tmp_path)
 
     assert "_2cm_003_" in stem
     assert "_17cm_" not in stem
+
+
+def test_auto_poni_defaults_use_active_container_distance_for_two_cm(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_abc_2cm_20260506.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        h5f.attrs["distance_cm"] = 2.0
+    harness._active_technical_container_path = str(container_path)
+
+    settings = harness._auto_poni_default_settings(
+        normalized_auto_poni_config({}),
+        ["PRIMARY", "SECONDARY"],
+    )
+
+    assert settings["distance_cm_by_alias"] == {
+        "PRIMARY": 2.0,
+        "SECONDARY": 2.0,
+    }
+    assert settings["first_visible_ring_by_alias"] == {
+        "PRIMARY": 2,
+        "SECONDARY": 5,
+    }
+    assert settings["rings_to_search_by_alias"] == {
+        "PRIMARY": 5,
+        "SECONDARY": 4,
+    }
+
+
+def test_auto_poni_defaults_use_first_ring_for_seventeen_cm(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_abc_17cm_20260506.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        h5f.attrs["distance_cm"] = 17.0
+    harness._active_technical_container_path = str(container_path)
+
+    settings = harness._auto_poni_default_settings(
+        normalized_auto_poni_config({}),
+        ["PRIMARY", "SECONDARY"],
+    )
+
+    assert settings["distance_cm_by_alias"] == {
+        "PRIMARY": 17.0,
+        "SECONDARY": 17.0,
+    }
+    assert settings["first_visible_ring_by_alias"] == {
+        "PRIMARY": 1,
+        "SECONDARY": 1,
+    }
+    assert settings["rings_to_search_by_alias"] == {
+        "PRIMARY": 3,
+        "SECONDARY": 3,
+    }
+
+
+def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
+    harness = _Harness()
+    harness._current_technical_output_folder = lambda: str(tmp_path)
+    agbh_path = tmp_path / "agbh_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+
+    prepared = harness._prepare_auto_poni_reviews(
+        normalized_auto_poni_config({}),
+        sources={"PRIMARY": str(agbh_path)},
+        distance_cm_by_alias={"PRIMARY": 2.0},
+    )
+
+    review = prepared["reviews"]["PRIMARY"]
+    assert "Distance: 0.02" in review.poni_text
+
+
+def test_auto_poni_saxs_uses_physical_primary_detector_config():
+    harness = _Harness()
+    harness.config["detectors"] = [
+        {
+            "id": "MiniPIX G08-W0299",
+            "alias": "PRIMARY",
+            "size": {"width": 256, "height": 256},
+            "pixel_size_um": [50, 50],
+        },
+        {
+            "id": "DUMMY-0001",
+            "alias": "SAXS",
+            "poni_center_rule_alias": "PRIMARY",
+            "type": "DummyDetector",
+            "size": {"width": 256, "height": 256},
+            "pixel_size_um": [100, 100],
+        },
+    ]
+
+    cfg = harness._auto_poni_detector_config_for_alias("SAXS")
+
+    assert cfg["alias"] == "SAXS"
+    assert cfg["id"] == "DUMMY-0001"
+    assert cfg["pixel_size_um"] == [50, 50]
+
+
+def test_auto_poni_validate_writes_poni_next_to_agbh(tmp_path):
+    harness = _Harness()
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "auto_poni" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "auto_poni" / "generated.poni",
+        command=[],
+        poni_text="Distance: 0.02\n",
+        source_path=agbh_path,
+    )
+
+    assert harness._validate_auto_poni_reviews({"PRIMARY": review})
+
+    target = tmp_path / "AgBH_001_PRIMARY.poni"
+    assert target.read_text(encoding="utf-8") == "Distance: 0.02\n"
+    assert harness.poni_files["PRIMARY"]["path"] == str(target)
+
+
+def test_auto_poni_seed_center_uses_poni_validation_config():
+    harness = _Harness()
+    harness.config["detectors"][0]["size"] = {"width": 256, "height": 256}
+    harness.config["detectors"][0]["pixel_size_um"] = [55, 55]
+    harness.config["poni_center_validation"] = {
+        "enabled": True,
+        "defaults": {"row_target_px": 120},
+        "detectors": {
+            "PRIMARY": {
+                "col_target_px": 42,
+            },
+        },
+    }
+
+    center = harness._auto_poni_center_px_for_alias(
+        "PRIMARY",
+        harness.config["detectors"][0],
+    )
+
+    assert center == (120.0, 42.0)
+
+
+def test_auto_poni_seed_center_uses_off_detector_zone_edge():
+    harness = _Harness()
+    detector_config = dict(harness.config["detectors"][1])
+    detector_config["size"] = {"width": 256, "height": 256}
+    harness.config["poni_center_validation"] = {
+        "enabled": True,
+        "detectors": {
+            "SECONDARY": {
+                "row_target_px": 128,
+                "col_gt_px": 256,
+                "col_max_px": 320,
+            },
+        },
+    }
+
+    center = harness._auto_poni_center_px_for_alias(
+        "SECONDARY",
+        detector_config,
+    )
+
+    assert center == (128.0, 320.0)
 
 
 def test_start_capture_passes_distance_aware_base_to_worker(monkeypatch):

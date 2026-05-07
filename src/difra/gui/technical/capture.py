@@ -1213,25 +1213,267 @@ def show_auto_poni_review_window(
     rings_to_show: int = 8,
     parent=None,
 ):
-    """Show AgBh heatmaps with generated PONI ring overlays."""
+    """Show AgBh heatmaps, cake plots, and 1D integration with ring markers."""
     from matplotlib.patches import Circle
 
-    from difra.gui.technical.pyfai_calibration import build_agbh_ring_overlays
+    from difra.gui.technical.pyfai_calibration import (
+        AGBH_D_SPACING_A,
+        DEFAULT_WAVELENGTH_M,
+        build_agbh_ring_overlays,
+        build_pyfai_calib2_command,
+        parse_poni_parameters,
+        refine_poni_from_clicked_ring_points,
+        ring_two_theta_rad,
+        write_agbh_clicked_points_npt,
+    )
 
     aliases = [str(alias) for alias in aliases if str(alias or "").strip()]
     if not aliases:
         return {"decision": "cancel", "dialog": None}
 
     cols = len(aliases)
-    fig = Figure(figsize=(4.8 * cols, 4.4))
-    canvas = FigureCanvas(fig)
-    axes = fig.subplots(1, cols)
-    if cols == 1:
-        axes = [axes]
 
-    for ax, alias in zip(axes, aliases):
+    def _rings_to_show_for_alias(alias: str) -> int:
+        alias_key = str(alias or "").strip().upper()
+        if isinstance(rings_to_show, dict):
+            for key in (alias, alias_key):
+                try:
+                    count = int(rings_to_show.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    return count
+        try:
+            return max(1, int(rings_to_show))
+        except (TypeError, ValueError):
+            return 3
+
+    def _ring_positions_deg(poni_text: str, first_ring: int, count: int):
+        params = parse_poni_parameters(poni_text)
+        wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+        positions = []
+        start = max(1, int(first_ring or 1))
+        stop = min(len(AGBH_D_SPACING_A), start + max(1, int(count or 1)) - 1)
+        for ring_index in range(start, stop + 1):
+            two_theta = ring_two_theta_rad(
+                wavelength_m=wavelength_m,
+                d_spacing_a=AGBH_D_SPACING_A[ring_index - 1],
+            )
+            if two_theta is None:
+                continue
+            positions.append((ring_index, float(np.degrees(two_theta))))
+        return positions
+
+    def _integrate_with_poni(review, data):
+        try:
+            import pyFAI
+
+            poni_path = Path(getattr(review, "poni_path", "") or "")
+            if not poni_path.exists():
+                return None, None
+            integrator = pyFAI.load(str(poni_path))
+            cake = integrator.integrate2d(
+                data,
+                500,
+                180,
+                unit="2th_deg",
+                method=("bbox", "csr", "cython"),
+            )
+            curve = integrator.integrate1d(
+                data,
+                800,
+                unit="2th_deg",
+                method=("bbox", "csr", "cython"),
+            )
+            return cake, curve
+        except Exception:
+            logger.warning("Failed to compute Auto PONI integrations", exc_info=True)
+            return None, None
+
+    def _command_with_npt(command, npt_path: Path):
+        clean = []
+        skip = False
+        for part in list(command or []):
+            if skip:
+                skip = False
+                continue
+            if part == "-n":
+                skip = True
+                continue
+            clean.append(part)
+        if not clean:
+            return []
+        return [*clean[:-1], "-n", str(npt_path), clean[-1]]
+
+    def _snap_to_peak(data, col: float, row: float, radius: int = 6):
+        arr = np.asarray(data, dtype=float)
+        height, width = arr.shape
+        col_i = int(round(float(col)))
+        row_i = int(round(float(row)))
+        col_i = min(max(col_i, 0), width - 1)
+        row_i = min(max(row_i, 0), height - 1)
+        x0 = max(0, col_i - radius)
+        x1 = min(width, col_i + radius + 1)
+        y0 = max(0, row_i - radius)
+        y1 = min(height, row_i + radius + 1)
+        window = arr[y0:y1, x0:x1]
+        if window.size == 0 or not np.isfinite(window).any():
+            return float(col_i), float(row_i)
+        safe = np.nan_to_num(window, nan=-np.inf)
+        local_row, local_col = np.unravel_index(int(np.argmax(safe)), safe.shape)
+        return float(x0 + local_col), float(y0 + local_row)
+
+    fig = Figure(figsize=(5.2 * cols, 10.8))
+    canvas = FigureCanvas(fig)
+    axes = fig.subplots(3, cols, squeeze=False)
+    if cols == 1:
+        axes = np.asarray(axes).reshape(3, 1)
+    axis_to_alias = {}
+    image_data_by_alias = {}
+    detector_state_by_alias = {}
+    first_ring_by_alias = {}
+    manual_points_by_alias = {}
+    manual_artists_by_alias = {}
+    review_state_by_alias = {}
+    base_review_by_alias = {}
+    top_axes_by_alias = {}
+    cake_axes_by_alias = {}
+    curve_axes_by_alias = {}
+    overlay_artists_by_alias = {}
+    full_view_by_alias = {}
+    status = {"label": None, "last_alias": None}
+    drag_state = {"alias": None, "index": None, "artist": None}
+
+    def _draw_ring_overlays(alias: str):
+        ax = top_axes_by_alias.get(alias)
+        review = review_state_by_alias.get(alias)
+        if ax is None or review is None:
+            return
+        for artist in overlay_artists_by_alias.get(alias, []):
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        overlay_artists_by_alias[alias] = []
+        first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
+        overlays = build_agbh_ring_overlays(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            detector_config=detector_state_by_alias.get(alias, {}),
+            first_visible_ring=first_ring,
+            rings_to_show=_rings_to_show_for_alias(alias),
+        )
+        for overlay in overlays:
+            ring_index = int(overlay["ring_index"])
+            circle = Circle(
+                (
+                    float(overlay["center_col_px"]),
+                    float(overlay["center_row_px"]),
+                ),
+                float(overlay["radius_px"]),
+                fill=False,
+                linewidth=1.15 if ring_index == first_ring else 0.85,
+                edgecolor="#35d0ff" if ring_index == first_ring else "#f9f871",
+                alpha=0.95 if ring_index == first_ring else 0.78,
+            )
+            ax.add_patch(circle)
+            overlay_artists_by_alias[alias].append(circle)
+            if ring_index == first_ring:
+                label = ax.text(
+                    0.02,
+                    0.98,
+                    f"first visible ring: {ring_index}",
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=8.5,
+                    color="#35d0ff",
+                    bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
+                )
+                overlay_artists_by_alias[alias].append(label)
+
+    def _draw_integrations(alias: str):
+        cake_ax = cake_axes_by_alias.get(alias)
+        curve_ax = curve_axes_by_alias.get(alias)
+        review = review_state_by_alias.get(alias)
+        data = image_data_by_alias.get(alias)
+        if cake_ax is None or curve_ax is None or review is None or data is None:
+            return
+        first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
+        ring_positions = _ring_positions_deg(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            first_ring=first_ring,
+            count=_rings_to_show_for_alias(alias),
+        )
+        cake_ax.clear()
+        curve_ax.clear()
+        cake, curve = _integrate_with_poni(review, data)
+        if cake is not None:
+            cake_data = np.asarray(cake.intensity, dtype=float)
+            cake_display = np.log1p(np.clip(cake_data, a_min=0.0, a_max=None))
+            radial = np.asarray(cake.radial, dtype=float)
+            azimuthal = np.asarray(cake.azimuthal, dtype=float)
+            cake_ax.imshow(
+                cake_display,
+                origin="lower",
+                aspect="auto",
+                cmap="magma",
+                extent=(
+                    float(np.nanmin(radial)),
+                    float(np.nanmax(radial)),
+                    float(np.nanmin(azimuthal)),
+                    float(np.nanmax(azimuthal)),
+                ),
+            )
+            cake_ax.set_title(f"{alias} cake")
+            cake_ax.set_xlabel("2theta (deg)")
+            cake_ax.set_ylabel("azimuth (deg)")
+            for ring_index, two_theta_deg in ring_positions:
+                cake_ax.axvline(
+                    two_theta_deg,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    alpha=0.9,
+                )
+        else:
+            cake_ax.set_title(f"{alias} cake unavailable")
+            cake_ax.axis("off")
+        if curve is not None:
+            radial = np.asarray(curve.radial, dtype=float)
+            intensity = np.asarray(curve.intensity, dtype=float)
+            curve_ax.plot(radial, intensity, color="#35d0ff", linewidth=1.0)
+            curve_ax.set_yscale("log")
+            curve_ax.set_title(f"{alias} radial integration")
+            curve_ax.set_xlabel("2theta (deg)")
+            curve_ax.set_ylabel("I")
+            for ring_index, two_theta_deg in ring_positions:
+                curve_ax.axvline(
+                    two_theta_deg,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    alpha=0.9,
+                )
+                curve_ax.text(
+                    two_theta_deg,
+                    0.96,
+                    str(ring_index),
+                    transform=curve_ax.get_xaxis_transform(),
+                    va="top",
+                    ha="center",
+                    fontsize=8,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                )
+        else:
+            curve_ax.set_title(f"{alias} radial integration unavailable")
+            curve_ax.axis("off")
+
+    for col_index, alias in enumerate(aliases):
+        ax = axes[0, col_index]
+        cake_ax = axes[1, col_index]
+        curve_ax = axes[2, col_index]
         alias_key = str(alias).upper()
         review = review_by_alias.get(alias) or review_by_alias.get(alias_key)
+        if review is None:
+            continue
         detector_config = (
             detector_config_by_alias.get(alias)
             or detector_config_by_alias.get(alias_key)
@@ -1261,12 +1503,24 @@ def show_auto_poni_review_window(
         ax.set_ylabel("row (px)")
 
         first_ring = int(first_visible_ring_by_alias.get(alias_key, 1) or 1)
+        axis_to_alias[ax] = alias
+        top_axes_by_alias[alias] = ax
+        cake_axes_by_alias[alias] = cake_ax
+        curve_axes_by_alias[alias] = curve_ax
+        image_data_by_alias[alias] = data
+        detector_state_by_alias[alias] = detector_config
+        first_ring_by_alias[alias] = first_ring
+        manual_points_by_alias[alias] = []
+        manual_artists_by_alias[alias] = []
+        overlay_artists_by_alias[alias] = []
+        review_state_by_alias[alias] = review
+        base_review_by_alias[alias] = review
         poni_text = str(getattr(review, "poni_text", "") or "")
         overlays = build_agbh_ring_overlays(
             poni_text=poni_text,
             detector_config=detector_config,
             first_visible_ring=first_ring,
-            rings_to_show=rings_to_show,
+            rings_to_show=_rings_to_show_for_alias(alias),
         )
         for overlay in overlays:
             ring_index = int(overlay["ring_index"])
@@ -1282,8 +1536,9 @@ def show_auto_poni_review_window(
                 alpha=0.95 if ring_index == first_ring else 0.78,
             )
             ax.add_patch(circle)
+            overlay_artists_by_alias[alias].append(circle)
             if ring_index == first_ring:
-                ax.text(
+                label = ax.text(
                     0.02,
                     0.98,
                     f"first visible ring: {ring_index}",
@@ -1294,11 +1549,350 @@ def show_auto_poni_review_window(
                     color="#35d0ff",
                     bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
                 )
+                overlay_artists_by_alias[alias].append(label)
 
         ax.set_xlim(0.0, float(width))
         ax.set_ylim(0.0, float(height))
+        full_view_by_alias[alias] = (0.0, float(width), 0.0, float(height))
+
+        ring_positions = _ring_positions_deg(
+            poni_text=poni_text,
+            first_ring=first_ring,
+            count=_rings_to_show_for_alias(alias),
+        )
+        cake, curve = _integrate_with_poni(review, data)
+
+        if cake is not None:
+            cake_data = np.asarray(cake.intensity, dtype=float)
+            cake_display = np.log1p(np.clip(cake_data, a_min=0.0, a_max=None))
+            radial = np.asarray(cake.radial, dtype=float)
+            azimuthal = np.asarray(cake.azimuthal, dtype=float)
+            cake_ax.imshow(
+                cake_display,
+                origin="lower",
+                aspect="auto",
+                cmap="magma",
+                extent=(
+                    float(np.nanmin(radial)),
+                    float(np.nanmax(radial)),
+                    float(np.nanmin(azimuthal)),
+                    float(np.nanmax(azimuthal)),
+                ),
+            )
+            cake_ax.set_title(f"{alias} cake")
+            cake_ax.set_xlabel("2theta (deg)")
+            cake_ax.set_ylabel("azimuth (deg)")
+            for ring_index, two_theta_deg in ring_positions:
+                cake_ax.axvline(
+                    two_theta_deg,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    alpha=0.9,
+                )
+        else:
+            cake_ax.set_title(f"{alias} cake unavailable")
+            cake_ax.axis("off")
+
+        if curve is not None:
+            radial = np.asarray(curve.radial, dtype=float)
+            intensity = np.asarray(curve.intensity, dtype=float)
+            curve_ax.plot(radial, intensity, color="#35d0ff", linewidth=1.0)
+            curve_ax.set_yscale("log")
+            curve_ax.set_title(f"{alias} radial integration")
+            curve_ax.set_xlabel("2theta (deg)")
+            curve_ax.set_ylabel("I")
+            for ring_index, two_theta_deg in ring_positions:
+                curve_ax.axvline(
+                    two_theta_deg,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    alpha=0.9,
+                )
+                curve_ax.text(
+                    two_theta_deg,
+                    0.96,
+                    str(ring_index),
+                    transform=curve_ax.get_xaxis_transform(),
+                    va="top",
+                    ha="center",
+                    fontsize=8,
+                    color="#35d0ff" if ring_index == first_ring else "#f9f871",
+                )
+        else:
+            curve_ax.set_title(f"{alias} radial integration unavailable")
+            curve_ax.axis("off")
 
     fig.tight_layout()
+
+    def _save_clicked_points(alias: str):
+        points = manual_points_by_alias.get(alias) or []
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None, False
+        ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
+        output_dir = Path(getattr(review, "poni_path", "") or ".").parent
+        refit = False
+        if len(points) < 3:
+            base_review = base_review_by_alias.get(alias)
+            if base_review is not None:
+                review = base_review
+                review_state_by_alias[alias] = review
+                review_by_alias[alias] = review
+                review_by_alias[str(alias).upper()] = review
+                _draw_ring_overlays(alias)
+                _draw_integrations(alias)
+            if not points:
+                return None, False
+        if len(points) >= 3:
+            poni_text = refine_poni_from_clicked_ring_points(
+                poni_text=str(getattr(review, "poni_text", "") or ""),
+                detector_config=detector_state_by_alias.get(alias, {}),
+                ring_index=ring_index,
+                points_col_row=points,
+                alias=alias,
+            )
+            poni_path = output_dir / f"{Path(str(review.image_path)).stem}_{alias}_clicked_ring_{ring_index}.poni"
+            poni_path.write_text(poni_text, encoding="utf-8")
+            review = type(review)(
+                image_path=review.image_path,
+                poni_path=poni_path,
+                command=review.command,
+                poni_text=poni_text,
+                source_path=getattr(review, "source_path", None),
+            )
+            refit = True
+        npt_path = output_dir / f"{Path(str(review.image_path)).stem}_{alias}_clicked_ring_{ring_index}.npt"
+        write_agbh_clicked_points_npt(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            output_path=npt_path,
+            ring_index=ring_index,
+            points_col_row=points,
+            calibrant="AgBh",
+        )
+        command = build_pyfai_calib2_command(
+            image_path=review.image_path,
+            poni_text=review.poni_text,
+            detector_config=detector_state_by_alias.get(alias, {}),
+            calibrant="AgBh",
+        )
+        command = _command_with_npt(command, npt_path)
+        updated = type(review)(
+            image_path=review.image_path,
+            poni_path=review.poni_path,
+            command=command,
+            poni_text=review.poni_text,
+            source_path=getattr(review, "source_path", None),
+        )
+        review_state_by_alias[alias] = updated
+        review_by_alias[alias] = updated
+        review_by_alias[str(alias).upper()] = updated
+        if refit:
+            _draw_ring_overlays(alias)
+            _draw_integrations(alias)
+        return npt_path, refit
+
+    def _set_status(text: str):
+        label = status.get("label")
+        if label is not None:
+            label.setText(text)
+
+    def _nearest_clicked_point(alias: str, event, max_screen_distance: float = 12.0):
+        ax = top_axes_by_alias.get(alias)
+        points = manual_points_by_alias.get(alias) or []
+        if ax is None or not points:
+            return None
+        event_xy = np.asarray([float(event.x), float(event.y)])
+        best = None
+        best_distance = None
+        for index, (col, row) in enumerate(points):
+            point_xy = np.asarray(ax.transData.transform((col, row)), dtype=float)
+            distance = float(np.linalg.norm(point_xy - event_xy))
+            if best_distance is None or distance < best_distance:
+                best = index
+                best_distance = distance
+        if best_distance is None or best_distance > float(max_screen_distance):
+            return None
+        return best
+
+    def _delete_last_point(alias: str | None = None):
+        target_alias = alias or status.get("last_alias")
+        if not target_alias:
+            _set_status("No clicked point to delete")
+            return
+        points = manual_points_by_alias.setdefault(target_alias, [])
+        artists = manual_artists_by_alias.setdefault(target_alias, [])
+        if not points:
+            _set_status(f"{target_alias}: no clicked point to delete")
+            return
+        points.pop()
+        if artists:
+            artist = artists.pop()
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        try:
+            npt_path, refit = _save_clicked_points(target_alias)
+        except Exception as exc:
+            _set_status(f"{target_alias}: clicked point refit failed: {exc}")
+            canvas.draw_idle()
+            return
+        _set_status(
+            f"{target_alias}: deleted last point; {len(points)} clicked points on ring "
+            f"{first_ring_by_alias.get(target_alias, 1)}"
+            + ("; refit" if refit else "; original geometry" if len(points) < 3 else "")
+            + (f"; saved {npt_path}" if npt_path else "")
+        )
+        canvas.draw_idle()
+
+    def _on_click(event):
+        alias = axis_to_alias.get(event.inaxes)
+        if not alias or event.xdata is None or event.ydata is None:
+            return
+        status["last_alias"] = alias
+        if getattr(event, "dblclick", False):
+            view = full_view_by_alias.get(alias)
+            if view:
+                event.inaxes.set_xlim(view[0], view[1])
+                event.inaxes.set_ylim(view[2], view[3])
+                _set_status(f"{alias}: zoom reset")
+                canvas.draw_idle()
+            return
+        artists = manual_artists_by_alias.setdefault(alias, [])
+        points = manual_points_by_alias.setdefault(alias, [])
+        if event.button == 3:
+            _delete_last_point(alias)
+            return
+        if event.button != 1:
+            return
+
+        point_index = _nearest_clicked_point(alias, event)
+        if point_index is not None:
+            drag_state["alias"] = alias
+            drag_state["index"] = point_index
+            drag_state["artist"] = (
+                artists[point_index] if point_index < len(artists) else None
+            )
+            _set_status(f"{alias}: dragging point {point_index + 1}")
+            return
+
+        col, row = float(event.xdata), float(event.ydata)
+        points.append((col, row))
+        artist = event.inaxes.plot(
+            [col],
+            [row],
+            marker="o",
+            markersize=6,
+            markeredgewidth=1.0,
+            markerfacecolor="none",
+            color="#ffffff",
+            linestyle="None",
+        )[0]
+        artists.append(artist)
+        try:
+            npt_path, refit = _save_clicked_points(alias)
+        except Exception as exc:
+            _set_status(f"{alias}: clicked point refit failed: {exc}")
+            canvas.draw_idle()
+            return
+        _set_status(
+            f"{alias}: added point ({col:.1f}, {row:.1f}) on ring "
+            f"{first_ring_by_alias.get(alias, 1)}; total {len(points)}"
+            + ("; refit" if refit else "; need 3 points to refit")
+            + (f"; saved {npt_path}" if npt_path else "")
+        )
+        canvas.draw_idle()
+
+    def _on_motion(event):
+        alias = drag_state.get("alias")
+        index = drag_state.get("index")
+        artist = drag_state.get("artist")
+        if alias is None or index is None or artist is None:
+            return
+        if event.inaxes is not top_axes_by_alias.get(alias):
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        points = manual_points_by_alias.get(alias) or []
+        if int(index) >= len(points):
+            return
+        col, row = float(event.xdata), float(event.ydata)
+        points[int(index)] = (col, row)
+        artist.set_data([col], [row])
+        _set_status(f"{alias}: moving point {int(index) + 1} to ({col:.1f}, {row:.1f})")
+        canvas.draw_idle()
+
+    def _on_release(event):
+        alias = drag_state.get("alias")
+        index = drag_state.get("index")
+        if alias is None or index is None:
+            return
+        drag_state["alias"] = None
+        drag_state["index"] = None
+        drag_state["artist"] = None
+        try:
+            npt_path, refit = _save_clicked_points(str(alias))
+        except Exception as exc:
+            _set_status(f"{alias}: clicked point refit failed: {exc}")
+            canvas.draw_idle()
+            return
+        points = manual_points_by_alias.get(str(alias)) or []
+        _set_status(
+            f"{alias}: moved point {int(index) + 1}; {len(points)} clicked points"
+            + ("; refit" if refit else "; need 3 points to refit")
+            + (f"; saved {npt_path}" if npt_path else "")
+        )
+        canvas.draw_idle()
+
+    def _on_scroll(event):
+        alias = axis_to_alias.get(event.inaxes)
+        if not alias or event.xdata is None or event.ydata is None:
+            return
+        status["last_alias"] = alias
+        ax = event.inaxes
+        scale = 0.8 if event.button == "up" else 1.25
+        x_left, x_right = ax.get_xlim()
+        y_bottom, y_top = ax.get_ylim()
+        new_width = abs(x_right - x_left) * scale
+        new_height = abs(y_top - y_bottom) * scale
+        rel_x = (event.xdata - x_left) / (x_right - x_left)
+        rel_y = (event.ydata - y_bottom) / (y_top - y_bottom)
+        new_left = event.xdata - new_width * rel_x
+        new_right = event.xdata + new_width * (1.0 - rel_x)
+        new_bottom = event.ydata - new_height * rel_y
+        new_top = event.ydata + new_height * (1.0 - rel_y)
+        view = full_view_by_alias.get(alias)
+        if view:
+            min_x, max_x, min_y, max_y = view
+            full_width = max_x - min_x
+            full_height = max_y - min_y
+            if new_width >= full_width:
+                new_left, new_right = min_x, max_x
+            else:
+                if new_left < min_x:
+                    new_right += min_x - new_left
+                    new_left = min_x
+                if new_right > max_x:
+                    new_left -= new_right - max_x
+                    new_right = max_x
+            if new_height >= full_height:
+                new_bottom, new_top = min_y, max_y
+            else:
+                if new_bottom < min_y:
+                    new_top += min_y - new_bottom
+                    new_bottom = min_y
+                if new_top > max_y:
+                    new_bottom -= new_top - max_y
+                    new_top = max_y
+        ax.set_xlim(new_left, new_right)
+        ax.set_ylim(new_bottom, new_top)
+        _set_status(f"{alias}: zoom {abs(new_right - new_left):.0f} x {abs(new_top - new_bottom):.0f} px")
+        canvas.draw_idle()
+
+    canvas.mpl_connect("button_press_event", _on_click)
+    canvas.mpl_connect("motion_notify_event", _on_motion)
+    canvas.mpl_connect("button_release_event", _on_release)
+    canvas.mpl_connect("scroll_event", _on_scroll)
 
     dialog = QDialog(parent)
     dialog.setWindowTitle("Auto PONI Review")
@@ -1309,11 +1903,19 @@ def show_auto_poni_review_window(
     note.setWordWrap(True)
     note.setText(
         "Validate saves generated PONI files and updates the active technical container. "
-        "Correct opens pyFAI-calib2 for manual refinement."
+        "Correct opens pyFAI-calib2 for manual refinement. "
+        "Left-click an AgBh image to add a point on the selected first ring; drag points to move them; right-click removes the last point. "
+        "Use mouse wheel to zoom around cursor; double-click to reset zoom."
     )
     layout.addWidget(note)
+    clicked_status = QLabel(dialog)
+    clicked_status.setWordWrap(True)
+    clicked_status.setText("Clicked ring points: none")
+    status["label"] = clicked_status
+    layout.addWidget(clicked_status)
 
     buttons = QDialogButtonBox(dialog)
+    delete_btn = buttons.addButton("Delete last point", QDialogButtonBox.ActionRole)
     validate_btn = buttons.addButton("Validate", QDialogButtonBox.AcceptRole)
     correct_btn = buttons.addButton("Correct", QDialogButtonBox.ActionRole)
     cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.RejectRole)
@@ -1328,10 +1930,11 @@ def show_auto_poni_review_window(
         dialog.accept()
 
     validate_btn.clicked.connect(_validate)
+    delete_btn.clicked.connect(lambda: _delete_last_point())
     correct_btn.clicked.connect(_correct)
     cancel_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
-    dialog.resize(max(720, 520 * cols), 520)
+    dialog.resize(max(900, 560 * cols), 980)
     result = dialog.exec_()
     if result != QDialog.Accepted:
         decision["value"] = "cancel"
