@@ -1229,6 +1229,7 @@ def show_auto_poni_review_window(
         refine_poni_from_clicked_ring_points,
         ring_two_theta_rad,
         write_agbh_clicked_points_npt,
+        write_agbh_points_by_ring_npt,
     )
 
     aliases = [str(alias) for alias in aliases if str(alias or "").strip()]
@@ -1378,6 +1379,7 @@ def show_auto_poni_review_window(
     first_ring_by_alias = {}
     manual_points_by_alias = {}
     manual_artists_by_alias = {}
+    auto_points_by_alias = {}
     review_state_by_alias = {}
     base_review_by_alias = {}
     top_axes_by_alias = {}
@@ -1457,6 +1459,75 @@ def show_auto_poni_review_window(
         )
         overlay_artists_by_alias.setdefault(alias, []).extend([marker, label])
 
+    def _expanded_image_view(alias: str, width: float, height: float):
+        margin = max(8.0, min(float(width), float(height)) * 0.05)
+        min_col = 0.0
+        max_col = float(width)
+        min_row = 0.0
+        max_row = float(height)
+        payload = _center_marker_payload(alias)
+        if payload:
+            center_col = float(payload["col_px"])
+            center_row = float(payload["row_px"])
+            min_col = min(min_col, center_col - margin)
+            max_col = max(max_col, center_col + margin)
+            min_row = min(min_row, center_row - margin)
+            max_row = max(max_row, center_row + margin)
+        return (min_col, max_col, min_row, max_row)
+
+    def _ensure_center_visible(alias: str):
+        ax = top_axes_by_alias.get(alias)
+        data = image_data_by_alias.get(alias)
+        payload = _center_marker_payload(alias)
+        if ax is None or data is None or not payload:
+            return
+        height, width = np.asarray(data).shape
+        full_view = _expanded_image_view(alias, float(width), float(height))
+        full_view_by_alias[alias] = full_view
+        center_col = float(payload["col_px"])
+        center_row = float(payload["row_px"])
+        margin = max(8.0, min(float(width), float(height)) * 0.05)
+        x_left, x_right = ax.get_xlim()
+        y_bottom, y_top = ax.get_ylim()
+        next_left = min(float(x_left), center_col - margin)
+        next_right = max(float(x_right), center_col + margin)
+        next_bottom = min(float(y_bottom), center_row - margin)
+        next_top = max(float(y_top), center_row + margin)
+        if (
+            center_col < min(x_left, x_right)
+            or center_col > max(x_left, x_right)
+            or center_row < min(y_bottom, y_top)
+            or center_row > max(y_bottom, y_top)
+        ):
+            ax.set_xlim(next_left, next_right)
+            ax.set_ylim(next_bottom, next_top)
+
+    def _draw_auto_points(alias: str):
+        ax = top_axes_by_alias.get(alias)
+        if ax is None:
+            return
+        first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
+        for entry in auto_points_by_alias.get(alias, []) or []:
+            ring_index = int(entry.get("ring_index", first_ring))
+            points = list(entry.get("points", []) or [])
+            if not points:
+                continue
+            cols_px = [float(col) for col, _row in points]
+            rows_px = [float(row) for _col, row in points]
+            artist = ax.plot(
+                cols_px,
+                rows_px,
+                marker=".",
+                markersize=4.2,
+                markerfacecolor="#35d0ff" if ring_index == first_ring else "#f9f871",
+                markeredgecolor="#101010",
+                markeredgewidth=0.25,
+                linestyle="None",
+                alpha=0.92,
+                zorder=7,
+            )[0]
+            overlay_artists_by_alias.setdefault(alias, []).append(artist)
+
     def _draw_ring_overlays(alias: str):
         ax = top_axes_by_alias.get(alias)
         review = review_state_by_alias.get(alias)
@@ -1503,6 +1574,8 @@ def show_auto_poni_review_window(
                     bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
                 )
                 overlay_artists_by_alias[alias].append(label)
+        _draw_auto_points(alias)
+        _ensure_center_visible(alias)
         _draw_center_marker(alias)
 
     def _draw_integrations(alias: str):
@@ -1615,6 +1688,7 @@ def show_auto_poni_review_window(
         ax.set_title(f"{alias} AgBh")
         ax.set_xlabel("col (px)")
         ax.set_ylabel("row (px)")
+        ax.set_facecolor("black")
 
         first_ring = int(first_visible_ring_by_alias.get(alias_key, 1) or 1)
         axis_to_alias[ax] = alias
@@ -1626,6 +1700,7 @@ def show_auto_poni_review_window(
         first_ring_by_alias[alias] = first_ring
         manual_points_by_alias[alias] = []
         manual_artists_by_alias[alias] = []
+        auto_points_by_alias[alias] = []
         overlay_artists_by_alias[alias] = []
         review_state_by_alias[alias] = review
         base_review_by_alias[alias] = review
@@ -1666,9 +1741,10 @@ def show_auto_poni_review_window(
                 overlay_artists_by_alias[alias].append(label)
         _draw_center_marker(alias)
 
-        ax.set_xlim(0.0, float(width))
-        ax.set_ylim(0.0, float(height))
-        full_view_by_alias[alias] = (0.0, float(width), 0.0, float(height))
+        full_view = _expanded_image_view(alias, float(width), float(height))
+        ax.set_xlim(full_view[0], full_view[1])
+        ax.set_ylim(full_view[2], full_view[3])
+        full_view_by_alias[alias] = full_view
 
         cake_ax.set_title(f"{alias} cake not computed")
         cake_ax.axis("off")
@@ -1684,6 +1760,102 @@ def show_auto_poni_review_window(
             canvas.draw_idle()
         _set_status("Clicked ring points: none")
 
+    def _alias_file_token(alias: str) -> str:
+        token = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "_"
+            for ch in str(alias or "").strip()
+        )
+        return token or "detector"
+
+    def _poni_text_with_hint_radius(alias: str, review, points, ring_index: int):
+        if not points:
+            return str(getattr(review, "poni_text", "") or "")
+        payload = _center_marker_payload(alias)
+        if not payload:
+            return str(getattr(review, "poni_text", "") or "")
+        import math
+
+        params = parse_poni_parameters(str(getattr(review, "poni_text", "") or ""))
+        wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+        d_spacing_index = min(len(AGBH_D_SPACING_A) - 1, max(0, int(ring_index) - 1))
+        two_theta = ring_two_theta_rad(
+            wavelength_m=wavelength_m,
+            d_spacing_a=AGBH_D_SPACING_A[d_spacing_index],
+        )
+        if two_theta is None:
+            return str(getattr(review, "poni_text", "") or "")
+        center_col = float(payload["col_px"])
+        center_row = float(payload["row_px"])
+        radii = [
+            math.hypot(float(col) - center_col, float(row) - center_row)
+            for col, row in points
+        ]
+        radii = [radius for radius in radii if math.isfinite(radius) and radius > 0.0]
+        if not radii:
+            return str(getattr(review, "poni_text", "") or "")
+        pixel1, pixel2 = pixel_size_m(detector_state_by_alias.get(alias, {}))
+        distance_m = (sum(radii) / len(radii)) * ((pixel1 + pixel2) / 2.0) / math.tan(two_theta)
+        if not math.isfinite(distance_m) or distance_m <= 0.0:
+            return str(getattr(review, "poni_text", "") or "")
+        from difra.gui.technical.pyfai_calibration import build_seed_poni_text
+
+        return build_seed_poni_text(
+            detector_config=detector_state_by_alias.get(alias, {}),
+            distance_m=distance_m,
+            alias=alias,
+            existing_poni_text=str(getattr(review, "poni_text", "") or ""),
+            wavelength_m=wavelength_m,
+            center_px=(center_row, center_col),
+        )
+
+    def _auto_points_for_review(alias: str, review):
+        data = image_data_by_alias.get(alias)
+        if data is None:
+            return []
+        height, width = np.asarray(data).shape
+        first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
+        overlays = build_agbh_ring_overlays(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            detector_config=detector_state_by_alias.get(alias, {}),
+            first_visible_ring=first_ring,
+            rings_to_show=_rings_to_show_for_alias(alias),
+        )
+        import math
+
+        result = []
+        for overlay in overlays:
+            ring_index = int(overlay["ring_index"])
+            radius = float(overlay["radius_px"])
+            center_col = float(overlay["center_col_px"])
+            center_row = float(overlay["center_row_px"])
+            point_count = 72 if ring_index == first_ring else 48
+            points = []
+            seen = set()
+            for idx in range(point_count):
+                angle = 2.0 * math.pi * float(idx) / float(point_count)
+                col = center_col + radius * math.cos(angle)
+                row = center_row + radius * math.sin(angle)
+                if not (0.0 <= col < float(width) and 0.0 <= row < float(height)):
+                    continue
+                snapped_col, snapped_row = _snap_to_peak(data, col, row, radius=5)
+                if not (0.0 <= snapped_col < float(width) and 0.0 <= snapped_row < float(height)):
+                    continue
+                key = (int(round(snapped_col)), int(round(snapped_row)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                points.append((float(snapped_col), float(snapped_row)))
+            if points:
+                result.append({"ring_index": ring_index, "points": points})
+        return result
+
+    def _points_by_ring(entries):
+        return {
+            int(entry.get("ring_index")): list(entry.get("points", []) or [])
+            for entry in entries
+            if entry.get("points")
+        }
+
     def _save_clicked_points(alias: str):
         points = manual_points_by_alias.get(alias) or []
         review = review_state_by_alias.get(alias)
@@ -1691,6 +1863,7 @@ def show_auto_poni_review_window(
             return None, False
         ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
         output_dir = Path(getattr(review, "poni_path", "") or ".").parent
+        alias_token = _alias_file_token(alias)
         refit = False
         if len(points) < 3:
             base_review = base_review_by_alias.get(alias)
@@ -1710,7 +1883,7 @@ def show_auto_poni_review_window(
                 points_col_row=points,
                 alias=alias,
             )
-            poni_path = output_dir / f"{Path(str(review.image_path)).stem}_{alias}_clicked_ring_{ring_index}.poni"
+            poni_path = output_dir / f"{alias_token}.poni"
             poni_path.write_text(poni_text, encoding="utf-8")
             review = type(review)(
                 image_path=review.image_path,
@@ -1720,14 +1893,37 @@ def show_auto_poni_review_window(
                 source_path=getattr(review, "source_path", None),
             )
             refit = True
-        npt_path = output_dir / f"{Path(str(review.image_path)).stem}_{alias}_clicked_ring_{ring_index}.npt"
-        write_agbh_clicked_points_npt(
-            poni_text=str(getattr(review, "poni_text", "") or ""),
-            output_path=npt_path,
-            ring_index=ring_index,
-            points_col_row=points,
-            calibrant="AgBh",
-        )
+        if points and not refit:
+            hinted_poni_text = _poni_text_with_hint_radius(alias, review, points, ring_index)
+            if hinted_poni_text != str(getattr(review, "poni_text", "") or ""):
+                poni_path = output_dir / f"{alias_token}.poni"
+                poni_path.write_text(hinted_poni_text, encoding="utf-8")
+                review = type(review)(
+                    image_path=review.image_path,
+                    poni_path=poni_path,
+                    command=review.command,
+                    poni_text=hinted_poni_text,
+                    source_path=getattr(review, "source_path", None),
+                )
+        npt_path = output_dir / f"{alias_token}.npt"
+        auto_entries = _auto_points_for_review(alias, review)
+        auto_points_by_alias[alias] = auto_entries
+        auto_points = _points_by_ring(auto_entries)
+        if auto_points:
+            write_agbh_points_by_ring_npt(
+                poni_text=str(getattr(review, "poni_text", "") or ""),
+                output_path=npt_path,
+                points_by_ring=auto_points,
+                calibrant="AgBh",
+            )
+        else:
+            write_agbh_clicked_points_npt(
+                poni_text=str(getattr(review, "poni_text", "") or ""),
+                output_path=npt_path,
+                ring_index=ring_index,
+                points_col_row=points,
+                calibrant="AgBh",
+            )
         command = build_pyfai_calib2_command(
             image_path=review.image_path,
             poni_text=review.poni_text,
@@ -1749,6 +1945,12 @@ def show_auto_poni_review_window(
         _draw_ring_overlays(alias)
         _draw_integrations(alias)
         return npt_path, refit
+
+    for alias in aliases:
+        review = review_state_by_alias.get(alias)
+        if review is not None:
+            auto_points_by_alias[alias] = _auto_points_for_review(alias, review)
+            _draw_ring_overlays(alias)
 
     def _set_status(text: str):
         label = status.get("label")
@@ -2016,6 +2218,7 @@ def show_auto_poni_review_window(
     cancel_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
     dialog.resize(max(900, 560 * cols), 980)
+    QTimer.singleShot(0, _draw_all_integrations)
     result = dialog.exec_()
     if result != QDialog.Accepted:
         decision["value"] = "cancel"

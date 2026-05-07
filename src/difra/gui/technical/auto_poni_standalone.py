@@ -530,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
             center_px=center_px,
             first_visible_ring=first_visible.get(alias, 1),
             rings_to_show=rings_to_show.get(alias, 3),
+            output_prefix=alias,
         )
         images[alias] = np.asarray(load_calibration_array(source), dtype=float)
 

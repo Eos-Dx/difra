@@ -1470,6 +1470,7 @@ class TechnicalCaptureMixin:
                     center_px=center_px,
                     first_visible_ring=first_visible_ring,
                     rings_to_show=rings_to_search,
+                    output_prefix=alias_key,
                 )
                 if source_path is not None:
                     review = type(review)(
@@ -1492,6 +1493,7 @@ class TechnicalCaptureMixin:
                             calibrant=str(auto_cfg.get("calibrant") or "AgBh"),
                             first_visible_ring=first_visible_ring,
                             rings_to_show=rings_to_search,
+                            output_prefix=alias_key,
                         )
                     except Exception as fit_exc:
                         self._log_technical_event(
@@ -1660,6 +1662,12 @@ class TechnicalCaptureMixin:
 
     def _validate_auto_poni_reviews(self, reviews: dict) -> bool:
         tm = _tm()
+
+        def _warn(message: str):
+            widget_cls = getattr(tm, "QWidget", None)
+            parent = self if widget_cls is not None and isinstance(self, widget_cls) else None
+            tm.QMessageBox.warning(parent, "Auto PONI", message)
+
         if not isinstance(getattr(self, "ponis", None), dict):
             self.ponis = {}
         if not isinstance(getattr(self, "poni_files", None), dict):
@@ -1684,15 +1692,10 @@ class TechnicalCaptureMixin:
                 self._log_technical_event(
                     f"Auto PONI validate ignored: active container is locked ({Path(active_path).name})"
                 )
-                app = tm.QApplication.instance() if hasattr(tm, "QApplication") else None
-                if app is not None:
-                    widget_cls = getattr(tm, "QWidget", None)
-                    parent = self if widget_cls is not None and isinstance(self, widget_cls) else None
-                    tm.QMessageBox.warning(
-                        parent,
-                        "Auto PONI",
-                        "Active technical container is locked. PONI files were not moved or updated in the container.",
-                    )
+                _warn(
+                    "Active technical container is locked. "
+                    "PONI files cannot be updated in this container."
+                )
                 return False
         except Exception:
             logger.warning("Failed to check active technical container lock state", exc_info=True)
@@ -1721,9 +1724,7 @@ class TechnicalCaptureMixin:
             synced = bool(sync_fn(show_errors=True))
             if not synced:
                 self._log_technical_event("Auto PONI validated, but container sync failed")
-                tm.QMessageBox.warning(
-                    self,
-                    "Auto PONI",
+                _warn(
                     "Generated PONI files were saved, but could not be synced into an unlocked technical container.",
                 )
                 return False

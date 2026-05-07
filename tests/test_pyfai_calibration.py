@@ -17,6 +17,7 @@ from difra.gui.technical.pyfai_calibration import (
     refine_poni_from_clicked_ring_points,
     write_agbh_control_points_npt,
     write_agbh_clicked_points_npt,
+    write_agbh_points_by_ring_npt,
     write_pyfai_calib2_launcher,
 )
 
@@ -118,6 +119,25 @@ def test_prepare_agbh_calib2_review_writes_seed_and_command(tmp_path: Path):
     assert "-n" in review.command
     assert "0.17" in review.command
     assert str(review.image_path) == review.command[-1]
+
+
+def test_prepare_agbh_calib2_review_accepts_stable_output_prefix(tmp_path: Path):
+    npy = tmp_path / "agbh_PRIMARY.npy"
+    np.save(npy, np.ones((8, 8), dtype=np.float32))
+
+    review = prepare_agbh_calib2_review(
+        source_image=npy,
+        detector_config=_detector_config(),
+        distance_m=0.17,
+        alias="PRIMARY",
+        output_dir=tmp_path / "autopony",
+        first_visible_ring=1,
+        output_prefix="PRIMARY",
+    )
+
+    assert review.image_path.name == "PRIMARY_pyfai.tif"
+    assert review.poni_path.name == "PRIMARY.poni"
+    assert str(tmp_path / "autopony" / "PRIMARY.npt") in review.command
 
 
 def test_build_pyfai_calib2_command_uses_poni_geometry():
@@ -295,6 +315,32 @@ def test_clicked_ring_points_write_npt_and_refine_poni(tmp_path):
     assert abs(parsed["Poni1"] - 0.0064) < 1e-9
     assert abs(parsed["Poni2"] - 0.0005) < 1e-9
     assert parsed["Distance"] > 0.0
+
+
+def test_points_by_ring_npt_writes_auto_points_for_multiple_rings(tmp_path):
+    poni = "\n".join(
+        [
+            "Distance: 0.02",
+            "Poni1: 0.0064",
+            "Poni2: 0.0005",
+            "Wavelength: 1.542092020313436e-10",
+        ]
+    )
+
+    npt = write_agbh_points_by_ring_npt(
+        poni_text=poni,
+        output_path=tmp_path / "auto.npt",
+        points_by_ring={
+            1: [(10.0, 20.0), (30.0, 40.0)],
+            3: [(50.0, 60.0)],
+        },
+    )
+
+    text = npt.read_text(encoding="utf-8")
+    assert "ring: 0" in text
+    assert "ring: 2" in text
+    assert "point: x=10 y=20" in text
+    assert "point: x=50 y=60" in text
 
 
 def test_normalized_auto_poni_config_defaults_visible_rings():
