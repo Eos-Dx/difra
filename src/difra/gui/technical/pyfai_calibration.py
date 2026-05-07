@@ -265,6 +265,7 @@ def export_calibration_image_for_pyfai(
     *,
     output_dir: str | Path | None = None,
     alias: str = "",
+    output_stem: str | None = None,
 ) -> Path:
     text = str(source or "").strip()
     if not text:
@@ -289,7 +290,10 @@ def export_calibration_image_for_pyfai(
         output_root = Path(output_dir)
         stem = "h5ref" if text.startswith("h5ref://") else Path(text).stem
     output_root.mkdir(parents=True, exist_ok=True)
-    target = output_root / f"{_safe_token(stem)}_{_safe_token(alias, 'detector')}_pyfai.tif"
+    if output_stem:
+        target = output_root / f"{_safe_token(output_stem)}_pyfai.tif"
+    else:
+        target = output_root / f"{_safe_token(stem)}_{_safe_token(alias, 'detector')}_pyfai.tif"
 
     from PIL import Image
 
@@ -681,6 +685,50 @@ def write_agbh_clicked_points_npt(
     return target
 
 
+def write_agbh_points_by_ring_npt(
+    *,
+    poni_text: str,
+    output_path: str | Path,
+    points_by_ring: Mapping[int, Sequence[tuple[float, float]]],
+    calibrant: str = DEFAULT_CALIBRANT,
+) -> Path:
+    params = parse_poni_parameters(poni_text)
+    wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+    lines = [
+        "# set of control point used by pyFAI to calibrate the geometry of a scattering experiment",
+        "# angles are in radians, wavelength in meter and positions in pixels",
+        f"calibrant: {calibrant} {wavelength_m}",
+        f"wavelength: {wavelength_m}",
+        "dspacing:" + " ".join(str(value) for value in AGBH_D_SPACING_A),
+    ]
+    group_index = 0
+    for ring in sorted(int(key) for key in points_by_ring.keys()):
+        points = list(points_by_ring.get(ring, []) or [])
+        if not points:
+            continue
+        d_spacing_index = min(len(AGBH_D_SPACING_A) - 1, max(0, ring - 1))
+        two_theta = ring_two_theta_rad(
+            wavelength_m=wavelength_m,
+            d_spacing_a=AGBH_D_SPACING_A[d_spacing_index],
+        )
+        lines.extend(
+            [
+                "",
+                f"New group of points: {group_index}",
+                f"2theta: {_format_float(two_theta or 0.0)}",
+                f"ring: {max(0, ring - 1)}",
+            ]
+        )
+        for col, row in points:
+            lines.append(f"point: x={_format_float(col)} y={_format_float(row)}")
+        group_index += 1
+
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
 def refine_poni_from_clicked_ring_points(
     *,
     poni_text: str,
@@ -741,6 +789,7 @@ def run_headless_agbh_fit(
     first_visible_ring: int = 1,
     rings_to_show: int = 8,
     points_per_degree: float = 0.25,
+    output_prefix: str | None = None,
 ) -> HeadlessPoniFitResult:
     image = np.asarray(load_calibration_array(source_image), dtype=np.float64)
     if image.ndim != 2:
@@ -799,9 +848,15 @@ def run_headless_agbh_fit(
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
-    stem = _safe_token(Path(str(source_image)).stem)
     alias_token = _safe_token(alias, "detector")
-    npt_path = output_root / f"{stem}_{alias_token}_headless_fit.npt"
+    if output_prefix:
+        prefix = _safe_token(output_prefix, alias_token)
+        npt_path = output_root / f"{prefix}.npt"
+        poni_path = output_root / f"{prefix}.poni"
+    else:
+        stem = _safe_token(Path(str(source_image)).stem)
+        npt_path = output_root / f"{stem}_{alias_token}_headless_fit.npt"
+        poni_path = output_root / f"{stem}_{alias_token}_headless_fit.poni"
     filtered.save(str(npt_path))
 
     refinement = single_geometry.geometry_refinement
@@ -816,7 +871,6 @@ def run_headless_agbh_fit(
         )
         refined = True
 
-    poni_path = output_root / f"{stem}_{alias_token}_headless_fit.poni"
     if poni_path.exists():
         poni_path.unlink()
     refinement.save(str(poni_path))
@@ -878,12 +932,15 @@ def prepare_agbh_calib2_review(
     center_px: tuple[float, float] | None = None,
     first_visible_ring: int | None = None,
     rings_to_show: int = 4,
+    output_prefix: str | None = None,
 ) -> PyfaiCalib2Review:
+    prefix = _safe_token(output_prefix, _safe_token(alias, "detector")) if output_prefix else ""
     output_root = Path(output_dir) if output_dir is not None else None
     image_path = export_calibration_image_for_pyfai(
         source_image,
         output_dir=output_root,
         alias=alias,
+        output_stem=prefix or None,
     )
     if output_root is None:
         output_root = image_path.parent
@@ -897,7 +954,10 @@ def prepare_agbh_calib2_review(
         wavelength_m=None if wavelength_m is None else float(wavelength_m),
         center_px=center_px,
     )
-    poni_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.poni"
+    if prefix:
+        poni_path = output_root / f"{prefix}.poni"
+    else:
+        poni_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.poni"
     poni_path.write_text(poni_text, encoding="utf-8")
     command = build_pyfai_calib2_command(
         image_path=image_path,
@@ -906,7 +966,10 @@ def prepare_agbh_calib2_review(
         calibrant=calibrant,
     )
     if first_visible_ring is not None:
-        npt_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.npt"
+        if prefix:
+            npt_path = output_root / f"{prefix}.npt"
+        else:
+            npt_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.npt"
         write_agbh_control_points_npt(
             poni_text=poni_text,
             detector_config=detector_config,

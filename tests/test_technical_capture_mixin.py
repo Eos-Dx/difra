@@ -329,11 +329,15 @@ def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
         normalized_auto_poni_config({}),
         sources={"PRIMARY": str(agbh_path)},
         distance_cm_by_alias={"PRIMARY": 2.0},
+        first_visible_ring_by_alias={"PRIMARY": 1},
     )
 
     review = prepared["reviews"]["PRIMARY"]
     assert "Distance: 0.02" in review.poni_text
     assert review.poni_path.parent == tmp_path / "autopony"
+    assert review.image_path.name == "PRIMARY_pyfai.tif"
+    assert review.poni_path.name == "PRIMARY.poni"
+    assert (tmp_path / "autopony" / "PRIMARY.npt").exists()
 
 
 def test_auto_poni_saxs_uses_physical_primary_detector_config():
@@ -434,14 +438,30 @@ def test_auto_poni_prepare_cleans_autopony_folder(tmp_path):
         normalized_auto_poni_config({}),
         sources={"PRIMARY": str(agbh_path)},
         distance_cm_by_alias={"PRIMARY": 2.0},
+        first_visible_ring_by_alias={"PRIMARY": 1},
     )
 
     assert prepared
     assert not stale.exists()
-    assert any((tmp_path / "autopony").iterdir())
+    assert sorted(path.name for path in (tmp_path / "autopony").iterdir()) == [
+        "PRIMARY.npt",
+        "PRIMARY.poni",
+        "PRIMARY_pyfai.tif",
+    ]
 
 
-def test_auto_poni_validate_noops_when_active_container_locked(tmp_path):
+def test_auto_poni_validate_noops_when_active_container_locked(tmp_path, monkeypatch):
+    warnings = []
+    fake_tm = SimpleNamespace(
+        QMessageBox=SimpleNamespace(
+            warning=lambda _parent, _title, message: warnings.append(str(message))
+        )
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.technical.capture_mixin._tm",
+        lambda: fake_tm,
+    )
+
     class _SyncHarness(_Harness):
         def __init__(self):
             super().__init__()
@@ -479,6 +499,9 @@ def test_auto_poni_validate_noops_when_active_container_locked(tmp_path):
     assert harness.created == []
     assert harness.synced == 0
     assert not (tmp_path / "AgBH_001_PRIMARY.poni").exists()
+    assert warnings == [
+        "Active technical container is locked. PONI files cannot be updated in this container."
+    ]
 
 
 def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
