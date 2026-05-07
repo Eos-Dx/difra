@@ -495,6 +495,24 @@ class TechnicalCaptureMixin:
 
         return fallback
 
+    def _resolve_auto_poni_pyfai_calib2_env(self) -> str:
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        auto_cfg = cfg.get("auto_poni_calibration", {})
+        if isinstance(auto_cfg, dict):
+            explicit = str(auto_cfg.get("pyfai_calib2_env") or "").strip()
+            if explicit:
+                return explicit
+
+        env_explicit = str(os.environ.get("DIFRA_PYFAI_CALIB2_ENV") or "").strip()
+        if env_explicit:
+            return env_explicit
+
+        sidecar_env = str(os.environ.get("SIDECAR_ENV") or os.environ.get("DIFRA_SIDECAR_ENV") or "").strip()
+        if sidecar_env:
+            return sidecar_env
+
+        return self._resolve_pyfai_conda_env()
+
     def _selected_aux_row_for_pyfai(self):
         try:
             if not hasattr(self, "auxTable") or self.auxTable is None:
@@ -1416,10 +1434,18 @@ class TechnicalCaptureMixin:
                                 f"chi2={fit_result.chi2}"
                             )
                         else:
+                            from difra.gui.technical.pyfai_calibration import (
+                                parse_poni_parameters,
+                            )
+
+                            seed_params = parse_poni_parameters(review.poni_text)
+                            fit_params = parse_poni_parameters(fit_result.poni_text)
                             self._log_technical_event(
                                 "Auto PONI headless fit rejected "
                                 f"{alias}: points={fit_result.extracted_points}, "
-                                f"chi2={fit_result.chi2}"
+                                f"chi2={fit_result.chi2}, "
+                                f"seed_dist={seed_params.get('Distance')}, "
+                                f"fit_dist={fit_params.get('Distance')}"
                             )
                 reviews[alias] = review
                 images[alias] = load_calibration_array(source_ref)
@@ -1457,7 +1483,7 @@ class TechnicalCaptureMixin:
         return result
 
     def _launch_pyfai_reviews(self, reviews: dict) -> bool:
-        env = self._resolve_pyfai_conda_env()
+        env = self._resolve_auto_poni_pyfai_calib2_env()
         if not env:
             _tm().QMessageBox.warning(self, "Auto PONI", "No conda env configured for pyFAI.")
             return False
