@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,8 +173,14 @@ def ring_defaults(auto_config: dict, aliases: list[str], distance_cm: float):
 def save_validated_ponis(reviews: dict) -> list[Path]:
     written = []
     for alias, review in reviews.items():
-        source_path = Path(getattr(review, "source_path", "") or "")
-        target = source_path.with_suffix(".poni") if source_path else Path(review.poni_path)
+        raw_source = str(getattr(review, "source_path", "") or "").strip()
+        source_path = Path(raw_source) if raw_source else None
+        target = (
+            Path(review.poni_path).parent / f"{source_path.stem}.poni"
+            if source_path is not None
+            else Path(review.poni_path)
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(str(review.poni_text or ""), encoding="utf-8")
         written.append(target)
         print(f"{alias}: saved {target}")
@@ -492,8 +499,13 @@ def main(argv: list[str] | None = None) -> int:
     wavelength_m = energy_kev_to_wavelength_m(settings["energy_kev"])
     first_visible = settings["first_visible_ring_by_alias"]
     rings_to_show = settings["rings_to_show_by_alias"]
-    output_root = Path(args.output_dir) if args.output_dir else Path(next(iter(sources.values()))).parent / "auto_poni"
+    output_root = Path(args.output_dir) if args.output_dir else Path(next(iter(sources.values()))).parent / "autopony"
     output_root.mkdir(parents=True, exist_ok=True)
+    for child in output_root.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
     reviews = {}
     images = {}

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1266,6 +1267,90 @@ class TechnicalCaptureMixin:
             sources.setdefault(alias, source_ref)
         return sources
 
+    @staticmethod
+    def _auto_poni_output_path_for_source(source_path, fallback_poni_path):
+        fallback = Path(fallback_poni_path)
+        try:
+            source = Path(source_path) if source_path else None
+        except (TypeError, ValueError):
+            source = None
+        if source is not None and str(source).strip():
+            return fallback.parent / f"{source.stem}.poni"
+        return fallback
+
+    def _autopony_output_dir(self) -> Path:
+        return Path(self._current_technical_output_folder()) / "autopony"
+
+    def _reset_autopony_output_dir(self) -> Path:
+        output_dir = self._autopony_output_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for child in output_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        return output_dir
+
+    def _auto_poni_source_path_from_h5ref(self, source_ref: str):
+        parser = getattr(self, "_parse_h5ref", None)
+        if callable(parser):
+            container_path, dataset_path = parser(source_ref)
+        else:
+            raw = str(source_ref or "")
+            payload = raw[len("h5ref://") :] if raw.startswith("h5ref://") else ""
+            container_path, sep, dataset_path = payload.partition("#")
+            if not sep:
+                container_path, dataset_path = None, None
+        if not container_path or not dataset_path:
+            return None
+        try:
+            import h5py
+
+            with h5py.File(container_path, "r") as h5f:
+                if dataset_path not in h5f:
+                    return None
+                obj = h5f[dataset_path]
+                candidates = []
+                for item in (obj, getattr(obj, "parent", None)):
+                    if item is None:
+                        continue
+                    attrs = getattr(item, "attrs", {})
+                    for key in ("source_file", "source_path", "source_ref"):
+                        value = attrs.get(key)
+                        if isinstance(value, bytes):
+                            value = value.decode("utf-8", errors="replace")
+                        if value:
+                            candidates.append(str(value))
+                for value in candidates:
+                    if value.startswith("h5ref://"):
+                        continue
+                    path = Path(value)
+                    if path.is_absolute():
+                        return path
+                    return Path(container_path).parent / path
+        except Exception:
+            logger.debug("Failed to resolve Auto PONI h5ref source path", exc_info=True)
+        return None
+
+    def _auto_poni_output_dir_for_source(self, source_ref: str):
+        text = str(source_ref or "").strip()
+        if text.startswith("h5ref://"):
+            source_path = self._auto_poni_source_path_from_h5ref(text)
+            if source_path is not None:
+                return self._autopony_output_dir(), source_path
+            parser = getattr(self, "_parse_h5ref", None)
+            if callable(parser):
+                container_path, _dataset_path = parser(text)
+                if container_path:
+                    return self._autopony_output_dir(), None
+            payload = text[len("h5ref://") :]
+            container_path, sep, _dataset_path = payload.partition("#")
+            if sep and container_path:
+                return self._autopony_output_dir(), None
+            return self._autopony_output_dir(), None
+        source_path = Path(text)
+        return self._autopony_output_dir(), source_path
+
     def _prepare_auto_poni_reviews(
         self,
         auto_cfg: dict,
@@ -1308,11 +1393,11 @@ class TechnicalCaptureMixin:
             )
             return False
 
-        output_dir = Path(self._current_technical_output_folder()) / "auto_poni"
         reviews = {}
         images = {}
         detector_configs = {}
         missing = []
+        output_dir = self._reset_autopony_output_dir()
 
         for alias, source_ref in sorted(sources.items()):
             alias_key = str(alias or "").strip().upper()
@@ -1369,6 +1454,7 @@ class TechnicalCaptureMixin:
                 existing_poni = str(detector_config.get("default_poni") or "")
 
             try:
+                _, source_path = self._auto_poni_output_dir_for_source(source_ref)
                 wavelength_m = energy_kev_to_wavelength_m(
                     float(auto_cfg.get("energy_kev", 8.04) or 8.04)
                 )
@@ -1385,6 +1471,14 @@ class TechnicalCaptureMixin:
                     first_visible_ring=first_visible_ring,
                     rings_to_show=rings_to_search,
                 )
+                if source_path is not None:
+                    review = type(review)(
+                        image_path=review.image_path,
+                        poni_path=review.poni_path,
+                        command=review.command,
+                        poni_text=review.poni_text,
+                        source_path=source_path,
+                    )
                 if first_visible_ring is not None:
                     try:
                         fit_result = run_headless_agbh_fit(
@@ -1426,7 +1520,7 @@ class TechnicalCaptureMixin:
                                 poni_path=fit_result.poni_path,
                                 command=command,
                                 poni_text=fit_result.poni_text,
-                                source_path=getattr(review, "source_path", None),
+                                source_path=source_path or getattr(review, "source_path", None),
                             )
                             self._log_technical_event(
                                 "Auto PONI headless fit "
@@ -1571,22 +1665,68 @@ class TechnicalCaptureMixin:
         if not isinstance(getattr(self, "poni_files", None), dict):
             self.poni_files = {}
 
+        active_path = None
+        active_getter = getattr(self, "_active_technical_container_path_obj", None)
+        if callable(active_getter):
+            try:
+                active_path = active_getter()
+            except Exception:
+                active_path = None
+        if active_path is None or not Path(active_path).exists():
+            self._log_technical_event("Auto PONI validate ignored: no active technical container")
+            return False
+
+        try:
+            from difra.gui.container_api import get_container_manager
+
+            manager = get_container_manager(self.config if hasattr(self, "config") else None)
+            if manager.is_container_locked(Path(active_path)):
+                self._log_technical_event(
+                    f"Auto PONI validate ignored: active container is locked ({Path(active_path).name})"
+                )
+                app = tm.QApplication.instance() if hasattr(tm, "QApplication") else None
+                if app is not None:
+                    widget_cls = getattr(tm, "QWidget", None)
+                    parent = self if widget_cls is not None and isinstance(self, widget_cls) else None
+                    tm.QMessageBox.warning(
+                        parent,
+                        "Auto PONI",
+                        "Active technical container is locked. PONI files were not moved or updated in the container.",
+                    )
+                return False
+        except Exception:
+            logger.warning("Failed to check active technical container lock state", exc_info=True)
+            return False
+
         for alias, review in reviews.items():
             poni_text = str(review.poni_text or "")
-            target_path = Path(review.poni_path)
-            source_path = getattr(review, "source_path", None)
-            if source_path:
-                source_path = Path(source_path)
-                if source_path.exists() and source_path.is_file():
-                    target_path = source_path.with_suffix(".poni")
-                    target_path.write_text(poni_text, encoding="utf-8")
-            else:
-                target_path.write_text(poni_text, encoding="utf-8")
+            autopony_path = self._auto_poni_output_path_for_source(
+                getattr(review, "source_path", None),
+                getattr(review, "poni_path", ""),
+            )
+            autopony_path.parent.mkdir(parents=True, exist_ok=True)
+            autopony_path.write_text(poni_text, encoding="utf-8")
+            target_path = autopony_path.parent.parent / autopony_path.name
+            if target_path.exists():
+                target_path.unlink()
+            shutil.move(str(autopony_path), str(target_path))
             self.ponis[alias] = poni_text
             self.poni_files[alias] = {
                 "path": str(target_path),
                 "name": target_path.name,
             }
+
+        sync_fn = getattr(self, "_sync_active_technical_container_from_table", None)
+        if callable(sync_fn):
+            synced = bool(sync_fn(show_errors=True))
+            if not synced:
+                self._log_technical_event("Auto PONI validated, but container sync failed")
+                tm.QMessageBox.warning(
+                    self,
+                    "Auto PONI",
+                    "Generated PONI files were saved, but could not be synced into an unlocked technical container.",
+                )
+                return False
 
         self._log_technical_event(f"Auto PONI validated for {len(reviews)} detector(s)")
         app = tm.QApplication.instance() if hasattr(tm, "QApplication") else None
@@ -1596,7 +1736,7 @@ class TechnicalCaptureMixin:
             tm.QMessageBox.information(
                 parent,
                 "Auto PONI",
-                "Generated PONI files saved next to AgBh measurements.",
+                "Generated PONI files moved next to the technical container and synced to it.",
             )
         return True
 

@@ -14,6 +14,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -1224,6 +1225,7 @@ def show_auto_poni_review_window(
         build_agbh_ring_overlays,
         build_pyfai_calib2_command,
         parse_poni_parameters,
+        pixel_size_m,
         refine_poni_from_clicked_ring_points,
         ring_two_theta_rad,
         write_agbh_clicked_points_npt,
@@ -1276,16 +1278,16 @@ def show_auto_poni_review_window(
             integrator = pyFAI.load(str(poni_path))
             cake = integrator.integrate2d(
                 data,
-                500,
+                100,
                 180,
                 unit="2th_deg",
-                method=("bbox", "csr", "cython"),
+                method=("full", "histogram", "python"),
             )
             curve = integrator.integrate1d(
                 data,
-                800,
+                100,
                 unit="2th_deg",
-                method=("bbox", "csr", "cython"),
+                method=("full", "histogram", "python"),
             )
             return cake, curve
         except Exception:
@@ -1306,6 +1308,46 @@ def show_auto_poni_review_window(
         if not clean:
             return []
         return [*clean[:-1], "-n", str(npt_path), clean[-1]]
+
+    def _npt_path_from_command(command):
+        parts = list(command or [])
+        for index, part in enumerate(parts[:-1]):
+            if part == "-n":
+                return Path(str(parts[index + 1]))
+        return None
+
+    def _command_for_review(alias: str, review):
+        command = build_pyfai_calib2_command(
+            image_path=review.image_path,
+            poni_text=review.poni_text,
+            detector_config=detector_state_by_alias.get(alias, {}),
+            calibrant="AgBh",
+            fix_rotations=bool(rotation_constraints.get("fixed", True)),
+        )
+        npt_path = _npt_path_from_command(getattr(review, "command", []))
+        if npt_path is not None:
+            command = _command_with_npt(command, npt_path)
+        return command
+
+    def _refresh_review_command(alias: str):
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None
+        updated = type(review)(
+            image_path=review.image_path,
+            poni_path=review.poni_path,
+            command=_command_for_review(alias, review),
+            poni_text=review.poni_text,
+            source_path=getattr(review, "source_path", None),
+        )
+        review_state_by_alias[alias] = updated
+        review_by_alias[alias] = updated
+        review_by_alias[str(alias).upper()] = updated
+        return updated
+
+    def _refresh_all_review_commands():
+        for alias in aliases:
+            _refresh_review_command(alias)
 
     def _snap_to_peak(data, col: float, row: float, radius: int = 6):
         arr = np.asarray(data, dtype=float)
@@ -1344,7 +1386,76 @@ def show_auto_poni_review_window(
     overlay_artists_by_alias = {}
     full_view_by_alias = {}
     status = {"label": None, "last_alias": None}
+    rotation_constraints = {"fixed": True}
     drag_state = {"alias": None, "index": None, "artist": None}
+
+    def _center_marker_payload(alias: str):
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None
+        params = parse_poni_parameters(str(getattr(review, "poni_text", "") or ""))
+        detector_config = detector_state_by_alias.get(alias, {})
+        detector_payload = params.get("Detector_config")
+        if isinstance(detector_payload, dict):
+            try:
+                pixel1 = float(detector_payload.get("pixel1"))
+                pixel2 = float(detector_payload.get("pixel2"))
+            except (TypeError, ValueError):
+                pixel1, pixel2 = pixel_size_m(detector_config)
+        else:
+            pixel1, pixel2 = pixel_size_m(detector_config)
+        if pixel1 <= 0.0 or pixel2 <= 0.0:
+            return None
+        try:
+            row_px = float(params.get("Poni1", 0.0)) / pixel1
+            col_px = float(params.get("Poni2", 0.0)) / pixel2
+        except (TypeError, ValueError):
+            return None
+        distance = float(params.get("Distance", 0.0) or 0.0)
+        rot1 = float(params.get("Rot1", 0.0) or 0.0)
+        rot2 = float(params.get("Rot2", 0.0) or 0.0)
+        rot3 = float(params.get("Rot3", 0.0) or 0.0)
+        return {
+            "row_px": row_px,
+            "col_px": col_px,
+            "text": (
+                f"center: col {col_px:.1f}, row {row_px:.1f}\n"
+                f"dist: {distance * 100.0:.3f} cm\n"
+                f"rot: {rot1:.3g}, {rot2:.3g}, {rot3:.3g}"
+            ),
+        }
+
+    def _draw_center_marker(alias: str):
+        ax = top_axes_by_alias.get(alias)
+        if ax is None:
+            return
+        payload = _center_marker_payload(alias)
+        if not payload:
+            return
+        marker = ax.plot(
+            [float(payload["col_px"])],
+            [float(payload["row_px"])],
+            marker="o",
+            markersize=6.5,
+            markerfacecolor="#ff2a2a",
+            markeredgecolor="#ffffff",
+            markeredgewidth=0.9,
+            linestyle="None",
+            zorder=8,
+        )[0]
+        label = ax.text(
+            0.98,
+            0.98,
+            str(payload["text"]),
+            transform=ax.transAxes,
+            va="top",
+            ha="right",
+            fontsize=8.2,
+            color="#ff2a2a",
+            bbox=dict(facecolor=(0, 0, 0, 0.58), edgecolor="#ff2a2a", linewidth=0.7),
+            zorder=9,
+        )
+        overlay_artists_by_alias.setdefault(alias, []).extend([marker, label])
 
     def _draw_ring_overlays(alias: str):
         ax = top_axes_by_alias.get(alias)
@@ -1392,6 +1503,7 @@ def show_auto_poni_review_window(
                     bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
                 )
                 overlay_artists_by_alias[alias].append(label)
+        _draw_center_marker(alias)
 
     def _draw_integrations(alias: str):
         cake_ax = cake_axes_by_alias.get(alias)
@@ -1552,14 +1664,15 @@ def show_auto_poni_review_window(
                     bbox=dict(facecolor=(0, 0, 0, 0.55), edgecolor="#35d0ff", linewidth=0.7),
                 )
                 overlay_artists_by_alias[alias].append(label)
+        _draw_center_marker(alias)
 
         ax.set_xlim(0.0, float(width))
         ax.set_ylim(0.0, float(height))
         full_view_by_alias[alias] = (0.0, float(width), 0.0, float(height))
 
-        cake_ax.set_title(f"{alias} cake pending")
+        cake_ax.set_title(f"{alias} cake not computed")
         cake_ax.axis("off")
-        curve_ax.set_title(f"{alias} radial integration pending")
+        curve_ax.set_title(f"{alias} radial integration not computed")
         curve_ax.axis("off")
 
     fig.tight_layout()
@@ -1586,11 +1699,10 @@ def show_auto_poni_review_window(
                 review_state_by_alias[alias] = review
                 review_by_alias[alias] = review
                 review_by_alias[str(alias).upper()] = review
-                _draw_ring_overlays(alias)
-                _draw_integrations(alias)
             if not points:
+                _draw_ring_overlays(alias)
                 return None, False
-        if len(points) >= 3:
+        else:
             poni_text = refine_poni_from_clicked_ring_points(
                 poni_text=str(getattr(review, "poni_text", "") or ""),
                 detector_config=detector_state_by_alias.get(alias, {}),
@@ -1621,6 +1733,7 @@ def show_auto_poni_review_window(
             poni_text=review.poni_text,
             detector_config=detector_state_by_alias.get(alias, {}),
             calibrant="AgBh",
+            fix_rotations=bool(rotation_constraints.get("fixed", True)),
         )
         command = _command_with_npt(command, npt_path)
         updated = type(review)(
@@ -1633,9 +1746,8 @@ def show_auto_poni_review_window(
         review_state_by_alias[alias] = updated
         review_by_alias[alias] = updated
         review_by_alias[str(alias).upper()] = updated
-        if refit:
-            _draw_ring_overlays(alias)
-            _draw_integrations(alias)
+        _draw_ring_overlays(alias)
+        _draw_integrations(alias)
         return npt_path, refit
 
     def _set_status(text: str):
@@ -1687,7 +1799,7 @@ def show_auto_poni_review_window(
         _set_status(
             f"{target_alias}: deleted last point; {len(points)} clicked points on ring "
             f"{first_ring_by_alias.get(target_alias, 1)}"
-            + ("; refit" if refit else "; original geometry" if len(points) < 3 else "")
+            + ("; refit" if refit else "; integrations recomputed" if points else "")
             + (f"; saved {npt_path}" if npt_path else "")
         )
         canvas.draw_idle()
@@ -1745,7 +1857,7 @@ def show_auto_poni_review_window(
         _set_status(
             f"{alias}: added point ({col:.1f}, {row:.1f}) on ring "
             f"{first_ring_by_alias.get(alias, 1)}; total {len(points)}"
-            + ("; refit" if refit else "; need 3 points to refit")
+            + ("; refit" if refit else "; integrations recomputed")
             + (f"; saved {npt_path}" if npt_path else "")
         )
         canvas.draw_idle()
@@ -1786,7 +1898,7 @@ def show_auto_poni_review_window(
         points = manual_points_by_alias.get(str(alias)) or []
         _set_status(
             f"{alias}: moved point {int(index) + 1}; {len(points)} clicked points"
-            + ("; refit" if refit else "; need 3 points to refit")
+            + ("; refit" if refit else "; integrations recomputed")
             + (f"; saved {npt_path}" if npt_path else "")
         )
         canvas.draw_idle()
@@ -1861,8 +1973,28 @@ def show_auto_poni_review_window(
     status["label"] = clicked_status
     layout.addWidget(clicked_status)
 
+    fixed_rotations_check = QCheckBox("Fix rotations (SAXS constrained)", dialog)
+    fixed_rotations_check.setChecked(True)
+    fixed_rotations_check.setToolTip(
+        "Keep Rot1/Rot2/Rot3 fixed and pass --no-tilt to pyFAI-calib2. "
+        "Uncheck to allow pyFAI-calib2 to refine detector tilt."
+    )
+
+    def _set_rotation_constraint(checked):
+        rotation_constraints["fixed"] = bool(checked)
+        _refresh_all_review_commands()
+        _set_status(
+            "Rotations fixed (SAXS constrained)"
+            if checked
+            else "Rotations unlocked for pyFAI correction"
+        )
+
+    fixed_rotations_check.toggled.connect(_set_rotation_constraint)
+    layout.addWidget(fixed_rotations_check)
+
     buttons = QDialogButtonBox(dialog)
     delete_btn = buttons.addButton("Delete last point", QDialogButtonBox.ActionRole)
+    integrate_btn = buttons.addButton("Compute integrations", QDialogButtonBox.ActionRole)
     validate_btn = buttons.addButton("Validate", QDialogButtonBox.AcceptRole)
     correct_btn = buttons.addButton("Correct", QDialogButtonBox.ActionRole)
     cancel_btn = buttons.addButton("Cancel", QDialogButtonBox.RejectRole)
@@ -1874,15 +2006,16 @@ def show_auto_poni_review_window(
 
     def _correct():
         decision["value"] = "correct"
+        _refresh_all_review_commands()
         dialog.accept()
 
     validate_btn.clicked.connect(_validate)
     delete_btn.clicked.connect(lambda: _delete_last_point())
+    integrate_btn.clicked.connect(_draw_all_integrations)
     correct_btn.clicked.connect(_correct)
     cancel_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
     dialog.resize(max(900, 560 * cols), 980)
-    QTimer.singleShot(250, _draw_all_integrations)
     result = dialog.exec_()
     if result != QDialog.Accepted:
         decision["value"] = "cancel"
