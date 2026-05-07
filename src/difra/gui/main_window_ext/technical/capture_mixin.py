@@ -530,6 +530,22 @@ class TechnicalCaptureMixin:
                 return dict(detector_cfg)
         return {"alias": alias_key}
 
+    def _auto_poni_detector_config_for_alias(self, alias: str) -> dict:
+        detector_config = self._detector_config_for_alias(alias)
+        rule_alias = str(self._auto_poni_rule_alias(alias) or "").strip()
+        alias_key = str(alias or "").strip()
+        if rule_alias and rule_alias.upper() != alias_key.upper():
+            for candidate in (
+                self.config.get("detectors", []) if hasattr(self, "config") else []
+            ):
+                if str(candidate.get("alias") or "").strip().upper() == rule_alias.upper():
+                    merged = dict(candidate)
+                    merged["alias"] = alias_key
+                    merged["id"] = detector_config.get("id", merged.get("id", alias_key))
+                    merged["poni_center_rule_alias"] = rule_alias
+                    return merged
+        return detector_config
+
     def _distance_m_for_detector_alias(self, alias: str, detector_config: dict):
         distances = getattr(self, "_detector_distances", {}) or {}
         detector_id = str(detector_config.get("id") or "").strip()
@@ -638,6 +654,259 @@ class TechnicalCaptureMixin:
         except Exception:
             return str(alias or "").strip().upper()
 
+    @staticmethod
+    def _auto_poni_distance_key(distance_cm) -> str:
+        try:
+            value = float(distance_cm)
+        except (TypeError, ValueError):
+            return ""
+        rounded = round(value)
+        if abs(value - rounded) <= 0.25:
+            return str(int(rounded))
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    def _active_technical_container_distance_cm_for_auto_poni(self):
+        active_path = None
+        active_getter = getattr(self, "_active_technical_container_path_obj", None)
+        if callable(active_getter):
+            try:
+                active_path = active_getter()
+            except Exception:
+                active_path = None
+        if active_path is None:
+            raw_path = str(
+                getattr(self, "_active_technical_container_path", "") or ""
+            ).strip()
+            active_path = Path(raw_path) if raw_path else None
+        if active_path is None:
+            return None
+
+        reader = getattr(self, "_read_technical_container_distance_cm", None)
+        if callable(reader):
+            try:
+                value = reader(Path(active_path))
+                if value is not None:
+                    return float(value)
+            except (TypeError, ValueError):
+                return None
+            except Exception:
+                logger.debug(
+                    "Failed to read Auto PONI container distance",
+                    exc_info=True,
+                )
+
+        try:
+            import h5py
+
+            with h5py.File(active_path, "r") as h5f:
+                value = h5f.attrs.get("distance_cm")
+                return None if value is None else float(value)
+        except Exception:
+            logger.debug("Failed to read Auto PONI root distance", exc_info=True)
+            return None
+
+    def _auto_poni_default_distance_cm_by_alias(self, aliases) -> dict:
+        distance_cm = self._active_technical_container_distance_cm_for_auto_poni()
+        if distance_cm is not None:
+            return {
+                str(alias).strip().upper(): float(distance_cm)
+                for alias in aliases
+            }
+
+        result = {}
+        for alias in aliases:
+            alias_key = str(alias or "").strip().upper()
+            detector_config = self._detector_config_for_alias(alias)
+            distance_m = self._distance_m_for_detector_alias(alias, detector_config)
+            if distance_m is not None:
+                result[alias_key] = float(distance_m) * 100.0
+        return result
+
+    def _auto_poni_default_first_visible_ring(
+        self,
+        *,
+        alias: str,
+        distance_cm,
+        auto_cfg: dict,
+    ) -> int:
+        alias_key = str(alias or "").strip().upper()
+        rule_key = str(self._auto_poni_rule_alias(alias) or "").strip().upper()
+        by_distance = auto_cfg.get("first_visible_ring_by_distance_cm", {})
+        distance_key = self._auto_poni_distance_key(distance_cm)
+        if isinstance(by_distance, dict):
+            distance_rules = by_distance.get(distance_key, {})
+            if isinstance(distance_rules, dict):
+                for key in (alias_key, rule_key):
+                    try:
+                        ring = int(distance_rules.get(key))
+                    except (TypeError, ValueError):
+                        continue
+                    if ring > 0:
+                        return ring
+
+        configured = auto_cfg.get("first_visible_ring_by_alias", {})
+        if isinstance(configured, dict):
+            for key in (alias_key, rule_key):
+                try:
+                    ring = int(configured.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if ring > 0:
+                    return ring
+        return 1
+
+    def _auto_poni_default_rings_to_search(
+        self,
+        *,
+        alias: str,
+        distance_cm,
+        auto_cfg: dict,
+    ) -> int:
+        alias_key = str(alias or "").strip().upper()
+        rule_key = str(self._auto_poni_rule_alias(alias) or "").strip().upper()
+        by_distance = auto_cfg.get("rings_to_search_by_distance_cm", {})
+        distance_key = self._auto_poni_distance_key(distance_cm)
+        if isinstance(by_distance, dict):
+            distance_rules = by_distance.get(distance_key, {})
+            if isinstance(distance_rules, dict):
+                for key in (alias_key, rule_key):
+                    try:
+                        count = int(distance_rules.get(key))
+                    except (TypeError, ValueError):
+                        continue
+                    if count > 0:
+                        return count
+
+        configured = auto_cfg.get("rings_to_search_by_alias", {})
+        if isinstance(configured, dict):
+            for key in (alias_key, rule_key):
+                try:
+                    count = int(configured.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    return count
+        try:
+            return max(1, int(auto_cfg.get("rings_to_show", 3)))
+        except (TypeError, ValueError):
+            return 3
+
+    def _auto_poni_default_settings(self, auto_cfg: dict, aliases) -> dict:
+        distance_by_alias = self._auto_poni_default_distance_cm_by_alias(aliases)
+        first_visible = {}
+        rings_to_search = {}
+        for alias in aliases:
+            alias_key = str(alias or "").strip().upper()
+            distance_cm = distance_by_alias.get(alias_key)
+            first_visible[alias_key] = self._auto_poni_default_first_visible_ring(
+                alias=alias,
+                distance_cm=distance_cm,
+                auto_cfg=auto_cfg,
+            )
+            rings_to_search[alias_key] = self._auto_poni_default_rings_to_search(
+                alias=alias,
+                distance_cm=distance_cm,
+                auto_cfg=auto_cfg,
+            )
+        return {
+            "distance_cm_by_alias": distance_by_alias,
+            "first_visible_ring_by_alias": first_visible,
+            "rings_to_search_by_alias": rings_to_search,
+            "energy_kev": float(auto_cfg.get("energy_kev", 8.04) or 8.04),
+        }
+
+    @staticmethod
+    def _auto_poni_float_or_none(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _auto_poni_center_px_from_validation_config(
+        self,
+        alias: str,
+        detector_config: dict,
+    ):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_center_validation", {})
+        if not isinstance(validation_cfg, dict) or not validation_cfg.get("enabled", False):
+            return None
+
+        detector_rules = validation_cfg.get("detectors", {})
+        if not isinstance(detector_rules, dict):
+            return None
+
+        try:
+            from difra.gui.main_window_ext.technical.poni_center_validation import (
+                resolve_poni_rule_alias,
+            )
+
+            rule_alias = resolve_poni_rule_alias(alias, cfg.get("detectors", []))
+        except Exception:
+            rule_alias = str(alias or "").strip().upper()
+        rule_alias = str(rule_alias or "").strip().upper()
+
+        rule = {}
+        defaults = validation_cfg.get("defaults", {})
+        if isinstance(defaults, dict):
+            rule.update(defaults)
+        for key, value in detector_rules.items():
+            if str(key or "").strip().upper() == rule_alias and isinstance(value, dict):
+                rule.update(value)
+                break
+        if not rule:
+            return None
+
+        size_cfg = detector_config.get("size", {}) if isinstance(detector_config, dict) else {}
+        if isinstance(size_cfg, dict):
+            width = self._auto_poni_float_or_none(size_cfg.get("width")) or 256.0
+            height = self._auto_poni_float_or_none(size_cfg.get("height")) or 256.0
+        else:
+            width = height = 256.0
+
+        row = self._auto_poni_float_or_none(rule.get("row_target_px"))
+        if row is None:
+            row = height / 2.0
+
+        col = self._auto_poni_float_or_none(rule.get("col_target_px"))
+        col_min = self._auto_poni_float_or_none(rule.get("col_min_px"))
+        col_max = self._auto_poni_float_or_none(rule.get("col_max_px"))
+        col_gt = self._auto_poni_float_or_none(rule.get("col_gt_px"))
+        col_lt = self._auto_poni_float_or_none(rule.get("col_lt_px"))
+
+        if col is None:
+            if col_gt is not None and col_max is not None and col_max > col_gt:
+                col = col_max
+            elif col_min is not None and col_lt is not None and col_lt > col_min:
+                col = col_min
+            elif col_gt is not None and col_lt is not None and col_lt > col_gt:
+                col = (col_gt + col_lt) / 2.0
+            elif col_gt is not None:
+                col = col_gt + 1.0
+            elif col_min is not None and col_max is not None and col_max >= col_min:
+                col = (col_min + col_max) / 2.0
+            elif col_min is not None:
+                col = col_min
+            elif col_lt is not None:
+                col = col_lt - 1.0
+            elif col_max is not None:
+                col = col_max
+            else:
+                col = width / 2.0
+
+        if col_gt is not None and not (col > col_gt):
+            col = col_gt + 1.0
+        if col_min is not None and col < col_min:
+            col = col_min
+        if col_lt is not None and not (col < col_lt):
+            col = col_lt - 1.0
+        if col_max is not None and col > col_max:
+            col = col_max
+
+        return float(row), float(col)
+
     def _confirm_auto_poni_config(self, auto_cfg: dict) -> bool:
         tm = _tm()
         first_visible = auto_cfg.get("first_visible_ring_by_alias", {})
@@ -657,7 +926,289 @@ class TechnicalCaptureMixin:
         )
         return reply == tm.QMessageBox.Yes
 
+    def _prompt_auto_poni_settings(self, auto_cfg: dict, aliases):
+        defaults = self._auto_poni_default_settings(auto_cfg, aliases)
+        sources = {
+            str(alias or "").strip().upper(): str(source or "")
+            for alias, source in (
+                getattr(self, "_pending_auto_poni_sources", {}) or {}
+            ).items()
+        }
+        tm = _tm()
+        try:
+            from PyQt5.QtWidgets import QDialogButtonBox
+        except Exception:
+            if self._confirm_auto_poni_config(auto_cfg):
+                return defaults
+            return None
+
+        try:
+            dialog = tm.QDialog(self)
+            dialog.setWindowTitle("DIFRA Auto PONI setup")
+            dialog.setModal(True)
+            dialog.resize(980, 620)
+            layout = tm.QVBoxLayout(dialog)
+            note = tm.QLabel(dialog)
+            note.setWordWrap(True)
+            container_distance = (
+                self._active_technical_container_distance_cm_for_auto_poni()
+            )
+            if container_distance is None:
+                note.setText(
+                    "Container distance not found. "
+                    "Set distance and visible rings."
+                )
+            else:
+                note.setText(
+                    f"Container distance: {float(container_distance):.3f} cm. "
+                    "Adjust if needed."
+                )
+            layout.addWidget(note)
+
+            controls = {}
+            energy_row = tm.QHBoxLayout()
+            energy_row.addWidget(tm.QLabel("Energy", dialog))
+            energy_spin = tm.QDoubleSpinBox(dialog)
+            energy_spin.setRange(0.001, 1000.0)
+            energy_spin.setDecimals(4)
+            energy_spin.setSuffix(" keV")
+            energy_spin.setValue(float(defaults.get("energy_kev", 8.04) or 8.04))
+            energy_row.addWidget(energy_spin)
+            layout.addLayout(energy_row)
+
+            def _pixel_pair(detector_config):
+                pixel_cfg = detector_config.get("pixel_size_um", [50, 50])
+                if not isinstance(pixel_cfg, (list, tuple)):
+                    pixel_cfg = [pixel_cfg, pixel_cfg]
+                first = pixel_cfg[0] if len(pixel_cfg) >= 1 else 50
+                second = pixel_cfg[1] if len(pixel_cfg) >= 2 else first
+                return float(first), float(second)
+
+            for alias in aliases:
+                alias_key = str(alias or "").strip().upper()
+                detector_config = self._auto_poni_detector_config_for_alias(alias)
+                center_px = self._auto_poni_center_px_from_validation_config(
+                    alias,
+                    detector_config,
+                )
+                if center_px is None:
+                    center_px = self._auto_poni_center_px_for_alias(alias, detector_config)
+                if center_px is None:
+                    center_px = (128.0, 128.0)
+                width, height = 256, 256
+                size_cfg = detector_config.get("size", {})
+                if isinstance(size_cfg, dict):
+                    width = int(size_cfg.get("width", width) or width)
+                    height = int(size_cfg.get("height", height) or height)
+                pixel1, pixel2 = _pixel_pair(detector_config)
+
+                group = tm.QGroupBox(alias_key, dialog)
+                form = tm.QFormLayout(group)
+
+                file_row = tm.QHBoxLayout()
+                file_edit = tm.QLineEdit(sources.get(alias_key, ""), group)
+                browse_btn = tm.QPushButton("Browse", group)
+                file_row.addWidget(file_edit)
+                file_row.addWidget(browse_btn)
+                form.addRow("AGBH file", file_row)
+
+                distance_spin = tm.QDoubleSpinBox(dialog)
+                distance_spin.setRange(0.01, 100000.0)
+                distance_spin.setDecimals(3)
+                distance_spin.setSuffix(" cm")
+                distance_spin.setValue(
+                    float(
+                        defaults["distance_cm_by_alias"].get(
+                            alias_key,
+                            17.0,
+                        )
+                    )
+                )
+                form.addRow("Distance", distance_spin)
+
+                ring_spin = tm.QSpinBox(dialog)
+                ring_spin.setRange(1, 99)
+                ring_spin.setValue(
+                    int(
+                        defaults["first_visible_ring_by_alias"].get(
+                            alias_key,
+                            1,
+                        )
+                    )
+                )
+                form.addRow("First visible ring", ring_spin)
+
+                rings_spin = tm.QSpinBox(dialog)
+                rings_spin.setRange(1, 99)
+                rings_spin.setValue(
+                    int(
+                        defaults["rings_to_search_by_alias"].get(
+                            alias_key,
+                            3,
+                        )
+                    )
+                )
+                form.addRow("Rings to search", rings_spin)
+
+                center_row = tm.QHBoxLayout()
+                center_r = tm.QDoubleSpinBox(dialog)
+                center_r.setRange(-100000.0, 100000.0)
+                center_r.setDecimals(3)
+                center_r.setValue(float(center_px[0]))
+                center_c = tm.QDoubleSpinBox(dialog)
+                center_c.setRange(-100000.0, 100000.0)
+                center_c.setDecimals(3)
+                center_c.setValue(float(center_px[1]))
+                center_row.addWidget(tm.QLabel("row", dialog))
+                center_row.addWidget(center_r)
+                center_row.addWidget(tm.QLabel("col", dialog))
+                center_row.addWidget(center_c)
+                form.addRow("Expected center", center_row)
+
+                size_row = tm.QHBoxLayout()
+                width_spin = tm.QSpinBox(dialog)
+                width_spin.setRange(1, 100000)
+                width_spin.setValue(int(width))
+                height_spin = tm.QSpinBox(dialog)
+                height_spin.setRange(1, 100000)
+                height_spin.setValue(int(height))
+                size_row.addWidget(tm.QLabel("w", dialog))
+                size_row.addWidget(width_spin)
+                size_row.addWidget(tm.QLabel("h", dialog))
+                size_row.addWidget(height_spin)
+                form.addRow("Image/detector size", size_row)
+
+                pixel_row = tm.QHBoxLayout()
+                pixel1_spin = tm.QDoubleSpinBox(dialog)
+                pixel1_spin.setRange(0.001, 100000.0)
+                pixel1_spin.setDecimals(3)
+                pixel1_spin.setSuffix(" um")
+                pixel1_spin.setValue(float(pixel1))
+                pixel2_spin = tm.QDoubleSpinBox(dialog)
+                pixel2_spin.setRange(0.001, 100000.0)
+                pixel2_spin.setDecimals(3)
+                pixel2_spin.setSuffix(" um")
+                pixel2_spin.setValue(float(pixel2))
+                pixel_row.addWidget(tm.QLabel("p1", dialog))
+                pixel_row.addWidget(pixel1_spin)
+                pixel_row.addWidget(tm.QLabel("p2", dialog))
+                pixel_row.addWidget(pixel2_spin)
+                form.addRow("Pixel size", pixel_row)
+
+                layout.addWidget(group)
+                controls[alias_key] = {
+                    "file": file_edit,
+                    "distance": distance_spin,
+                    "ring": ring_spin,
+                    "rings": rings_spin,
+                    "center_r": center_r,
+                    "center_c": center_c,
+                    "width": width_spin,
+                    "height": height_spin,
+                    "pixel1": pixel1_spin,
+                    "pixel2": pixel2_spin,
+                    "detector_config": detector_config,
+                }
+
+                def _browse(_checked=False, *, edit=file_edit):
+                    current = str(edit.text() or "").strip()
+                    start = str(Path(current).parent) if current else str(Path.cwd())
+                    path, _ = tm.QFileDialog.getOpenFileName(
+                        dialog,
+                        "Select AGBH file",
+                        start,
+                        "Images (*.npy *.tif *.tiff *.txt *.csv);;All (*)",
+                    )
+                    if path:
+                        edit.setText(path)
+
+                browse_btn.clicked.connect(_browse)
+
+                def _sync_defaults(
+                    _value,
+                    *,
+                    key=alias_key,
+                    ring_control=ring_spin,
+                    rings_control=rings_spin,
+                ):
+                    ring_control.setValue(
+                        self._auto_poni_default_first_visible_ring(
+                            alias=key,
+                            distance_cm=controls[key]["distance"].value(),
+                            auto_cfg=auto_cfg,
+                        )
+                    )
+                    rings_control.setValue(
+                        self._auto_poni_default_rings_to_search(
+                            alias=key,
+                            distance_cm=controls[key]["distance"].value(),
+                            auto_cfg=auto_cfg,
+                        )
+                    )
+
+                distance_spin.valueChanged.connect(_sync_defaults)
+
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+                dialog,
+            )
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+
+            result = dialog.exec_()
+            if result != tm.QDialog.Accepted:
+                return None
+
+            distance_by_alias = {}
+            first_visible = {}
+            rings_to_search = {}
+            sources_by_alias = {}
+            detector_config_by_alias = {}
+            center_px_by_alias = {}
+            for alias_key, control in controls.items():
+                distance_by_alias[alias_key] = float(control["distance"].value())
+                first_visible[alias_key] = int(control["ring"].value())
+                rings_to_search[alias_key] = int(control["rings"].value())
+                sources_by_alias[alias_key] = str(control["file"].text() or "").strip()
+                detector_config = dict(control["detector_config"])
+                detector_config["alias"] = alias_key
+                detector_config["size"] = {
+                    "width": int(control["width"].value()),
+                    "height": int(control["height"].value()),
+                }
+                detector_config["pixel_size_um"] = [
+                    float(control["pixel1"].value()),
+                    float(control["pixel2"].value()),
+                ]
+                detector_config_by_alias[alias_key] = detector_config
+                center_px_by_alias[alias_key] = (
+                    float(control["center_r"].value()),
+                    float(control["center_c"].value()),
+                )
+            return {
+                "sources_by_alias": sources_by_alias,
+                "distance_cm_by_alias": distance_by_alias,
+                "first_visible_ring_by_alias": first_visible,
+                "rings_to_search_by_alias": rings_to_search,
+                "detector_config_by_alias": detector_config_by_alias,
+                "center_px_by_alias": center_px_by_alias,
+                "energy_kev": float(energy_spin.value()),
+            }
+        except Exception:
+            logger.warning("Failed to show Auto PONI settings dialog", exc_info=True)
+            if self._confirm_auto_poni_config(auto_cfg):
+                return defaults
+            return None
+
     def _auto_poni_center_px_for_alias(self, alias: str, detector_config: dict):
+        configured_center = self._auto_poni_center_px_from_validation_config(
+            alias,
+            detector_config,
+        )
+        if configured_center is not None:
+            return configured_center
+
         existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
         if existing_poni:
             return None
@@ -697,9 +1248,23 @@ class TechnicalCaptureMixin:
             sources.setdefault(alias, source_ref)
         return sources
 
-    def _prepare_auto_poni_reviews(self, auto_cfg: dict):
+    def _prepare_auto_poni_reviews(
+        self,
+        auto_cfg: dict,
+        *,
+        sources: dict | None = None,
+        distance_cm_by_alias: dict | None = None,
+        first_visible_ring_by_alias: dict | None = None,
+        rings_to_search_by_alias: dict | None = None,
+        detector_config_by_alias: dict | None = None,
+        center_px_by_alias: dict | None = None,
+    ):
         tm = _tm()
-        sources = self._collect_auto_poni_agbh_sources()
+        sources = (
+            sources
+            if isinstance(sources, dict)
+            else self._collect_auto_poni_agbh_sources()
+        )
         if not sources:
             tm.QMessageBox.warning(
                 self,
@@ -710,8 +1275,12 @@ class TechnicalCaptureMixin:
 
         try:
             from difra.gui.technical.pyfai_calibration import (
+                build_pyfai_calib2_command,
+                energy_kev_to_wavelength_m,
+                is_headless_agbh_fit_plausible,
                 load_calibration_array,
                 prepare_agbh_calib2_review,
+                run_headless_agbh_fit,
             )
         except Exception as exc:
             tm.QMessageBox.warning(
@@ -728,18 +1297,63 @@ class TechnicalCaptureMixin:
         missing = []
 
         for alias, source_ref in sorted(sources.items()):
-            detector_config = self._detector_config_for_alias(alias)
+            alias_key = str(alias or "").strip().upper()
+            detector_config = (
+                dict(detector_config_by_alias.get(alias_key, {}))
+                if isinstance(detector_config_by_alias, dict)
+                and isinstance(detector_config_by_alias.get(alias_key), dict)
+                else self._auto_poni_detector_config_for_alias(alias)
+            )
             detector_configs[alias] = detector_config
-            distance_m = self._distance_m_for_detector_alias(alias, detector_config)
+            first_visible_ring = None
+            if isinstance(first_visible_ring_by_alias, dict):
+                try:
+                    first_visible_ring = int(first_visible_ring_by_alias.get(alias_key))
+                except (TypeError, ValueError):
+                    first_visible_ring = None
+            try:
+                rings_to_search = int(
+                    (rings_to_search_by_alias or {}).get(
+                        alias_key,
+                        auto_cfg.get("rings_to_show", 3),
+                    )
+                )
+            except (TypeError, ValueError):
+                rings_to_search = int(auto_cfg.get("rings_to_show", 3) or 3)
+            rings_to_search = max(1, rings_to_search)
+            distance_cm = (
+                (distance_cm_by_alias or {}).get(alias_key)
+                if isinstance(distance_cm_by_alias, dict)
+                else None
+            )
+            if distance_cm is None:
+                distance_m = self._distance_m_for_detector_alias(alias, detector_config)
+            else:
+                try:
+                    distance_m = float(distance_cm) / 100.0
+                except (TypeError, ValueError):
+                    distance_m = None
             if distance_m is None:
                 missing.append(f"{alias}: distance")
                 continue
+            center_px = None
+            if isinstance(center_px_by_alias, dict):
+                center_px = center_px_by_alias.get(alias_key)
+                if isinstance(center_px, (list, tuple)) and len(center_px) >= 2:
+                    center_px = (float(center_px[0]), float(center_px[1]))
+                else:
+                    center_px = None
+            if center_px is None:
+                center_px = self._auto_poni_center_px_for_alias(alias, detector_config)
 
             existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
             if not existing_poni:
                 existing_poni = str(detector_config.get("default_poni") or "")
 
             try:
+                wavelength_m = energy_kev_to_wavelength_m(
+                    float(auto_cfg.get("energy_kev", 8.04) or 8.04)
+                )
                 review = prepare_agbh_calib2_review(
                     source_image=source_ref,
                     detector_config=detector_config,
@@ -747,9 +1361,66 @@ class TechnicalCaptureMixin:
                     alias=alias,
                     output_dir=output_dir,
                     existing_poni_text=existing_poni,
+                    wavelength_m=wavelength_m,
                     calibrant=str(auto_cfg.get("calibrant") or "AgBh"),
-                    center_px=self._auto_poni_center_px_for_alias(alias, detector_config),
+                    center_px=center_px,
+                    first_visible_ring=first_visible_ring,
+                    rings_to_show=rings_to_search,
                 )
+                if first_visible_ring is not None:
+                    try:
+                        fit_result = run_headless_agbh_fit(
+                            source_image=source_ref,
+                            detector_config=detector_config,
+                            distance_m=distance_m,
+                            output_dir=output_dir,
+                            alias=alias,
+                            center_px=center_px,
+                            wavelength_m=wavelength_m,
+                            calibrant=str(auto_cfg.get("calibrant") or "AgBh"),
+                            first_visible_ring=first_visible_ring,
+                            rings_to_show=rings_to_search,
+                        )
+                    except Exception as fit_exc:
+                        self._log_technical_event(
+                            f"Auto PONI headless fit failed for {alias}: {fit_exc}"
+                        )
+                    else:
+                        if is_headless_agbh_fit_plausible(
+                            fit_result,
+                            seed_poni_text=review.poni_text,
+                            detector_config=detector_config,
+                        ):
+                            command = build_pyfai_calib2_command(
+                                image_path=review.image_path,
+                                poni_text=fit_result.poni_text,
+                                detector_config=detector_config,
+                                calibrant=str(auto_cfg.get("calibrant") or "AgBh"),
+                            )
+                            command = [
+                                *command[:-1],
+                                "-n",
+                                str(fit_result.npt_path),
+                                command[-1],
+                            ]
+                            review = type(review)(
+                                image_path=review.image_path,
+                                poni_path=fit_result.poni_path,
+                                command=command,
+                                poni_text=fit_result.poni_text,
+                                source_path=getattr(review, "source_path", None),
+                            )
+                            self._log_technical_event(
+                                "Auto PONI headless fit "
+                                f"{alias}: points={fit_result.extracted_points}, "
+                                f"chi2={fit_result.chi2}"
+                            )
+                        else:
+                            self._log_technical_event(
+                                "Auto PONI headless fit rejected "
+                                f"{alias}: points={fit_result.extracted_points}, "
+                                f"chi2={fit_result.chi2}"
+                            )
                 reviews[alias] = review
                 images[alias] = load_calibration_array(source_ref)
             except Exception as exc:
@@ -790,7 +1461,27 @@ class TechnicalCaptureMixin:
         if not env:
             _tm().QMessageBox.warning(self, "Auto PONI", "No conda env configured for pyFAI.")
             return False
-        commands = [list(review.command) for review in reviews.values()]
+        try:
+            from difra.gui.technical.pyfai_calibration import (
+                write_pyfai_calib2_launcher,
+            )
+        except Exception:
+            write_pyfai_calib2_launcher = None
+
+        commands = []
+        for alias, review in reviews.items():
+            command = list(review.command)
+            if (
+                "DIFRA-256-50UM" in command
+                and callable(write_pyfai_calib2_launcher)
+            ):
+                launcher = write_pyfai_calib2_launcher(
+                    output_dir=Path(review.image_path).parent,
+                    command=command,
+                    launcher_stem=f"run_pyfai_calib2_{alias}",
+                )
+                command = ["python", str(launcher)]
+            commands.append(command)
         if not commands:
             return False
         folder = Path(next(iter(reviews.values())).image_path).parent
@@ -855,71 +1546,69 @@ class TechnicalCaptureMixin:
             self.poni_files = {}
 
         for alias, review in reviews.items():
-            self.ponis[alias] = str(review.poni_text or "")
+            poni_text = str(review.poni_text or "")
+            target_path = Path(review.poni_path)
+            source_path = getattr(review, "source_path", None)
+            if source_path:
+                source_path = Path(source_path)
+                if source_path.exists() and source_path.is_file():
+                    target_path = source_path.with_suffix(".poni")
+                    target_path.write_text(poni_text, encoding="utf-8")
+            else:
+                target_path.write_text(poni_text, encoding="utf-8")
+            self.ponis[alias] = poni_text
             self.poni_files[alias] = {
-                "path": str(review.poni_path),
-                "name": Path(review.poni_path).name,
+                "path": str(target_path),
+                "name": target_path.name,
             }
 
-        sync_ok = True
-        sync_fn = getattr(self, "_sync_active_technical_container_from_table", None)
-        active_path = getattr(self, "_active_technical_container_path_obj", lambda: None)()
-        if callable(sync_fn) and active_path is not None:
-            sync_ok = bool(sync_fn(show_errors=True))
-            if sync_ok:
-                validate_centers = getattr(self, "_validate_poni_centers_for_container", None)
-                write_review = getattr(self, "_write_poni_review_state", None)
-                set_state = getattr(self, "_set_container_state", None)
-                if callable(validate_centers) and callable(write_review):
-                    center_errors, _center_warnings = validate_centers(Path(active_path))
-                    if not center_errors:
-                        write_review(
-                            Path(active_path),
-                            status="accepted",
-                            in_zone=True,
-                            notes="auto_poni_ring_overlay_validated",
-                        )
-                        if callable(set_state):
-                            set_state(
-                                Path(active_path),
-                                state=getattr(self, "STATE_READY_TO_LOCK", "ready_to_lock"),
-                                reason="auto_poni_validated",
-                            )
-                    elif callable(set_state):
-                        set_state(
-                            Path(active_path),
-                            state=getattr(self, "STATE_PENDING_PONI_REVIEW", "pending_poni_review"),
-                            reason="auto_poni_validated_center_review_required",
-                        )
-
-        if sync_ok:
-            self._log_technical_event(f"Auto PONI validated for {len(reviews)} detector(s)")
+        self._log_technical_event(f"Auto PONI validated for {len(reviews)} detector(s)")
+        app = tm.QApplication.instance() if hasattr(tm, "QApplication") else None
+        if app is not None:
+            widget_cls = getattr(tm, "QWidget", None)
+            parent = self if widget_cls is not None and isinstance(self, widget_cls) else None
             tm.QMessageBox.information(
-                self,
+                parent,
                 "Auto PONI",
-                "Generated PONI files saved and synced to the active technical container.",
+                "Generated PONI files saved next to AgBh measurements.",
             )
-            return True
-
-        tm.QMessageBox.warning(
-            self,
-            "Auto PONI",
-            "PONI files were generated, but active container sync failed.",
-        )
-        return False
+        return True
 
     def run_auto_poni(self):
         auto_cfg = self._auto_poni_config()
-        if not self._confirm_auto_poni_config(auto_cfg):
+        sources = self._collect_auto_poni_agbh_sources()
+        if not sources:
+            _tm().QMessageBox.warning(
+                self,
+                "Auto PONI",
+                "No AGBH rows found. Measure or load AGBH NumPy images first.",
+            )
             return False
+        aliases = sorted(sources.keys())
+        self._pending_auto_poni_sources = sources
+        settings = self._prompt_auto_poni_settings(auto_cfg, aliases)
+        self._pending_auto_poni_sources = {}
+        if not settings:
+            return False
+        auto_cfg["energy_kev"] = float(settings.get("energy_kev", 8.04) or 8.04)
 
-        prepared = self._prepare_auto_poni_reviews(auto_cfg)
+        prepared = self._prepare_auto_poni_reviews(
+            auto_cfg,
+            sources=settings.get("sources_by_alias") or sources,
+            distance_cm_by_alias=settings.get("distance_cm_by_alias", {}),
+            first_visible_ring_by_alias=settings.get("first_visible_ring_by_alias", {}),
+            rings_to_search_by_alias=settings.get("rings_to_search_by_alias", {}),
+            detector_config_by_alias=settings.get("detector_config_by_alias", {}),
+            center_px_by_alias=settings.get("center_px_by_alias", {}),
+        )
         if not prepared:
             return False
 
         reviews = prepared["reviews"]
         aliases = list(reviews.keys())
-        first_visible = self._first_visible_rings_for_auto_poni(aliases, auto_cfg)
+        first_visible = settings.get("first_visible_ring_by_alias") or (
+            self._first_visible_rings_for_auto_poni(aliases, auto_cfg)
+        )
         show_review = self._get_technical_module("show_auto_poni_review_window")
         if not callable(show_review):
             _tm().QMessageBox.warning(self, "Auto PONI", "Auto PONI review UI unavailable.")
@@ -931,7 +1620,8 @@ class TechnicalCaptureMixin:
             images_by_alias=prepared["images"],
             detector_config_by_alias=prepared["detector_configs"],
             first_visible_ring_by_alias=first_visible,
-            rings_to_show=int(auto_cfg.get("rings_to_show", 8)),
+            rings_to_show=settings.get("rings_to_search_by_alias")
+            or int(auto_cfg.get("rings_to_show", 8)),
             parent=self,
         )
         decision = ""

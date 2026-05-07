@@ -6,10 +6,18 @@ from difra.gui.technical.pyfai_calibration import (
     build_agbh_ring_overlays,
     build_pyfai_calib2_command,
     build_seed_poni_text,
+    energy_kev_to_wavelength_m,
     export_calibration_image_for_pyfai,
+    HeadlessPoniFitResult,
+    is_headless_agbh_fit_plausible,
     normalized_auto_poni_config,
     parse_poni_parameters,
     prepare_agbh_calib2_review,
+    pyfai_detector_name,
+    refine_poni_from_clicked_ring_points,
+    write_agbh_control_points_npt,
+    write_agbh_clicked_points_npt,
+    write_pyfai_calib2_launcher,
 )
 
 
@@ -98,6 +106,7 @@ def test_prepare_agbh_calib2_review_writes_seed_and_command(tmp_path: Path):
         distance_m=0.17,
         alias="PRIMARY",
         output_dir=tmp_path / "pyfai",
+        first_visible_ring=1,
     )
 
     assert review.image_path.exists()
@@ -106,6 +115,7 @@ def test_prepare_agbh_calib2_review_writes_seed_and_command(tmp_path: Path):
     assert "-c" in review.command
     assert "AgBh" in review.command
     assert "--dist" in review.command
+    assert "-n" in review.command
     assert "0.17" in review.command
     assert str(review.image_path) == review.command[-1]
 
@@ -131,17 +141,175 @@ def test_build_pyfai_calib2_command_uses_poni_geometry():
 
     joined = " ".join(command)
     assert "-w 1.5406" in joined
-    assert "-p 55,55" in joined
+    assert "-D Maxipix" in joined
     assert "--poni1 0.007020022187721548" in joined
+    assert "--fix-rot1" in joined
+    assert "--fix-rot2" in joined
+    assert "--fix-rot3" in joined
+    assert "--no-tilt" in joined
     assert command[-1] == "/tmp/agbh.tif"
+
+
+def test_build_pyfai_calib2_command_uses_custom_difra_detector_for_50um():
+    detector_config = {
+        "size": {"width": 256, "height": 256},
+        "pixel_size_um": [50, 50],
+    }
+
+    assert pyfai_detector_name(detector_config) == "DIFRA-256-50UM"
+
+
+def test_write_pyfai_launcher_registers_custom_detector(tmp_path):
+    launcher = write_pyfai_calib2_launcher(
+        output_dir=tmp_path,
+        command=["pyfai-calib2", "-D", "DIFRA-256-50UM", "image.tif"],
+        launcher_stem="run_primary",
+    )
+
+    text = launcher.read_text(encoding="utf-8")
+    assert "DIFRA-256-50UM" in text
+    assert "max_shape=(256, 256)" in text
+
+
+def test_write_agbh_control_points_npt_uses_zero_based_ring_ids(tmp_path):
+    poni = "\n".join(
+        [
+            "Distance: 0.17",
+            "Poni1: 0.0064",
+            "Poni2: 0.0005",
+            "Wavelength: 1.542092020313436e-10",
+        ]
+    )
+    detector_config = {
+        "size": {"width": 256, "height": 256},
+        "pixel_size_um": [50, 50],
+    }
+
+    npt = write_agbh_control_points_npt(
+        poni_text=poni,
+        detector_config=detector_config,
+        output_path=tmp_path / "seed.npt",
+        first_visible_ring=1,
+        rings_to_show=2,
+    )
+
+    text = npt.read_text(encoding="utf-8")
+    assert "ring: 0" in text
+    assert "point: x=" in text
+
+
+def test_headless_fit_plausibility_rejects_sparse_bad_geometry(tmp_path):
+    seed = "\n".join(
+        [
+            "Distance: 0.02",
+            "Poni1: 0.0064",
+            "Poni2: 0.016",
+        ]
+    )
+    fitted = "\n".join(
+        [
+            "Distance: 0.032",
+            "Poni1: 0.0059",
+            "Poni2: 0.0183",
+        ]
+    )
+    result = HeadlessPoniFitResult(
+        poni_path=tmp_path / "fit.poni",
+        poni_text=fitted,
+        npt_path=tmp_path / "fit.npt",
+        extracted_points=6,
+        refined=True,
+        chi2=1e-7,
+    )
+
+    assert not is_headless_agbh_fit_plausible(
+        result,
+        seed_poni_text=seed,
+        detector_config={
+            "size": {"width": 256, "height": 256},
+            "pixel_size_um": [50, 50],
+        },
+    )
+
+
+def test_clicked_ring_points_write_npt_and_refine_poni(tmp_path):
+    detector_config = {
+        "size": {"width": 256, "height": 256},
+        "pixel_size_um": [50, 50],
+    }
+    poni = build_seed_poni_text(
+        detector_config=detector_config,
+        distance_m=0.02,
+        alias="PRIMARY",
+        wavelength_m=energy_kev_to_wavelength_m(8.04),
+        center_px=(128.0, 10.0),
+        created_at="now",
+    )
+    points = [(10.0, 64.0), (74.0, 128.0), (10.0, 192.0), (-54.0, 128.0)]
+
+    npt = write_agbh_clicked_points_npt(
+        poni_text=poni,
+        output_path=tmp_path / "clicked.npt",
+        ring_index=2,
+        points_col_row=points,
+    )
+    refined = refine_poni_from_clicked_ring_points(
+        poni_text=poni,
+        detector_config=detector_config,
+        ring_index=2,
+        points_col_row=points,
+        alias="PRIMARY",
+    )
+    parsed = parse_poni_parameters(refined)
+
+    text = npt.read_text(encoding="utf-8")
+    assert "ring: 1" in text
+    assert "point: x=10 y=64" in text
+    assert abs(parsed["Poni1"] - 0.0064) < 1e-9
+    assert abs(parsed["Poni2"] - 0.0005) < 1e-9
+    assert parsed["Distance"] > 0.0
 
 
 def test_normalized_auto_poni_config_defaults_visible_rings():
     cfg = normalized_auto_poni_config({})
 
     assert cfg["calibrant"] == "AgBh"
-    assert cfg["first_visible_ring_by_alias"]["PRIMARY"] == 3
+    assert cfg["energy_kev"] == 8.04
+    assert cfg["rings_to_show"] == 3
+    assert cfg["first_visible_ring_by_alias"]["PRIMARY"] == 2
     assert cfg["first_visible_ring_by_alias"]["SECONDARY"] == 5
+    assert cfg["first_visible_ring_by_distance_cm"]["2"]["PRIMARY"] == 2
+    assert cfg["first_visible_ring_by_distance_cm"]["2"]["SECONDARY"] == 5
+    assert cfg["first_visible_ring_by_distance_cm"]["17"]["PRIMARY"] == 1
+    assert cfg["rings_to_search_by_distance_cm"]["2"]["PRIMARY"] == 5
+    assert cfg["rings_to_search_by_distance_cm"]["2"]["SECONDARY"] == 4
+    assert cfg["rings_to_search_by_distance_cm"]["17"]["PRIMARY"] == 3
+    assert cfg["rings_to_search_by_distance_cm"]["17"]["SECONDARY"] == 3
+
+
+def test_normalized_auto_poni_config_accepts_distance_ring_overrides():
+    cfg = normalized_auto_poni_config(
+        {
+            "auto_poni_calibration": {
+                "first_visible_ring_by_distance_cm": {
+                    "17": {
+                        "PRIMARY": 2,
+                        "SECONDARY": 4,
+                    }
+                }
+            }
+        }
+    )
+
+    assert cfg["first_visible_ring_by_distance_cm"]["17"]["PRIMARY"] == 2
+    assert cfg["first_visible_ring_by_distance_cm"]["17"]["SECONDARY"] == 4
+
+
+def test_normalized_auto_poni_config_reads_energy_and_converts_to_wavelength():
+    cfg = normalized_auto_poni_config({"xray_energy_kev": 8.04})
+
+    assert cfg["energy_kev"] == 8.04
+    assert round(energy_kev_to_wavelength_m(cfg["energy_kev"]) * 1e10, 4) == 1.5421
 
 
 def test_build_agbh_ring_overlays_starts_at_first_visible_ring():
