@@ -15,7 +15,7 @@ if "%GUI_ENV%"=="" (
 if "%GUI_ENV%"=="" set GUI_ENV=eosdx13
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=ulster38
+if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=ulster37
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
 if "%SIDECAR_HOST%"=="" set SIDECAR_HOST=127.0.0.1
@@ -81,7 +81,7 @@ set SIDECAR_PY_EXE=
 call :resolve_env_python "%SIDECAR_ENV%" SIDECAR_PY_EXE
 if "%SIDECAR_PY_EXE%"=="" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' is not available.
-  echo [ERROR] Install/create legacy ulster38 or set DIFRA_SIDECAR_ENV.
+  echo [ERROR] Install/create legacy ulster37 or set DIFRA_SIDECAR_ENV.
   exit /b 1
 )
 

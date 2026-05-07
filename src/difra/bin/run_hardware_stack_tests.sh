@@ -53,8 +53,8 @@ from pathlib import Path
 
 payload = json.loads(sys.argv[1])
 names = {Path(p).name for p in payload.get("envs", [])}
-if "ulster38" in names:
-    print("ulster38")
+if "ulster37" in names:
+    print("ulster37")
 else:
     print("")
 PY
@@ -63,8 +63,8 @@ PY
       export DIFRA_LEGACY_ENV
       echo "[INFO] Using legacy env: $DIFRA_LEGACY_ENV"
     else
-      echo "[ERROR] Legacy sidecar env 'ulster38' not found."
-      echo "[ERROR] Set DIFRA_LEGACY_ENV=ulster38 or DIFRA_LEGACY_PYTHON to Python 3.7/3.8."
+      echo "[ERROR] Legacy sidecar env 'ulster37' not found."
+      echo "[ERROR] Set DIFRA_LEGACY_ENV=ulster37 or DIFRA_LEGACY_PYTHON to Python 3.7."
       exit 1
     fi
   else

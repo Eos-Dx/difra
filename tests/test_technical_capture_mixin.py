@@ -360,16 +360,16 @@ def test_auto_poni_saxs_uses_physical_primary_detector_config():
 def test_auto_poni_correct_uses_legacy_sidecar_env(monkeypatch):
     harness = _Harness()
     harness.config["conda"] = "eosdx13"
-    monkeypatch.setenv("SIDECAR_ENV", "ulster38")
+    monkeypatch.setenv("SIDECAR_ENV", "ulster37")
 
-    assert harness._resolve_auto_poni_pyfai_calib2_env() == "ulster38"
+    assert harness._resolve_auto_poni_pyfai_calib2_env() == "ulster37"
 
 
 def test_auto_poni_correct_env_config_has_priority(monkeypatch):
     harness = _Harness()
     harness.config["conda"] = "eosdx13"
     harness.config["auto_poni_calibration"] = {"pyfai_calib2_env": "pyfai37"}
-    monkeypatch.setenv("SIDECAR_ENV", "ulster38")
+    monkeypatch.setenv("SIDECAR_ENV", "ulster37")
 
     assert harness._resolve_auto_poni_pyfai_calib2_env() == "pyfai37"
 

@@ -128,10 +128,10 @@ if [ -z "$GUI_ENV" ]; then
   GUI_ENV="eosdx13"
 fi
 
-SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster38}"
+SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster37}"
 if ! conda run --live-stream --no-capture-output -n "$SIDECAR_ENV" python -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
   echo "[ERROR] Sidecar env '$SIDECAR_ENV' is not available."
-  echo "[ERROR] Install/create the legacy env (expected: ulster38) or set DIFRA_SIDECAR_ENV."
+  echo "[ERROR] Install/create the legacy env (expected: ulster37) or set DIFRA_SIDECAR_ENV."
   exit 1
 fi
 SIDECAR_HOST="${PIXET_SIDECAR_HOST:-127.0.0.1}"
