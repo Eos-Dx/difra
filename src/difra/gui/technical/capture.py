@@ -1224,6 +1224,7 @@ def show_auto_poni_review_window(
         DEFAULT_WAVELENGTH_M,
         build_agbh_ring_overlays,
         build_pyfai_calib2_command,
+        build_seed_poni_text,
         parse_poni_parameters,
         pixel_size_m,
         refine_poni_from_clicked_ring_points,
@@ -1350,6 +1351,25 @@ def show_auto_poni_review_window(
         for alias in aliases:
             _refresh_review_command(alias)
 
+    def _alias_file_token(alias: str) -> str:
+        token = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "_"
+            for ch in str(alias or "").strip()
+        )
+        return token or "detector"
+
+    def _review_with_poni_text(alias: str, review, poni_text: str):
+        output_dir = Path(getattr(review, "poni_path", "") or ".").parent
+        poni_path = output_dir / f"{_alias_file_token(alias)}.poni"
+        poni_path.write_text(poni_text, encoding="utf-8")
+        return type(review)(
+            image_path=review.image_path,
+            poni_path=poni_path,
+            command=review.command,
+            poni_text=poni_text,
+            source_path=getattr(review, "source_path", None),
+        )
+
     def _snap_to_peak(data, col: float, row: float, radius: int = 6):
         arr = np.asarray(data, dtype=float)
         height, width = arr.shape
@@ -1386,10 +1406,13 @@ def show_auto_poni_review_window(
     cake_axes_by_alias = {}
     curve_axes_by_alias = {}
     overlay_artists_by_alias = {}
+    integration_line_artists_by_alias = {}
+    integration_axis_to_alias = {}
     full_view_by_alias = {}
     status = {"label": None, "last_alias": None}
     rotation_constraints = {"fixed": True}
     drag_state = {"alias": None, "index": None, "artist": None}
+    profile_drag_state = {"alias": None, "x0": None, "x": None, "artists": []}
 
     def _center_marker_payload(alias: str):
         review = review_state_by_alias.get(alias)
@@ -1585,6 +1608,9 @@ def show_auto_poni_review_window(
         data = image_data_by_alias.get(alias)
         if cake_ax is None or curve_ax is None or review is None or data is None:
             return
+        integration_line_artists_by_alias[alias] = []
+        integration_axis_to_alias[cake_ax] = alias
+        integration_axis_to_alias[curve_ax] = alias
         first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
         ring_positions = _ring_positions_deg(
             poni_text=str(getattr(review, "poni_text", "") or ""),
@@ -1615,12 +1641,14 @@ def show_auto_poni_review_window(
             cake_ax.set_xlabel("2theta (deg)")
             cake_ax.set_ylabel("azimuth (deg)")
             for ring_index, two_theta_deg in ring_positions:
-                cake_ax.axvline(
+                line = cake_ax.axvline(
                     two_theta_deg,
                     color="#35d0ff" if ring_index == first_ring else "#f9f871",
-                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    linewidth=1.45 if ring_index == first_ring else 0.75,
                     alpha=0.9,
                 )
+                if ring_index == first_ring:
+                    integration_line_artists_by_alias.setdefault(alias, []).append(line)
         else:
             cake_ax.set_title(f"{alias} cake unavailable")
             cake_ax.axis("off")
@@ -1633,12 +1661,14 @@ def show_auto_poni_review_window(
             curve_ax.set_xlabel("2theta (deg)")
             curve_ax.set_ylabel("I")
             for ring_index, two_theta_deg in ring_positions:
-                curve_ax.axvline(
+                line = curve_ax.axvline(
                     two_theta_deg,
                     color="#35d0ff" if ring_index == first_ring else "#f9f871",
-                    linewidth=1.0 if ring_index == first_ring else 0.75,
+                    linewidth=1.45 if ring_index == first_ring else 0.75,
                     alpha=0.9,
                 )
+                if ring_index == first_ring:
+                    integration_line_artists_by_alias.setdefault(alias, []).append(line)
                 curve_ax.text(
                     two_theta_deg,
                     0.96,
@@ -1760,13 +1790,6 @@ def show_auto_poni_review_window(
             canvas.draw_idle()
         _set_status("Clicked ring points: none")
 
-    def _alias_file_token(alias: str) -> str:
-        token = "".join(
-            ch if ch.isalnum() or ch in ("-", "_") else "_"
-            for ch in str(alias or "").strip()
-        )
-        return token or "detector"
-
     def _poni_text_with_manual_hint(alias: str, review, points, ring_index: int):
         if not points:
             return str(getattr(review, "poni_text", "") or "")
@@ -1879,56 +1902,11 @@ def show_auto_poni_review_window(
             points_by_ring[int(manual_ring_index)] = deduped
         return points_by_ring
 
-    def _save_clicked_points(alias: str):
+    def _finalize_review_geometry(alias: str, review, *, redraw_integrations: bool = True):
         points = manual_points_by_alias.get(alias) or []
-        review = review_state_by_alias.get(alias)
-        if review is None:
-            return None, False
         ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
         output_dir = Path(getattr(review, "poni_path", "") or ".").parent
-        alias_token = _alias_file_token(alias)
-        refit = False
-        if len(points) < 3:
-            base_review = base_review_by_alias.get(alias)
-            if base_review is not None:
-                review = base_review
-                review_state_by_alias[alias] = review
-                review_by_alias[alias] = review
-                review_by_alias[str(alias).upper()] = review
-            if not points:
-                _draw_ring_overlays(alias)
-                return None, False
-        else:
-            poni_text = refine_poni_from_clicked_ring_points(
-                poni_text=str(getattr(review, "poni_text", "") or ""),
-                detector_config=detector_state_by_alias.get(alias, {}),
-                ring_index=ring_index,
-                points_col_row=points,
-                alias=alias,
-            )
-            poni_path = output_dir / f"{alias_token}.poni"
-            poni_path.write_text(poni_text, encoding="utf-8")
-            review = type(review)(
-                image_path=review.image_path,
-                poni_path=poni_path,
-                command=review.command,
-                poni_text=poni_text,
-                source_path=getattr(review, "source_path", None),
-            )
-            refit = True
-        if points and not refit:
-            hinted_poni_text = _poni_text_with_manual_hint(alias, review, points, ring_index)
-            if hinted_poni_text != str(getattr(review, "poni_text", "") or ""):
-                poni_path = output_dir / f"{alias_token}.poni"
-                poni_path.write_text(hinted_poni_text, encoding="utf-8")
-                review = type(review)(
-                    image_path=review.image_path,
-                    poni_path=poni_path,
-                    command=review.command,
-                    poni_text=hinted_poni_text,
-                    source_path=getattr(review, "source_path", None),
-                )
-        npt_path = output_dir / f"{alias_token}.npt"
+        npt_path = output_dir / f"{_alias_file_token(alias)}.npt"
         auto_entries = _auto_points_for_review(alias, review)
         auto_points_by_alias[alias] = auto_entries
         auto_points = _points_by_ring(
@@ -1970,7 +1948,42 @@ def show_auto_poni_review_window(
         review_by_alias[alias] = updated
         review_by_alias[str(alias).upper()] = updated
         _draw_ring_overlays(alias)
-        _draw_integrations(alias)
+        if redraw_integrations:
+            _draw_integrations(alias)
+        return npt_path
+
+    def _save_clicked_points(alias: str):
+        points = manual_points_by_alias.get(alias) or []
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None, False
+        ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
+        refit = False
+        if len(points) < 3:
+            base_review = base_review_by_alias.get(alias)
+            if base_review is not None:
+                review = base_review
+                review_state_by_alias[alias] = review
+                review_by_alias[alias] = review
+                review_by_alias[str(alias).upper()] = review
+            if not points:
+                npt_path = _finalize_review_geometry(alias, review)
+                return npt_path, False
+        else:
+            poni_text = refine_poni_from_clicked_ring_points(
+                poni_text=str(getattr(review, "poni_text", "") or ""),
+                detector_config=detector_state_by_alias.get(alias, {}),
+                ring_index=ring_index,
+                points_col_row=points,
+                alias=alias,
+            )
+            review = _review_with_poni_text(alias, review, poni_text)
+            refit = True
+        if points and not refit:
+            hinted_poni_text = _poni_text_with_manual_hint(alias, review, points, ring_index)
+            if hinted_poni_text != str(getattr(review, "poni_text", "") or ""):
+                review = _review_with_poni_text(alias, review, hinted_poni_text)
+        npt_path = _finalize_review_geometry(alias, review)
         return npt_path, refit
 
     for alias in aliases:
@@ -1978,6 +1991,97 @@ def show_auto_poni_review_window(
         if review is not None:
             auto_points_by_alias[alias] = _auto_points_for_review(alias, review)
             _draw_ring_overlays(alias)
+
+    def _apply_center_hint(alias: str, col: float, row: float):
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None
+        params = parse_poni_parameters(str(getattr(review, "poni_text", "") or ""))
+        distance_m = float(params.get("Distance", 0.0) or 0.0)
+        wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+        if distance_m <= 0.0:
+            return None
+        poni_text = build_seed_poni_text(
+            detector_config=detector_state_by_alias.get(alias, {}),
+            distance_m=distance_m,
+            alias=alias,
+            existing_poni_text=str(getattr(review, "poni_text", "") or ""),
+            wavelength_m=wavelength_m,
+            center_px=(float(row), float(col)),
+        )
+        updated = _review_with_poni_text(alias, review, poni_text)
+        base_review_by_alias[alias] = updated
+        review_state_by_alias[alias] = updated
+        if manual_points_by_alias.get(alias):
+            return _save_clicked_points(alias)[0]
+        return _finalize_review_geometry(alias, updated)
+
+    def _first_ring_two_theta_deg(alias: str):
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None
+        first_ring = int(first_ring_by_alias.get(alias, 1) or 1)
+        positions = _ring_positions_deg(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            first_ring=first_ring,
+            count=1,
+        )
+        return float(positions[0][1]) if positions else None
+
+    def _start_profile_drag(event):
+        alias = integration_axis_to_alias.get(event.inaxes)
+        if not alias or event.xdata is None or event.button != 1:
+            return False
+        x0 = _first_ring_two_theta_deg(alias)
+        if x0 is None:
+            return False
+        x_left, x_right = event.inaxes.get_xlim()
+        tolerance = max(0.03, abs(float(x_right) - float(x_left)) * 0.025)
+        if abs(float(event.xdata) - x0) > tolerance:
+            return False
+        profile_drag_state["alias"] = alias
+        profile_drag_state["x0"] = x0
+        profile_drag_state["x"] = float(event.xdata)
+        profile_drag_state["artists"] = list(integration_line_artists_by_alias.get(alias, []))
+        status["last_alias"] = alias
+        _set_status(f"{alias}: dragging first-ring profile line")
+        return True
+
+    def _apply_profile_shift(alias: str, target_two_theta_deg: float):
+        review = review_state_by_alias.get(alias)
+        source_two_theta_deg = _first_ring_two_theta_deg(alias)
+        if review is None or source_two_theta_deg is None:
+            return None
+        import math
+
+        params = parse_poni_parameters(str(getattr(review, "poni_text", "") or ""))
+        distance_m = float(params.get("Distance", 0.0) or 0.0)
+        wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+        source_rad = math.radians(float(source_two_theta_deg))
+        target_rad = math.radians(float(target_two_theta_deg))
+        if distance_m <= 0.0 or source_rad <= 0.0 or target_rad <= 0.0:
+            return None
+        new_distance = distance_m * math.tan(target_rad) / math.tan(source_rad)
+        if not math.isfinite(new_distance) or new_distance <= 0.0:
+            return None
+        payload = _center_marker_payload(alias)
+        center_px = None
+        if payload:
+            center_px = (float(payload["row_px"]), float(payload["col_px"]))
+        poni_text = build_seed_poni_text(
+            detector_config=detector_state_by_alias.get(alias, {}),
+            distance_m=new_distance,
+            alias=alias,
+            existing_poni_text=str(getattr(review, "poni_text", "") or ""),
+            wavelength_m=wavelength_m,
+            center_px=center_px,
+        )
+        updated = _review_with_poni_text(alias, review, poni_text)
+        base_review_by_alias[alias] = updated
+        review_state_by_alias[alias] = updated
+        if manual_points_by_alias.get(alias):
+            return _save_clicked_points(alias)[0]
+        return _finalize_review_geometry(alias, updated)
 
     def _set_status(text: str):
         label = status.get("label")
@@ -2002,19 +2106,19 @@ def show_auto_poni_review_window(
             return None
         return best
 
-    def _delete_last_point(alias: str | None = None):
-        target_alias = alias or status.get("last_alias")
-        if not target_alias:
-            _set_status("No clicked point to delete")
-            return
+    def _delete_point(alias: str, index: int | None = None):
+        target_alias = alias
         points = manual_points_by_alias.setdefault(target_alias, [])
         artists = manual_artists_by_alias.setdefault(target_alias, [])
         if not points:
             _set_status(f"{target_alias}: no clicked point to delete")
             return
-        points.pop()
-        if artists:
-            artist = artists.pop()
+        point_index = len(points) - 1 if index is None else int(index)
+        if point_index < 0 or point_index >= len(points):
+            return
+        points.pop(point_index)
+        if point_index < len(artists):
+            artist = artists.pop(point_index)
             try:
                 artist.remove()
             except Exception:
@@ -2026,14 +2130,24 @@ def show_auto_poni_review_window(
             canvas.draw_idle()
             return
         _set_status(
-            f"{target_alias}: deleted last point; {len(points)} clicked points on ring "
+            f"{target_alias}: deleted point {point_index + 1}; {len(points)} clicked points on ring "
             f"{first_ring_by_alias.get(target_alias, 1)}"
             + ("; refit" if refit else "; integrations recomputed" if points else "")
             + (f"; saved {npt_path}" if npt_path else "")
         )
         canvas.draw_idle()
 
+    def _delete_last_point(alias: str | None = None):
+        target_alias = alias or status.get("last_alias")
+        if not target_alias:
+            _set_status("No clicked point to delete")
+            return
+        _delete_point(target_alias)
+
     def _on_click(event):
+        if _start_profile_drag(event):
+            canvas.draw_idle()
+            return
         alias = axis_to_alias.get(event.inaxes)
         if not alias or event.xdata is None or event.ydata is None:
             return
@@ -2049,7 +2163,22 @@ def show_auto_poni_review_window(
         artists = manual_artists_by_alias.setdefault(alias, [])
         points = manual_points_by_alias.setdefault(alias, [])
         if event.button == 3:
-            _delete_last_point(alias)
+            point_index = _nearest_clicked_point(alias, event)
+            if point_index is not None:
+                _delete_point(alias, point_index)
+                return
+            try:
+                npt_path = _apply_center_hint(alias, float(event.xdata), float(event.ydata))
+            except Exception as exc:
+                _set_status(f"{alias}: center hint failed: {exc}")
+                canvas.draw_idle()
+                return
+            _set_status(
+                f"{alias}: center hint ({float(event.xdata):.1f}, {float(event.ydata):.1f}); "
+                "points recomputed"
+                + (f"; saved {npt_path}" if npt_path else "")
+            )
+            canvas.draw_idle()
             return
         if event.button != 1:
             return
@@ -2092,6 +2221,21 @@ def show_auto_poni_review_window(
         canvas.draw_idle()
 
     def _on_motion(event):
+        profile_alias = profile_drag_state.get("alias")
+        if profile_alias is not None:
+            if event.xdata is None:
+                return
+            x = float(event.xdata)
+            profile_drag_state["x"] = x
+            for artist in profile_drag_state.get("artists", []) or []:
+                try:
+                    artist.set_xdata([x, x])
+                except Exception:
+                    pass
+            x0 = float(profile_drag_state.get("x0") or x)
+            _set_status(f"{profile_alias}: first-ring line shift {x - x0:+.4f} deg")
+            canvas.draw_idle()
+            return
         alias = drag_state.get("alias")
         index = drag_state.get("index")
         artist = drag_state.get("artist")
@@ -2111,6 +2255,27 @@ def show_auto_poni_review_window(
         canvas.draw_idle()
 
     def _on_release(event):
+        profile_alias = profile_drag_state.get("alias")
+        if profile_alias is not None:
+            target_x = profile_drag_state.get("x")
+            profile_drag_state["alias"] = None
+            profile_drag_state["x0"] = None
+            profile_drag_state["x"] = None
+            profile_drag_state["artists"] = []
+            if target_x is None:
+                return
+            try:
+                npt_path = _apply_profile_shift(str(profile_alias), float(target_x))
+            except Exception as exc:
+                _set_status(f"{profile_alias}: profile shift failed: {exc}")
+                canvas.draw_idle()
+                return
+            _set_status(
+                f"{profile_alias}: profile shift applied at {float(target_x):.4f} deg"
+                + (f"; saved {npt_path}" if npt_path else "")
+            )
+            canvas.draw_idle()
+            return
         alias = drag_state.get("alias")
         index = drag_state.get("index")
         if alias is None or index is None:
@@ -2192,7 +2357,9 @@ def show_auto_poni_review_window(
     note.setText(
         "Validate saves generated PONI files and updates the active technical container. "
         "Correct opens pyFAI-calib2 for manual refinement. "
-        "Left-click an AgBh image to add a point on the selected first ring; drag points to move them; right-click removes the last point. "
+        "Left-click an AgBh image to add a point on the selected first ring; drag points to move them. "
+        "Right-click a point to delete it; right-click empty image space to set a center hint. "
+        "Drag the first-ring vertical line in cake/radial plots, then release to shift the first-ring radius. "
         "Use mouse wheel to zoom around cursor; double-click to reset zoom."
     )
     layout.addWidget(note)
