@@ -32,6 +32,21 @@ DEFAULT_MODIFICATION_PASSWORD_HASH = (
 )
 
 
+def _load_json_with_encoding_fallback(path: Path) -> dict:
+    last_error = None
+    for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+        try:
+            with open(path, "r", encoding=encoding) as file_handle:
+                payload = json.load(file_handle)
+            return payload if isinstance(payload, dict) else {}
+        except UnicodeError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    return {}
+
+
 def _hash_password(password: str) -> str:
     return hashlib.sha256(str(password).encode("utf-8")).hexdigest()
 
@@ -65,17 +80,16 @@ class OperatorManager:
             return
         
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                self.operators = data.get('operators', {})
-                self.current_operator_id = data.get('current_operator_id')
-                loaded_hash = data.get("operator_modify_password_hash")
-                if isinstance(loaded_hash, str) and loaded_hash.strip():
-                    self.operator_modify_password_hash = loaded_hash.strip()
-                else:
-                    self.operator_modify_password_hash = DEFAULT_MODIFICATION_PASSWORD_HASH
-                    # Persist upgraded config format (without plaintext password).
-                    self.save_operators()
+            data = _load_json_with_encoding_fallback(self.config_path)
+            self.operators = data.get('operators', {})
+            self.current_operator_id = data.get('current_operator_id')
+            loaded_hash = data.get("operator_modify_password_hash")
+            if isinstance(loaded_hash, str) and loaded_hash.strip():
+                self.operator_modify_password_hash = loaded_hash.strip()
+            else:
+                self.operator_modify_password_hash = DEFAULT_MODIFICATION_PASSWORD_HASH
+                # Persist upgraded config format (without plaintext password).
+                self.save_operators()
             
             logger.info(f"Loaded {len(self.operators)} operators from {self.config_path}")
         

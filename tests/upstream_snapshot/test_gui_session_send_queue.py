@@ -127,6 +127,12 @@ def _make_session_complete(session_path: Path):
     )
 
 
+def _open_archive_table(harness: _SessionQueueHarness, qapp):
+    harness._show_archive_window()
+    qapp.processEvents()
+    return harness.archive_window_table
+
+
 def test_session_queue_send_single_container(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
@@ -165,22 +171,16 @@ def test_session_queue_send_single_container(qapp, tmp_path, monkeypatch):
     assert harness._selected_pending_container() == first_session
     assert "File: session_" in harness._pending_session_summary_text
     assert "Specimen: SAMPLE_A" in harness._pending_session_summary_text
-    assert harness.archived_sessions_table.rowCount() == 0
+    archive_table = _open_archive_table(harness, qapp)
+    assert archive_table.rowCount() == 0
 
     harness._on_send_pending_session()
     qapp.processEvents()
 
     assert harness._selected_pending_container() is None
     assert harness._pending_session_summary_text == "No session container in measurements folder."
-    assert harness.archived_sessions_table.rowCount() == 1
-    old_dirs = [path for path in old_format_folder.glob("*") if path.is_dir()]
-    assert len(old_dirs) == 1
-    day_dir = old_dirs[0]
-    assert (day_dir / "calibration").is_dir() is True
-    measurements_dir = day_dir / "measurements"
-    assert measurements_dir.is_dir() is True
-    sample_dirs = [path for path in measurements_dir.iterdir() if path.is_dir()]
-    assert len(sample_dirs) == 1
+    assert archive_table.rowCount() == 1
+    assert list(old_format_folder.glob("*")) == []
     archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
     assert len(archived_files) == 1
     with h5py.File(archived_files[0], "r") as h5f:
@@ -196,12 +196,12 @@ def test_session_queue_send_single_container(qapp, tmp_path, monkeypatch):
     # Active session got closed if it was the one sent
     assert session_manager.close_calls in {0, 1}
 
-    harness.archive_project_filter_edit.setText("STUDY_A")
-    harness._apply_archive_filters()
+    harness.archive_window_project_filter_edit.setText("STUDY_A")
+    harness._populate_archive_window_table()
     qapp.processEvents()
-    assert harness.archived_sessions_table.rowCount() == 1
-    harness.archive_project_filter_edit.setText("")
-    harness._apply_archive_filters()
+    assert archive_table.rowCount() == 1
+    harness.archive_window_project_filter_edit.setText("")
+    harness._populate_archive_window_table()
 
 
 def test_session_queue_multiple_pending_containers_disables_actions(qapp, tmp_path, monkeypatch):
@@ -227,6 +227,7 @@ def test_session_queue_multiple_pending_containers_disables_actions(qapp, tmp_pa
     assert harness.load_session_btn.isEnabled() is True
     assert harness.close_session_btn.isEnabled() is False
     assert harness.send_session_btn.isEnabled() is False
+    assert harness.preview_session_data_btn.isEnabled() is False
 
 
 def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):
@@ -250,8 +251,65 @@ def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):
         "Load Container",
         "Close",
         "Close and Send",
+        "Check data",
         "Refresh",
     }
+
+
+def test_session_data_preview_collects_measurement_profiles_and_attenuation(
+    qapp, tmp_path, monkeypatch
+):
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    session_path = _create_session_file(measurements_folder, "SAMPLE_A", "STUDY_A")
+    session_writer.add_point(
+        session_path,
+        point_index=1,
+        pixel_coordinates=[10.0, 12.0],
+        physical_coordinates_mm=[1.0, 2.0],
+    )
+    session_writer.add_measurement(
+        session_path,
+        point_index=1,
+        measurement_data={
+            "PRIMARY": np.ones((4, 4), dtype=np.float32),
+            "SECONDARY": np.ones((4, 4), dtype=np.float32) * 2.0,
+        },
+        detector_metadata={
+            "PRIMARY": {"integration_time_ms": 100.0},
+            "SECONDARY": {"integration_time_ms": 100.0},
+        },
+        poni_alias_map={"PRIMARY": "PRIMARY", "SECONDARY": "SECONDARY"},
+    )
+    with h5py.File(session_path, "a") as h5f:
+        ana_group = h5f.require_group(schema.GROUP_ANALYTICAL_MEASUREMENTS.lstrip("/"))
+        item = ana_group.require_group("ana_000000001")
+        item.attrs[schema.ATTR_ANALYSIS_TYPE] = "attenuation"
+
+    harness = _SessionQueueHarness(
+        config={"measurements_folder": str(measurements_folder)},
+        session_manager=_FakeSessionManager(),
+    )
+    calls = []
+
+    def _extract(ref, alias="", npt=200):
+        calls.append((ref, alias, npt))
+        return {"q_values": [0.0, 1.0], "intensity": [1.0, 2.0]}
+
+    monkeypatch.setattr(
+        harness,
+        "_extract_profile_from_measurement",
+        _extract,
+        raising=False,
+    )
+
+    payload = harness._collect_session_data_preview(session_path)
+
+    assert payload["attenuation_exists"] is True
+    assert len(payload["profiles"]["PRIMARY"]) == 1
+    assert len(payload["profiles"]["SECONDARY"]) == 1
+    assert ("PRIMARY", 200) in [(alias, npt) for _ref, alias, npt in calls]
+    assert ("SECONDARY", 100) in [(alias, npt) for _ref, alias, npt in calls]
 
 
 def test_session_queue_load_button_falls_back_to_file_dialog_when_measurements_folder_is_empty(
@@ -440,10 +498,11 @@ def test_archived_container_manual_generate_old_format(qapp, tmp_path, monkeypat
 
     harness._on_send_pending_session()
     qapp.processEvents()
-    assert harness.archived_sessions_table.rowCount() == 1
+    archive_table = _open_archive_table(harness, qapp)
+    assert archive_table.rowCount() == 1
     assert list(old_format_folder.glob("*")) == []
 
-    archived_path = harness._path_from_table_row(harness.archived_sessions_table, 0, 9)
+    archived_path = harness._path_from_table_row(archive_table, 0, 9)
     assert archived_path is not None and archived_path.exists() is True
     harness._generate_old_format_for_container(archived_path)
     qapp.processEvents()
@@ -484,7 +543,8 @@ def test_archive_tab_can_edit_project_and_study_without_touching_specimen(qapp, 
     harness._archive_sessions([session_path])
     qapp.processEvents()
 
-    archived_path = harness._path_from_table_row(harness.archived_sessions_table, 0, 9)
+    archive_table = _open_archive_table(harness, qapp)
+    archived_path = harness._path_from_table_row(archive_table, 0, 9)
     assert archived_path is not None and archived_path.exists() is True
 
     class _FakeEditDialog:
@@ -522,9 +582,9 @@ def test_archive_tab_can_edit_project_and_study_without_touching_specimen(qapp, 
         assert "operator=sad" in str(h5f.attrs.get("archive_metadata_edit_log", ""))
 
     harness._refresh_session_container_lists()
-    assert harness.archived_sessions_table.item(0, 1).text() == "SAMPLE_KEEP"
-    assert harness.archived_sessions_table.item(0, 2).text() == "NewProject"
-    assert harness.archived_sessions_table.item(0, 3).text() == "NewStudy"
+    assert archive_table.item(0, 1).text() == "SAMPLE_KEEP"
+    assert archive_table.item(0, 2).text() == "NewProject"
+    assert archive_table.item(0, 3).text() == "NewStudy"
 
 
 def test_session_queue_close_archives_and_marks_incomplete(qapp, tmp_path, monkeypatch):
@@ -556,7 +616,8 @@ def test_session_queue_close_archives_and_marks_incomplete(qapp, tmp_path, monke
     qapp.processEvents()
     assert harness._selected_pending_container() is None
     assert harness._pending_session_summary_text == "No session container in measurements folder."
-    assert harness.archived_sessions_table.rowCount() == 2
+    archive_table = _open_archive_table(harness, qapp)
+    assert archive_table.rowCount() == 2
 
     archived_files = sorted(archive_folder.rglob("session_*.nxs.h5"))
     assert len(archived_files) == 2

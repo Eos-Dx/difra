@@ -256,7 +256,7 @@ class ZoneMeasurementsUIMixin:
         self.attenTimeSpin.setDecimals(6)
         self.attenTimeSpin.setRange(0.000001, 10.0)
         self.attenTimeSpin.setValue(
-            float(atten_cfg.get("integration_time_s", 0.00005))
+            float(atten_cfg.get("integration_time_s", 0.000001))
         )
         integrationLayout.addWidget(self.attenTimeSpin)
 

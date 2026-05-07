@@ -6,7 +6,7 @@ set SCRIPT_DIR=%~dp0
 for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=ulster37
+if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=ulster38
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
 if "%SIDECAR_HOST%"=="" set SIDECAR_HOST=127.0.0.1
@@ -57,8 +57,8 @@ if "%SIDECAR_PY%"=="" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' is not available.
   exit /b 1
 )
-if /I not "%SIDECAR_PY%"=="3.7" (
-  echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.7, found %SIDECAR_PY%.
+if /I not "%SIDECAR_PY%"=="3.7" if /I not "%SIDECAR_PY%"=="3.8" (
+  echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.7 or 3.8, found %SIDECAR_PY%.
   exit /b 1
 )
 
