@@ -114,6 +114,7 @@ set "ORIGINAL_PATH=%PATH%"
 set "SIDECAR_LAUNCH_PATH=%SIDECAR_ENV_ROOT%;%SIDECAR_ENV_ROOT%Library\mingw-w64\bin;%SIDECAR_ENV_ROOT%Library\usr\bin;%SIDECAR_ENV_ROOT%Library\bin;%SIDECAR_ENV_ROOT%Scripts;%SIDECAR_ENV_ROOT%bin;%ORIGINAL_PATH%"
 set "GRPC_LAUNCH_PATH=%GRPC_ENV_ROOT%;%GRPC_ENV_ROOT%Library\mingw-w64\bin;%GRPC_ENV_ROOT%Library\usr\bin;%GRPC_ENV_ROOT%Library\bin;%GRPC_ENV_ROOT%Scripts;%GRPC_ENV_ROOT%bin;%ORIGINAL_PATH%"
 set "GUI_LAUNCH_PATH=%GUI_ENV_ROOT%;%GUI_ENV_ROOT%Library\mingw-w64\bin;%GUI_ENV_ROOT%Library\usr\bin;%GUI_ENV_ROOT%Library\bin;%GUI_ENV_ROOT%Scripts;%GUI_ENV_ROOT%bin;%ORIGINAL_PATH%"
+set "STARTUP_STDERR_FILTER=%REPO_ROOT%\src\difra\scripts\filter_startup_stderr.py"
 
 cd /d %REPO_ROOT%
 call :auto_update_repo
@@ -163,9 +164,9 @@ set "PATH=%ORIGINAL_PATH%"
 echo [INFO] Starting gRPC env=%GRPC_ENV% endpoint=%GRPC_HOST%:%GRPC_PORT% config=%GRPC_CONFIG%
 set "PATH=%GRPC_LAUNCH_PATH%"
 if "%GRPC_CONFIG%"=="" (
-  start "DiFRA gRPC" /B "%GRPC_PY_EXE%" -u "%REPO_ROOT%\src\difra\grpc_server\server.py" --host %GRPC_HOST% --port %GRPC_PORT%
+  start "DiFRA gRPC" /B "%GRPC_PY_EXE%" -u "%STARTUP_STDERR_FILTER%" -- "%GRPC_PY_EXE%" -u "%REPO_ROOT%\src\difra\grpc_server\server.py" --host %GRPC_HOST% --port %GRPC_PORT%
 ) else (
-  start "DiFRA gRPC" /B "%GRPC_PY_EXE%" -u "%REPO_ROOT%\src\difra\grpc_server\server.py" --host %GRPC_HOST% --port %GRPC_PORT% --config "%GRPC_CONFIG%"
+  start "DiFRA gRPC" /B "%GRPC_PY_EXE%" -u "%STARTUP_STDERR_FILTER%" -- "%GRPC_PY_EXE%" -u "%REPO_ROOT%\src\difra\grpc_server\server.py" --host %GRPC_HOST% --port %GRPC_PORT% --config "%GRPC_CONFIG%"
 )
 set "PATH=%ORIGINAL_PATH%"
 
@@ -186,7 +187,7 @@ set DIFRA_GRPC_PORT=%GRPC_PORT%
 
 echo [INFO] Starting DiFRA GUI env=%GUI_ENV% mode=%HARDWARE_CLIENT_MODE% grpc=%DIFRA_GRPC_HOST%:%DIFRA_GRPC_PORT% detector_backend=%DETECTOR_BACKEND%
 set "PATH=%GUI_LAUNCH_PATH%"
-"%GUI_PY_EXE%" -u "%REPO_ROOT%\src\difra\gui\main_app.py" %*
+"%GUI_PY_EXE%" -u "%STARTUP_STDERR_FILTER%" -- "%GUI_PY_EXE%" -u "%REPO_ROOT%\src\difra\gui\main_app.py" %*
 set "GUI_EXIT_CODE=%ERRORLEVEL%"
 set "PATH=%ORIGINAL_PATH%"
 
