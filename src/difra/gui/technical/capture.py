@@ -1767,7 +1767,7 @@ def show_auto_poni_review_window(
         )
         return token or "detector"
 
-    def _poni_text_with_hint_radius(alias: str, review, points, ring_index: int):
+    def _poni_text_with_manual_hint(alias: str, review, points, ring_index: int):
         if not points:
             return str(getattr(review, "poni_text", "") or "")
         payload = _center_marker_payload(alias)
@@ -1786,6 +1786,17 @@ def show_auto_poni_review_window(
             return str(getattr(review, "poni_text", "") or "")
         center_col = float(payload["col_px"])
         center_row = float(payload["row_px"])
+        if len(points) == 2:
+            p1 = np.asarray(points[0], dtype=float)
+            p2 = np.asarray(points[1], dtype=float)
+            chord = p2 - p1
+            chord_len2 = float(np.dot(chord, chord))
+            if chord_len2 > 0.0:
+                midpoint = (p1 + p2) * 0.5
+                center = np.asarray([center_col, center_row], dtype=float)
+                center = center - (float(np.dot(center - midpoint, chord)) / chord_len2) * chord
+                center_col = float(center[0])
+                center_row = float(center[1])
         radii = [
             math.hypot(float(col) - center_col, float(row) - center_row)
             for col, row in points
@@ -1849,12 +1860,24 @@ def show_auto_poni_review_window(
                 result.append({"ring_index": ring_index, "points": points})
         return result
 
-    def _points_by_ring(entries):
-        return {
-            int(entry.get("ring_index")): list(entry.get("points", []) or [])
-            for entry in entries
-            if entry.get("points")
-        }
+    def _points_by_ring(entries, *, manual_ring_index: int | None = None, manual_points=None):
+        points_by_ring = {}
+        for entry in entries:
+            points = list(entry.get("points", []) or [])
+            if points:
+                points_by_ring[int(entry.get("ring_index"))] = points
+        if manual_ring_index is not None and manual_points:
+            ring_points = list(manual_points) + list(points_by_ring.get(int(manual_ring_index), []))
+            deduped = []
+            seen = set()
+            for col, row in ring_points:
+                key = (round(float(col), 3), round(float(row), 3))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append((float(col), float(row)))
+            points_by_ring[int(manual_ring_index)] = deduped
+        return points_by_ring
 
     def _save_clicked_points(alias: str):
         points = manual_points_by_alias.get(alias) or []
@@ -1894,7 +1917,7 @@ def show_auto_poni_review_window(
             )
             refit = True
         if points and not refit:
-            hinted_poni_text = _poni_text_with_hint_radius(alias, review, points, ring_index)
+            hinted_poni_text = _poni_text_with_manual_hint(alias, review, points, ring_index)
             if hinted_poni_text != str(getattr(review, "poni_text", "") or ""):
                 poni_path = output_dir / f"{alias_token}.poni"
                 poni_path.write_text(hinted_poni_text, encoding="utf-8")
@@ -1908,7 +1931,11 @@ def show_auto_poni_review_window(
         npt_path = output_dir / f"{alias_token}.npt"
         auto_entries = _auto_points_for_review(alias, review)
         auto_points_by_alias[alias] = auto_entries
-        auto_points = _points_by_ring(auto_entries)
+        auto_points = _points_by_ring(
+            auto_entries,
+            manual_ring_index=ring_index,
+            manual_points=points,
+        )
         if auto_points:
             write_agbh_points_by_ring_npt(
                 poni_text=str(getattr(review, "poni_text", "") or ""),
