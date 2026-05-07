@@ -61,6 +61,25 @@ auto_update_repo() {
     return 0
   fi
 
+  case "${DIFRA_AUTO_UPDATE_RESET_CONFIG:-1}" in
+    0|false|FALSE|no|NO)
+      ;;
+    *)
+      local auto_reset_files=(
+        "src/difra/resources/config/global.json"
+        "src/difra/resources/config/main.json"
+        "src/difra/resources/config/main_win.json"
+      )
+      local file_path=""
+      for file_path in "${auto_reset_files[@]}"; do
+        if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "$file_path" 2>/dev/null || true)" ]; then
+          echo "[INFO] Resetting local runtime config before update: $file_path"
+          git -C "$REPO_ROOT" checkout -- "$file_path" 2>/dev/null || true
+        fi
+      done
+      ;;
+  esac
+
   tracked_changes="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
   if [ -n "$tracked_changes" ]; then
     echo "[WARN] Remote updates are available, but tracked local changes exist; skipping automatic pull."

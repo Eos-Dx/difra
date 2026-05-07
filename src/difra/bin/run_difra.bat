@@ -268,6 +268,22 @@ if /I "%LOCAL_HEAD%"=="%REMOTE_HEAD%" (
   endlocal & exit /b 0
 )
 
+set "RESET_RUNTIME_CONFIG=%DIFRA_AUTO_UPDATE_RESET_CONFIG%"
+if "%RESET_RUNTIME_CONFIG%"=="" set "RESET_RUNTIME_CONFIG=1"
+if /I not "%RESET_RUNTIME_CONFIG%"=="0" if /I not "%RESET_RUNTIME_CONFIG%"=="false" if /I not "%RESET_RUNTIME_CONFIG%"=="no" (
+  for %%F in (
+    "src/difra/resources/config/global.json"
+    "src/difra/resources/config/main.json"
+    "src/difra/resources/config/main_win.json"
+  ) do (
+    git -C "%REPO_ROOT%" status --porcelain -- "%%~F" 2^>nul | findstr . >nul
+    if not errorlevel 1 (
+      echo [INFO] Resetting local runtime config before update: %%~F
+      git -C "%REPO_ROOT%" checkout -- "%%~F" >nul 2>&1
+    )
+  )
+)
+
 set "HAS_TRACKED_CHANGES="
 for /f "usebackq delims=" %%S in (`git -C "%REPO_ROOT%" status --porcelain --untracked-files=no 2^>nul`) do (
   set "HAS_TRACKED_CHANGES=1"
