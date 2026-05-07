@@ -583,10 +583,42 @@ class ZoneMeasurementsProcessCaptureMixin:
         except (AttributeError, RuntimeError, TypeError):
             return (None, None)
 
+    def _get_attenuation_capture_settings(self):
+        att = {}
+        if isinstance(getattr(self, "config", None), dict):
+            raw_att = self.config.get("attenuation", {})
+            att = raw_att if isinstance(raw_att, dict) else {}
+
+        def _positive_int(value, default: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return int(default)
+            return max(parsed, 1)
+
+        def _positive_float(value, default: float) -> float:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return float(default)
+            if parsed <= 0:
+                return float(default)
+            return parsed
+
+        frames = _positive_int(att.get("frames"), 100)
+        integration_time_s = _positive_float(
+            att.get("integration_time_s"),
+            0.000001,
+        )
+        return frames, integration_time_s
+
     def _capture_attenuation_background(self):
         pm = _pm()
-        frames = int(getattr(self, "attenFramesSpin", None).value()) if hasattr(self, "attenFramesSpin") else 100
-        short_t = float(getattr(self, "attenTimeSpin", None).value()) if hasattr(self, "attenTimeSpin") else 0.00005
+        frames, short_t = (
+            ZoneMeasurementsProcessCaptureMixin._get_attenuation_capture_settings(
+                self
+            )
+        )
         pm.logger.info(
             "Attenuation background requested",
             frames=int(frames),
@@ -765,8 +797,11 @@ class ZoneMeasurementsProcessCaptureMixin:
 
     def _start_attenuation_then_normal(self, txt_filename_base: str):
         pm = _pm()
-        frames = int(getattr(self, "attenFramesSpin", None).value()) if hasattr(self, "attenFramesSpin") else 100
-        short_t = float(getattr(self, "attenTimeSpin", None).value()) if hasattr(self, "attenTimeSpin") else 0.00005
+        frames, short_t = (
+            ZoneMeasurementsProcessCaptureMixin._get_attenuation_capture_settings(
+                self
+            )
+        )
         reuse_existing_i0 = bool(getattr(self, "_reuse_existing_i0_from_session", False))
 
         if getattr(self, "_attenuation_bg_files", None):

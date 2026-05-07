@@ -1456,7 +1456,7 @@ class H5ManagementLoadingMixin:
             parsed_container, parsed_dataset = self._parse_h5ref(str(source_ref))
             if parsed_container and parsed_dataset:
                 source_kind = "container"
-                source_container = str(parsed_container)
+                source_container = str(h5_path) if parsed_dataset in h5f else str(parsed_container)
                 dataset_path = str(parsed_dataset)
             elif schema.DATASET_PROCESSED_SIGNAL in row_group:
                 source_kind = "container"

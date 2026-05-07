@@ -101,7 +101,12 @@ class ZoneMeasurementsProcessResultsMixin:
                 exc_info=True,
             )
 
-    def _extract_profile_from_measurement(self, measurement_ref: str, alias: str = ""):
+    def _extract_profile_from_measurement(
+        self,
+        measurement_ref: str,
+        alias: str = "",
+        npt: int = 200,
+    ):
         value = self._measurement_ref_to_filename(measurement_ref)
         if not value:
             return None
@@ -143,7 +148,7 @@ class ZoneMeasurementsProcessResultsMixin:
                     ai = initialize_azimuthal_integrator_poni_text(poni_text)
                     result = ai.integrate1d(
                         arr,
-                        200,
+                        max(int(npt), 2),
                         unit="q_nm^-1",
                         error_model="azimuthal",
                         mask=mask,

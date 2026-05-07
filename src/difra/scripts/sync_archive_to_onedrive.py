@@ -187,7 +187,16 @@ def sync_archive_tree(
         file_size = int(file_path.stat().st_size)
         if not dry_run:
             destination_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(file_path), str(destination_path))
+            try:
+                shutil.copy2(str(file_path), str(destination_path))
+            except PermissionError as exc:
+                print(
+                    f"[WARN] Skipping archive mirror file due to permission error: "
+                    f"{destination_path} ({exc})",
+                    file=sys.stderr,
+                )
+                skipped_files += 1
+                continue
         if destination_exists:
             updated_files += 1
         else:

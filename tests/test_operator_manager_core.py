@@ -53,6 +53,31 @@ def test_operator_manager_bootstraps_missing_password_hash_in_existing_config(tm
     assert saved["operator_modify_password_hash"] == DEFAULT_MODIFICATION_PASSWORD_HASH
 
 
+def test_operator_manager_loads_utf16_operator_config(tmp_path: Path):
+    config_path = tmp_path / "operators.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "operators": {
+                    "op1": {
+                        "name": "Alice",
+                        "surname": "Smith",
+                        "email": "alice@example.com",
+                    }
+                },
+                "current_operator_id": "op1",
+                "operator_modify_password_hash": DEFAULT_MODIFICATION_PASSWORD_HASH,
+            }
+        ),
+        encoding="utf-16",
+    )
+
+    manager = OperatorManager(config_path=config_path)
+
+    assert manager.get_current_operator_id() == "op1"
+    assert manager.get_operator("op1")["email"] == "alice@example.com"
+
+
 def test_operator_manager_load_invalid_json_falls_back_to_default(tmp_path: Path, monkeypatch):
     warnings = []
     config_path = tmp_path / "operators.json"

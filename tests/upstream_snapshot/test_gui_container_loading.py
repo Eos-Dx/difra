@@ -2431,6 +2431,76 @@ def test_load_technical_container_prefers_canonical_h5refs_when_runtime_paths_ar
     )
 
 
+def test_load_technical_container_repairs_runtime_h5refs_when_container_path_is_off_machine(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+    technical_folder = tmp_path / "technical_foreign_runtime_h5ref"
+    tech_path = _make_technical_container(technical_folder)
+    harness = _TechnicalLoadHarness(config={}, work_dir=technical_folder)
+
+    with h5py.File(tech_path, "a") as h5f:
+        runtime_group = h5f.require_group("/entry/difra_runtime/technical_aux_rows")
+        row_group = runtime_group.require_group("row_000001")
+        row_group.attrs["type"] = "AGBH"
+        row_group.attrs["is_primary"] = True
+        row_group.attrs["detector_alias"] = "PRIMARY"
+        dataset_path = f"{row_group.name}/processed_signal"
+        row_group.attrs["source_ref"] = (
+            "h5ref://D:\\Data\\technical\\technical_8980751fe83a4d4d_"
+            f"17p00cm_20260505.nxs.h5#{dataset_path}"
+        )
+        if "processed_signal" in row_group:
+            del row_group["processed_signal"]
+        row_group.create_dataset("processed_signal", data=np.ones((8, 8), dtype=np.float32))
+
+    harness._populate_aux_table_from_h5(str(tech_path), set_active=False)
+
+    assert harness.auxTable.rowCount() > 0
+    file_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert file_item is not None
+    source_ref = str(file_item.data(technical_measurements.Qt.UserRole) or "")
+    assert source_ref.startswith(
+        f"h5ref://{tech_path}#/entry/difra_runtime/technical_aux_rows/row_000001/processed_signal"
+    )
+    assert "D:\\Data\\technical" not in source_ref
+
+
+def test_load_technical_container_prefers_current_container_over_manifest_h5ref_even_if_it_exists(
+    qapp, tmp_path, monkeypatch
+):
+    _patch_non_blocking_dialogs(monkeypatch)
+    technical_folder = tmp_path / "technical_manifest_h5ref_exists"
+    tech_path = _make_technical_container(technical_folder)
+    manifest_path = tmp_path / "manifest" / "technical_manifest.nxs.h5"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_bytes(b"not an h5")
+    harness = _TechnicalLoadHarness(config={}, work_dir=technical_folder)
+
+    with h5py.File(tech_path, "a") as h5f:
+        runtime_group = h5f.require_group("/entry/difra_runtime/technical_aux_rows")
+        row_group = runtime_group.require_group("row_000001")
+        row_group.attrs["type"] = "AGBH"
+        row_group.attrs["is_primary"] = True
+        row_group.attrs["detector_alias"] = "PRIMARY"
+        dataset_path = f"{row_group.name}/processed_signal"
+        row_group.attrs["source_ref"] = f"h5ref://{manifest_path}#{dataset_path}"
+        if "processed_signal" in row_group:
+            del row_group["processed_signal"]
+        row_group.create_dataset("processed_signal", data=np.ones((8, 8), dtype=np.float32))
+
+    harness._populate_aux_table_from_h5(str(tech_path), set_active=False)
+
+    assert harness.auxTable.rowCount() > 0
+    file_item = harness.auxTable.item(0, harness.AUX_COL_FILE)
+    assert file_item is not None
+    source_ref = str(file_item.data(technical_measurements.Qt.UserRole) or "")
+    assert source_ref.startswith(
+        f"h5ref://{tech_path}#/entry/difra_runtime/technical_aux_rows/row_000001/processed_signal"
+    )
+    assert str(manifest_path) not in source_ref
+
+
 def test_load_technical_container_backfills_missing_runtime_rows_from_canonical_even_with_extra_legacy_rows(
     qapp, tmp_path
 ):

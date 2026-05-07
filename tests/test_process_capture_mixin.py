@@ -285,6 +285,28 @@ def test_get_loading_position_returns_none_pair_when_unavailable():
     assert ZoneMeasurementsProcessCaptureMixin._get_loading_position(owner) == (None, None)
 
 
+def test_attenuation_capture_settings_use_config_values():
+    owner = SimpleNamespace(
+        config={"attenuation": {"integration_time_s": 0.000001, "frames": 100}},
+        attenFramesSpin=SimpleNamespace(value=lambda: 5),
+        attenTimeSpin=SimpleNamespace(value=lambda: 0.01),
+    )
+
+    assert ZoneMeasurementsProcessCaptureMixin._get_attenuation_capture_settings(owner) == (
+        100,
+        0.000001,
+    )
+
+
+def test_attenuation_capture_settings_fallback_to_safe_defaults():
+    owner = SimpleNamespace(config={})
+
+    assert ZoneMeasurementsProcessCaptureMixin._get_attenuation_capture_settings(owner) == (
+        100,
+        0.000001,
+    )
+
+
 def test_record_attenuation_files_stores_files_for_current_measurement_and_dumps():
     dumped = []
     owner = SimpleNamespace(
@@ -658,6 +680,7 @@ def test_capture_attenuation_background_saves_results_and_records_session(monkey
     logs = []
     session_logs = []
     session_calls = []
+    capture_calls = []
     monkeypatch.setattr(capture_module, "get_container_version", lambda config: "0.2")
     _patch_pm(monkeypatch)
     raw_txt = tmp_path / "raw.txt"
@@ -666,7 +689,10 @@ def test_capture_attenuation_background_saves_results_and_records_session(monkey
     raw_dsc.write_text("DSC", encoding="utf-8")
     controller = _FakeAttenuationController([[1.0, 2.0], [3.0, 4.0]])
     owner = SimpleNamespace(
-        config={"detectors": [{"alias": "det_a", "id": "A1"}]},
+        config={
+            "detectors": [{"alias": "det_a", "id": "A1"}],
+            "attenuation": {"integration_time_s": 0.000001, "frames": 100},
+        },
         detector_controller={"det_a": controller},
         _get_loading_position=lambda: (3.0, -2.0),
         _move_stage=lambda *args, **kwargs: (3.0, -2.0),
@@ -676,7 +702,9 @@ def test_capture_attenuation_background_saves_results_and_records_session(monkey
         fileNameLineEdit=_StubLineEdit("sample"),
         measurement_folder=str(tmp_path),
         hardware_client=SimpleNamespace(
-            capture_exposure=lambda **kwargs: {"det_a": str(raw_txt)}
+            capture_exposure=lambda **kwargs: (
+                capture_calls.append(kwargs) or {"det_a": str(raw_txt)}
+            )
         ),
         session_manager=SimpleNamespace(
             is_session_active=lambda: True,
@@ -690,8 +718,12 @@ def test_capture_attenuation_background_saves_results_and_records_session(monkey
     out_npy = Path(owner._attenuation_bg_files["det_a"])
     assert out_npy.exists()
     assert logs[-1] == "I0 saved for 1 detector(s)"
+    assert capture_calls[0]["exposure_s"] == 0.000001
+    assert capture_calls[0]["frames"] == 100
     assert session_calls and session_calls[0]["mode"] == "without"
     assert "A1" in session_calls[0]["measurement_data"]
+    assert session_calls[0]["detector_metadata"]["A1"]["integration_time_ms"] == 0.001
+    assert session_calls[0]["detector_metadata"]["A1"]["n_frames"] == 100
     assert session_calls[0]["raw_files"]["A1"]["raw_txt"] == out_npy.with_suffix(".txt").read_bytes()
     assert session_calls[0]["raw_files"]["A1"]["raw_dsc"] == Path(str(out_npy.with_suffix(".txt")) + ".dsc").read_bytes()
     assert any("I0 saved to session container" in entry for entry in session_logs)
@@ -729,6 +761,8 @@ def test_start_attenuation_then_normal_emits_callback_and_starts_normal_capture(
     ZoneMeasurementsProcessCaptureMixin._start_attenuation_then_normal(owner, "/tmp/base")
 
     assert isinstance(owner._attn2_worker, _FakeCaptureWorker)
+    assert owner._attn2_worker.kwargs["integration_time"] == 0.000001
+    assert owner._attn2_worker.kwargs["frames"] == 100
     owner._attn2_worker.finished.emit(True, {"det_a": "/tmp/with.npy"})
     assert record_calls[0][0] == "without_sample"
     assert record_calls[-1] == ("with_sample", {"det_a": "/tmp/with.npy"})

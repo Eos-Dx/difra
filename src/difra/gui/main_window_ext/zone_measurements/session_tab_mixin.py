@@ -195,32 +195,39 @@ class SessionTabMixin:
 
         info_group = QGroupBox("Active Session Information")
         info_layout = QVBoxLayout(info_group)
-        info_btn_row = QHBoxLayout()
+        primary_btn_row = QHBoxLayout()
+        secondary_btn_row = QHBoxLayout()
         self.new_session_btn = QPushButton("Create Session")
         on_new_session = getattr(self, "on_new_session", None)
         if callable(on_new_session):
             self.new_session_btn.clicked.connect(on_new_session)
         else:
             self.new_session_btn.setEnabled(False)
-        info_btn_row.addWidget(self.new_session_btn)
+        primary_btn_row.addWidget(self.new_session_btn)
 
         self.load_session_btn = QPushButton("Load Container")
         self.load_session_btn.clicked.connect(self._on_load_selected_session_container)
-        info_btn_row.addWidget(self.load_session_btn)
+        primary_btn_row.addWidget(self.load_session_btn)
+
+        self.preview_session_data_btn = QPushButton("Check data")
+        self.preview_session_data_btn.clicked.connect(self._on_preview_session_data)
+        primary_btn_row.addWidget(self.preview_session_data_btn)
+        primary_btn_row.addStretch()
 
         self.close_session_btn = QPushButton("Close")
         self.close_session_btn.clicked.connect(self._on_close_pending_session)
-        info_btn_row.addWidget(self.close_session_btn)
+        secondary_btn_row.addWidget(self.close_session_btn)
 
         self.send_session_btn = QPushButton("Close and Send")
         self.send_session_btn.clicked.connect(self._on_send_pending_session)
-        info_btn_row.addWidget(self.send_session_btn)
+        secondary_btn_row.addWidget(self.send_session_btn)
 
         self.refresh_sessions_btn = QPushButton("Refresh")
         self.refresh_sessions_btn.clicked.connect(self._refresh_session_container_lists)
-        info_btn_row.addWidget(self.refresh_sessions_btn)
-        info_btn_row.addStretch()
-        info_layout.addLayout(info_btn_row)
+        secondary_btn_row.addWidget(self.refresh_sessions_btn)
+        secondary_btn_row.addStretch()
+        info_layout.addLayout(primary_btn_row)
+        info_layout.addLayout(secondary_btn_row)
 
         self.session_info_label = QLabel("No active session")
         self.session_info_label.setStyleSheet("padding: 10px;")
@@ -239,7 +246,7 @@ class SessionTabMixin:
         self._refresh_session_container_lists()
 
     def create_archive_tab(self):
-        """Create dedicated archive browser tab with filters and sorting."""
+        """Create compact archive launcher tab."""
         if not hasattr(self, "tabs"):
             return
         if hasattr(self, "archive_path_label"):
@@ -252,78 +259,19 @@ class SessionTabMixin:
         self.archive_path_label.setStyleSheet("color: #555; padding: 4px;")
         layout.addWidget(self.archive_path_label)
 
-        filter_row = QHBoxLayout()
-        self.archive_date_filter_combo = QComboBox()
-        self.archive_date_filter_combo.addItems(
-            ["All dates", "Today", "Last 7 days", "Last 30 days"]
-        )
-        self.archive_date_filter_combo.currentIndexChanged.connect(
-            self._apply_archive_filters
-        )
-        filter_row.addWidget(self.archive_date_filter_combo)
-
-        self.archive_status_filter_combo = QComboBox()
-        self.archive_status_filter_combo.addItems(
-            ["All statuses", "Unsent", "Sent", "Not complete"]
-        )
-        self.archive_status_filter_combo.currentIndexChanged.connect(
-            self._apply_archive_filters
-        )
-        filter_row.addWidget(self.archive_status_filter_combo)
-
-        self.archive_project_filter_edit = QLineEdit()
-        self.archive_project_filter_edit.setPlaceholderText("Project filter")
-        self.archive_project_filter_edit.textChanged.connect(self._apply_archive_filters)
-        filter_row.addWidget(self.archive_project_filter_edit)
-
-        self.archive_operator_filter_edit = QLineEdit()
-        self.archive_operator_filter_edit.setPlaceholderText("Operator filter")
-        self.archive_operator_filter_edit.textChanged.connect(self._apply_archive_filters)
-        filter_row.addWidget(self.archive_operator_filter_edit)
-
-        self.archive_search_edit = QLineEdit()
-        self.archive_search_edit.setPlaceholderText("Search file/sample/study...")
-        self.archive_search_edit.textChanged.connect(self._apply_archive_filters)
-        filter_row.addWidget(self.archive_search_edit)
-
-        self.archive_sort_combo = QComboBox()
-        self.archive_sort_combo.addItems(
-            [
-                "Archived: newest first",
-                "Archived: oldest first",
-                "Project: A-Z",
-                "Operator: A-Z",
-            ]
-        )
-        self.archive_sort_combo.currentIndexChanged.connect(self._apply_archive_filters)
-        filter_row.addWidget(self.archive_sort_combo)
-
-        self.refresh_archive_btn = QPushButton("Refresh")
-        self.refresh_archive_btn.clicked.connect(self._refresh_session_container_lists)
-        filter_row.addWidget(self.refresh_archive_btn)
-
-        self.open_archive_window_btn = QPushButton("Open Full Window")
-        self.open_archive_window_btn.clicked.connect(self._show_archive_window)
-        filter_row.addWidget(self.open_archive_window_btn)
-        layout.addLayout(filter_row)
-
-        self.archived_sessions_table = self._create_archive_table()
-        self.archived_sessions_table.itemSelectionChanged.connect(
-            self._update_archive_action_buttons
-        )
-        layout.addWidget(self.archived_sessions_table, 1)
-
-        archive_actions_row = QHBoxLayout()
-        self.send_archived_btn = QPushButton("Send Selected")
-        self.send_archived_btn.clicked.connect(
-            self._on_send_selected_archived_sessions
-        )
-        self.send_archived_btn.setEnabled(False)
-        archive_actions_row.addWidget(self.send_archived_btn)
-        archive_actions_row.addStretch()
-        layout.addLayout(archive_actions_row)
+        action_row = QHBoxLayout()
+        self.open_archive_window_btn = QPushButton("Archive")
+        self.open_archive_window_btn.clicked.connect(self._open_archive_window_from_tab)
+        action_row.addWidget(self.open_archive_window_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+        layout.addStretch()
 
         self.tabs.addTab(tab, "Archive")
+
+    def _open_archive_window_from_tab(self):
+        self._refresh_session_container_lists()
+        self._show_archive_window()
 
     def _create_archive_table(self) -> QTableWidget:
         table = QTableWidget()
@@ -386,6 +334,61 @@ class SessionTabMixin:
         self.archive_window_path_label.setStyleSheet("color: #555; padding: 4px;")
         layout.addWidget(self.archive_window_path_label)
 
+        filter_row = QHBoxLayout()
+        self.archive_window_date_filter_combo = QComboBox()
+        self.archive_window_date_filter_combo.addItems(
+            ["All dates", "Today", "Last 7 days", "Last 30 days"]
+        )
+        self.archive_window_date_filter_combo.currentIndexChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_date_filter_combo)
+
+        self.archive_window_status_filter_combo = QComboBox()
+        self.archive_window_status_filter_combo.addItems(
+            ["All statuses", "Unsent", "Sent", "Not complete"]
+        )
+        self.archive_window_status_filter_combo.currentIndexChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_status_filter_combo)
+
+        self.archive_window_project_filter_edit = QLineEdit()
+        self.archive_window_project_filter_edit.setPlaceholderText("Project filter")
+        self.archive_window_project_filter_edit.textChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_project_filter_edit)
+
+        self.archive_window_operator_filter_edit = QLineEdit()
+        self.archive_window_operator_filter_edit.setPlaceholderText("Operator filter")
+        self.archive_window_operator_filter_edit.textChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_operator_filter_edit)
+
+        self.archive_window_search_edit = QLineEdit()
+        self.archive_window_search_edit.setPlaceholderText("Search file/sample/study...")
+        self.archive_window_search_edit.textChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_search_edit)
+
+        self.archive_window_sort_combo = QComboBox()
+        self.archive_window_sort_combo.addItems(
+            [
+                "Archived: newest first",
+                "Archived: oldest first",
+                "Project: A-Z",
+                "Operator: A-Z",
+            ]
+        )
+        self.archive_window_sort_combo.currentIndexChanged.connect(
+            self._populate_archive_window_table
+        )
+        filter_row.addWidget(self.archive_window_sort_combo)
+        layout.addLayout(filter_row)
+
         table = self._create_archive_table()
         table.itemSelectionChanged.connect(self._update_archive_action_buttons)
         self.archive_window_table = table
@@ -416,19 +419,58 @@ class SessionTabMixin:
         self._archive_window_dialog = None
         self.archive_window_table = None
         self.archive_window_path_label = None
+        self.archive_window_date_filter_combo = None
+        self.archive_window_status_filter_combo = None
+        self.archive_window_project_filter_edit = None
+        self.archive_window_operator_filter_edit = None
+        self.archive_window_search_edit = None
+        self.archive_window_sort_combo = None
         self.send_archived_window_btn = None
 
     def _populate_archive_window_table(self):
         table = getattr(self, "archive_window_table", None)
         if table is None:
             return
-        rows = list(
-            getattr(
-                self,
-                "_archived_rows_filtered",
-                getattr(self, "_archived_rows_all", []),
-            )
-            or []
+        rows = list(getattr(self, "_archived_rows_all", []) or [])
+        date_mode = (
+            self.archive_window_date_filter_combo.currentText()
+            if getattr(self, "archive_window_date_filter_combo", None) is not None
+            else "All dates"
+        )
+        transfer_status_filter = (
+            self.archive_window_status_filter_combo.currentText()
+            if getattr(self, "archive_window_status_filter_combo", None) is not None
+            else "All statuses"
+        )
+        project_filter = (
+            str(self.archive_window_project_filter_edit.text() or "").strip().lower()
+            if getattr(self, "archive_window_project_filter_edit", None) is not None
+            else ""
+        )
+        operator_filter = (
+            str(self.archive_window_operator_filter_edit.text() or "").strip().lower()
+            if getattr(self, "archive_window_operator_filter_edit", None) is not None
+            else ""
+        )
+        search_filter = (
+            str(self.archive_window_search_edit.text() or "").strip().lower()
+            if getattr(self, "archive_window_search_edit", None) is not None
+            else ""
+        )
+        sort_mode = (
+            self.archive_window_sort_combo.currentText()
+            if getattr(self, "archive_window_sort_combo", None) is not None
+            else "Archived: newest first"
+        )
+        rows = SessionTabPresenter.filter_archived_rows(
+            rows,
+            date_mode=date_mode,
+            transfer_status_filter=transfer_status_filter,
+            project_filter=project_filter,
+            operator_filter=operator_filter,
+            search_filter=search_filter,
+            sort_mode=sort_mode,
+            now=datetime.now(),
         )
         SessionTabPresenter.populate_archive_table(table, rows)
         label = getattr(self, "archive_window_path_label", None)
@@ -484,8 +526,9 @@ class SessionTabMixin:
         self._pending_rows = list(pending_rows)
         self._update_pending_session_summary(self._pending_rows)
         self._archived_rows_all = list(archived_rows)
-        if hasattr(self, "archived_sessions_table"):
-            self._apply_archive_filters()
+        self._archived_rows_filtered = list(archived_rows)
+        self._populate_archive_window_table()
+        self._update_archive_action_buttons()
 
         if hasattr(self, "archive_path_label"):
             archive_folder = self._get_session_archive_folder()
@@ -496,7 +539,11 @@ class SessionTabMixin:
         if load_button is not None:
             load_button.setEnabled(True)
 
-        for attr_name in ("close_session_btn", "send_session_btn"):
+        for attr_name in (
+            "close_session_btn",
+            "send_session_btn",
+            "preview_session_data_btn",
+        ):
             button = getattr(self, attr_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
@@ -538,59 +585,324 @@ class SessionTabMixin:
         self._set_pending_session_actions_enabled(self._current_pending_container_path is not None)
 
     def _apply_archive_filters(self):
-        if not hasattr(self, "archived_sessions_table"):
-            return
-
-        rows = list(getattr(self, "_archived_rows_all", []) or [])
-        date_mode = (
-            self.archive_date_filter_combo.currentText()
-            if hasattr(self, "archive_date_filter_combo")
-            else "All dates"
-        )
-        transfer_status_filter = (
-            self.archive_status_filter_combo.currentText()
-            if hasattr(self, "archive_status_filter_combo")
-            else "All statuses"
-        )
-        project_filter = (
-            str(self.archive_project_filter_edit.text() or "").strip().lower()
-            if hasattr(self, "archive_project_filter_edit")
-            else ""
-        )
-        operator_filter = (
-            str(self.archive_operator_filter_edit.text() or "").strip().lower()
-            if hasattr(self, "archive_operator_filter_edit")
-            else ""
-        )
-        search_filter = (
-            str(self.archive_search_edit.text() or "").strip().lower()
-            if hasattr(self, "archive_search_edit")
-            else ""
-        )
-
-        sort_mode = (
-            self.archive_sort_combo.currentText()
-            if hasattr(self, "archive_sort_combo")
-            else "Archived: newest first"
-        )
-        filtered = SessionTabPresenter.filter_archived_rows(
-            rows,
-            date_mode=date_mode,
-            transfer_status_filter=transfer_status_filter,
-            project_filter=project_filter,
-            operator_filter=operator_filter,
-            search_filter=search_filter,
-            sort_mode=sort_mode,
-            now=datetime.now(),
-        )
-
-        self._archived_rows_filtered = list(filtered)
-        SessionTabPresenter.populate_archive_table(self.archived_sessions_table, filtered)
+        self._archived_rows_filtered = list(getattr(self, "_archived_rows_all", []) or [])
         self._populate_archive_window_table()
         self._update_archive_action_buttons()
 
     def _selected_pending_container(self) -> Optional[Path]:
         return getattr(self, "_current_pending_container_path", None)
+
+    @staticmethod
+    def _session_preview_text(value) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value or "")
+
+    @classmethod
+    def _session_preview_detector_key(
+        cls,
+        *,
+        alias,
+        detector_id,
+        role_name,
+    ) -> Optional[str]:
+        tokens = {
+            cls._session_preview_text(alias).strip().upper(),
+            cls._session_preview_text(detector_id).strip().upper(),
+            cls._session_preview_text(role_name).strip().upper(),
+        }
+        expanded = set(tokens)
+        for token in list(tokens):
+            if token.startswith("DET_"):
+                expanded.add(token[4:])
+        if expanded & {"PRIMARY", "SAXS"}:
+            return "PRIMARY"
+        if expanded & {"SECONDARY", "WAXS"}:
+            return "SECONDARY"
+        return None
+
+    def _session_container_has_attenuation(self, h5f, schema) -> bool:
+        ana_group_path = getattr(
+            schema,
+            "GROUP_ANALYTICAL_MEASUREMENTS",
+            "/analytical_measurements",
+        )
+        ana_group = h5f.get(ana_group_path)
+        if ana_group is None:
+            return False
+
+        type_attr = getattr(schema, "ATTR_ANALYSIS_TYPE", "analysis_type")
+        role_attr = getattr(schema, "ATTR_ANALYSIS_ROLE", "analysis_role")
+        for item_name in sorted(ana_group.keys()):
+            item = ana_group[item_name]
+            analysis_type = self._session_preview_text(
+                item.attrs.get(type_attr, item_name)
+            ).strip().lower()
+            analysis_role = self._session_preview_text(
+                item.attrs.get(role_attr, "")
+            ).strip().lower()
+            if analysis_type.startswith("attenuation") or analysis_role in {
+                "i0",
+                "i",
+                "without",
+                "with",
+                "without_sample",
+                "with_sample",
+            }:
+                return True
+        return False
+
+    def _collect_session_data_preview(self, container_path: Path) -> dict:
+        import h5py
+
+        schema = self._container_schema()
+        measurements_path = getattr(schema, "GROUP_MEASUREMENTS", "/entry/measurements")
+        dataset_name = getattr(schema, "DATASET_PROCESSED_SIGNAL", "processed_signal")
+        alias_attr = getattr(schema, "ATTR_DETECTOR_ALIAS", "detector_alias")
+        detector_id_attr = getattr(schema, "ATTR_DETECTOR_ID", "detector_id")
+
+        profiles = {"PRIMARY": [], "SECONDARY": []}
+        attenuation_exists = False
+        extractor = getattr(self, "_extract_profile_from_measurement", None)
+
+        with h5py.File(container_path, "r") as h5f:
+            attenuation_exists = self._session_container_has_attenuation(h5f, schema)
+            measurements_group = h5f.get(measurements_path)
+            if measurements_group is None:
+                return {
+                    "profiles": profiles,
+                    "attenuation_exists": attenuation_exists,
+                }
+
+            for point_name in sorted(measurements_group.keys()):
+                point_group = measurements_group[point_name]
+                for measurement_name in sorted(point_group.keys()):
+                    measurement_group = point_group[measurement_name]
+                    for role_name in sorted(measurement_group.keys()):
+                        detector_group = measurement_group[role_name]
+                        if dataset_name not in detector_group:
+                            continue
+                        dataset_path = (
+                            f"{measurement_group.name}/{role_name}/{dataset_name}"
+                        )
+                        alias = detector_group.attrs.get(alias_attr, role_name)
+                        detector_id = detector_group.attrs.get(detector_id_attr, "")
+                        key = self._session_preview_detector_key(
+                            alias=alias,
+                            detector_id=detector_id,
+                            role_name=role_name,
+                        )
+                        if key not in profiles:
+                            continue
+                        ref = f"h5ref://{container_path}#{dataset_path}"
+                        if callable(extractor):
+                            npt = 100 if key == "SECONDARY" else 200
+                            try:
+                                profile = extractor(ref, alias=key, npt=npt)
+                            except TypeError:
+                                try:
+                                    profile = extractor(ref, key)
+                                except TypeError:
+                                    profile = extractor(ref)
+                        else:
+                            profile = None
+                        if not profile:
+                            continue
+                        profiles[key].append(
+                            {
+                                "label": f"{point_name}/{measurement_name}",
+                                "profile": profile,
+                            }
+                        )
+
+        return {"profiles": profiles, "attenuation_exists": attenuation_exists}
+
+    @staticmethod
+    def _plot_session_detector_profiles(axis, detector_key: str, rows: List[dict]):
+        import numpy as np
+
+        title = (
+            "Primary detector"
+            if detector_key == "PRIMARY"
+            else "Secondary detector"
+        )
+        axis.set_title(title)
+        axis.set_ylabel("Intensity")
+        if not rows:
+            axis.text(
+                0.5,
+                0.5,
+                "No measurement profiles",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            return
+
+        uses_q = False
+        plotted = False
+        for row in rows:
+            raw_profile = row.get("profile") or {}
+            profile = (
+                raw_profile
+                if isinstance(raw_profile, dict)
+                else {"intensity": raw_profile}
+            )
+            intensity = np.asarray(profile.get("intensity"), dtype=float).reshape(-1)
+            if intensity.size < 2:
+                continue
+            q_values = profile.get("q_values")
+            if q_values is not None:
+                x_values = np.asarray(q_values, dtype=float).reshape(-1)
+                uses_q = True
+            else:
+                x_values = np.arange(intensity.size, dtype=float)
+            count = min(int(x_values.size), int(intensity.size))
+            if count < 2:
+                continue
+            x_values = x_values[:count]
+            intensity = intensity[:count]
+            finite = np.isfinite(x_values) & np.isfinite(intensity) & (intensity > 0)
+            if np.count_nonzero(finite) < 2:
+                continue
+            axis.plot(
+                x_values[finite],
+                intensity[finite],
+                linewidth=0.9,
+                alpha=0.65,
+            )
+            plotted = True
+
+        if not plotted:
+            axis.text(
+                0.5,
+                0.5,
+                "No valid positive profiles",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            return
+
+        axis.set_yscale("log")
+        axis.set_xlabel("q (nm^-1)" if uses_q else "Index")
+        axis.grid(True, alpha=0.25)
+
+    @staticmethod
+    def _plot_session_attenuation_placeholder(axis, detector_key: str, exists: bool):
+        axis.set_title(f"{detector_key.title()} attenuation")
+        axis.set_xlabel("Measurement index")
+        axis.set_ylabel("Absorption")
+        axis.grid(True, alpha=0.25)
+        if exists:
+            axis.text(
+                0.5,
+                0.5,
+                "Calculation placeholder",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No attenuation measurements",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+
+    def _show_session_data_preview_dialog(self, container_path: Path, payload: dict):
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("See results: session data")
+        dialog.setModal(False)
+        dialog.resize(1280, 760)
+
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(str(container_path))
+        summary.setStyleSheet("color: #555; padding: 4px;")
+        layout.addWidget(summary)
+
+        fig = Figure(figsize=(12.5, 7.0), constrained_layout=True)
+        canvas = FigureCanvas(fig)
+        layout.addWidget(canvas, 1)
+
+        axes = fig.subplots(
+            2,
+            2,
+            gridspec_kw={"height_ratios": [4, 1.25]},
+        )
+        profiles = payload.get("profiles") or {}
+        self._plot_session_detector_profiles(
+            axes[0][0],
+            "PRIMARY",
+            list(profiles.get("PRIMARY") or []),
+        )
+        self._plot_session_detector_profiles(
+            axes[0][1],
+            "SECONDARY",
+            list(profiles.get("SECONDARY") or []),
+        )
+        attenuation_exists = bool(payload.get("attenuation_exists"))
+        self._plot_session_attenuation_placeholder(
+            axes[1][0],
+            "PRIMARY",
+            attenuation_exists,
+        )
+        self._plot_session_attenuation_placeholder(
+            axes[1][1],
+            "SECONDARY",
+            attenuation_exists,
+        )
+        canvas.draw_idle()
+
+        close_button = QPushButton("Close", dialog)
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button)
+
+        self._session_data_preview_dialog = dialog
+        dialog.finished.connect(
+            lambda *_args: setattr(self, "_session_data_preview_dialog", None)
+        )
+        dialog.show()
+        return dialog
+
+    def _on_preview_session_data(self):
+        container_path = self._selected_pending_container()
+        if container_path is None:
+            session_manager = getattr(self, "session_manager", None)
+            active_path = getattr(session_manager, "session_path", None)
+            container_path = Path(active_path) if active_path else None
+        if container_path is None or not Path(container_path).exists():
+            QMessageBox.warning(
+                self,
+                "No Container Selected",
+                "Select a session container with measurements.",
+            )
+            return
+
+        try:
+            payload = self._collect_session_data_preview(Path(container_path))
+        except Exception as exc:
+            logger.warning(
+                "Failed to build session data preview",
+                session_path=str(container_path),
+                exc_info=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Preview Failed",
+                f"Could not build session data preview:\n{exc}",
+            )
+            return
+
+        self._show_session_data_preview_dialog(Path(container_path), payload)
 
     def _all_pending_containers(self) -> List[Path]:
         return [
@@ -613,7 +925,7 @@ class SessionTabMixin:
     def _selected_archived_containers(
         self, *, fallback_path: Optional[Path] = None
     ) -> List[Path]:
-        table = getattr(self, "archived_sessions_table", None)
+        table = getattr(self, "archive_window_table", None)
         return self._selected_paths_from_archive_table(
             table, fallback_path=fallback_path
         )
@@ -644,9 +956,6 @@ class SessionTabMixin:
         return selected_paths
 
     def _update_archive_action_buttons(self):
-        send_button = getattr(self, "send_archived_btn", None)
-        if send_button is not None:
-            send_button.setEnabled(bool(self._selected_archived_containers()))
         window_button = getattr(self, "send_archived_window_btn", None)
         window_table = getattr(self, "archive_window_table", None)
         if window_button is not None:
@@ -916,7 +1225,9 @@ class SessionTabMixin:
         return specimen_overrides
 
     def _show_archived_sessions_context_menu(self, pos, *, table=None):
-        table = table or self.archived_sessions_table
+        table = table or getattr(self, "archive_window_table", None)
+        if table is None:
+            return
         row = table.rowAt(pos.y())
         if row < 0:
             return
