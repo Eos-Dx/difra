@@ -303,6 +303,7 @@ def build_pyfai_calib2_command(
     poni_text: str,
     detector_config: Mapping | None,
     calibrant: str = DEFAULT_CALIBRANT,
+    fix_rotations: bool = True,
 ) -> list[str]:
     params = parse_poni_parameters(poni_text)
     wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
@@ -327,12 +328,17 @@ def build_pyfai_calib2_command(
         "--rot3",
         _format_float(float(params.get("Rot3", 0.0))),
         "--fix-wavelength",
-        "--fix-rot1",
-        "--fix-rot2",
-        "--fix-rot3",
-        "--no-tilt",
-        str(image_path),
     ]
+    if fix_rotations:
+        command.extend(
+            [
+                "--fix-rot1",
+                "--fix-rot2",
+                "--fix-rot3",
+                "--no-tilt",
+            ]
+        )
+    command.append(str(image_path))
     return command
 
 

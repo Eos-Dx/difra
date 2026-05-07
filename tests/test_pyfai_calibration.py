@@ -150,6 +150,33 @@ def test_build_pyfai_calib2_command_uses_poni_geometry():
     assert command[-1] == "/tmp/agbh.tif"
 
 
+def test_build_pyfai_calib2_command_can_unlock_rotations():
+    poni = "\n".join(
+        [
+            "Distance: 0.17",
+            "Poni1: 0.007",
+            "Poni2: 0.001",
+            "Rot1: 0.1",
+            "Rot2: 0.2",
+            "Rot3: 0.3",
+            "Wavelength: 1.5406e-10",
+        ]
+    )
+
+    command = build_pyfai_calib2_command(
+        image_path="/tmp/agbh.tif",
+        poni_text=poni,
+        detector_config=_detector_config(),
+        fix_rotations=False,
+    )
+
+    assert "--rot1" in command
+    assert "--fix-rot1" not in command
+    assert "--fix-rot2" not in command
+    assert "--fix-rot3" not in command
+    assert "--no-tilt" not in command
+
+
 def test_build_pyfai_calib2_command_uses_custom_difra_detector_for_50um():
     detector_config = {
         "size": {"width": 256, "height": 256},

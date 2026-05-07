@@ -134,6 +134,10 @@ class _Harness(TechnicalCaptureMixin):
     def _current_technical_output_folder(self):
         return "/tmp"
 
+    def _active_technical_container_path_obj(self):
+        raw = str(getattr(self, "_active_technical_container_path", "") or "")
+        return Path(raw) if raw else None
+
     def _file_base(self, typ):
         return f"{typ.lower()}_base"
 
@@ -329,6 +333,7 @@ def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
 
     review = prepared["reviews"]["PRIMARY"]
     assert "Distance: 0.02" in review.poni_text
+    assert review.poni_path.parent == tmp_path / "autopony"
 
 
 def test_auto_poni_saxs_uses_physical_primary_detector_config():
@@ -376,11 +381,14 @@ def test_auto_poni_correct_env_config_has_priority(monkeypatch):
 
 def test_auto_poni_validate_writes_poni_next_to_agbh(tmp_path):
     harness = _Harness()
+    harness._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
     agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
     np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
     review = PyfaiCalib2Review(
-        image_path=tmp_path / "auto_poni" / "AgBH_001_PRIMARY_pyfai.tif",
-        poni_path=tmp_path / "auto_poni" / "generated.poni",
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
         command=[],
         poni_text="Distance: 0.02\n",
         source_path=agbh_path,
@@ -391,6 +399,118 @@ def test_auto_poni_validate_writes_poni_next_to_agbh(tmp_path):
     target = tmp_path / "AgBH_001_PRIMARY.poni"
     assert target.read_text(encoding="utf-8") == "Distance: 0.02\n"
     assert harness.poni_files["PRIMARY"]["path"] == str(target)
+    assert not (tmp_path / "autopony" / "AgBH_001_PRIMARY.poni").exists()
+
+
+def test_auto_poni_h5ref_output_uses_container_source_file(tmp_path):
+    harness = _Harness()
+    harness._current_technical_output_folder = lambda: str(tmp_path)
+    source_path = tmp_path / "raw" / "AgBH_001_PRIMARY.npy"
+    source_path.parent.mkdir()
+    np.save(source_path, np.ones((8, 8), dtype=np.float32))
+    container_path = tmp_path / "technical.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        ds = h5f.create_dataset("/entry/technical/tech_evt_000001/det_primary/processed_signal", data=np.ones((8, 8)))
+        ds.parent.attrs["source_file"] = str(source_path)
+
+    output_dir, resolved_source = harness._auto_poni_output_dir_for_source(
+        f"h5ref://{container_path}#/entry/technical/tech_evt_000001/det_primary/processed_signal"
+    )
+
+    assert resolved_source == source_path
+    assert output_dir == tmp_path / "autopony"
+
+
+def test_auto_poni_prepare_cleans_autopony_folder(tmp_path):
+    harness = _Harness()
+    harness._current_technical_output_folder = lambda: str(tmp_path)
+    stale = tmp_path / "autopony" / "stale.poni"
+    stale.parent.mkdir()
+    stale.write_text("old", encoding="utf-8")
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+
+    prepared = harness._prepare_auto_poni_reviews(
+        normalized_auto_poni_config({}),
+        sources={"PRIMARY": str(agbh_path)},
+        distance_cm_by_alias={"PRIMARY": 2.0},
+    )
+
+    assert prepared
+    assert not stale.exists()
+    assert any((tmp_path / "autopony").iterdir())
+
+
+def test_auto_poni_validate_noops_when_active_container_locked(tmp_path):
+    class _SyncHarness(_Harness):
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self.created = []
+            self._active_technical_container_path = str(tmp_path / "locked.nxs.h5")
+
+        def _create_new_active_technical_container(self, *, clear_table=False):
+            new_path = tmp_path / "unlocked.nxs.h5"
+            with h5py.File(new_path, "w"):
+                pass
+            self._active_technical_container_path = str(new_path)
+            self.created.append(bool(clear_table))
+            return new_path
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+    harness = _SyncHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w") as h5f:
+        h5f.attrs["locked"] = True
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text="Distance: 0.02\n",
+        source_path=agbh_path,
+    )
+
+    assert not harness._validate_auto_poni_reviews({"PRIMARY": review})
+    assert harness._active_technical_container_path_obj().name == "locked.nxs.h5"
+    assert harness.created == []
+    assert harness.synced == 0
+    assert not (tmp_path / "AgBH_001_PRIMARY.poni").exists()
+
+
+def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
+    class _SyncHarness(_Harness):
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+    harness = _SyncHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text="Distance: 0.02\n",
+        source_path=agbh_path,
+    )
+
+    assert harness._validate_auto_poni_reviews({"PRIMARY": review})
+
+    target = tmp_path / "AgBH_001_PRIMARY.poni"
+    assert target.read_text(encoding="utf-8") == "Distance: 0.02\n"
+    assert harness.poni_files["PRIMARY"]["path"] == str(target)
+    assert harness.synced == 1
 
 
 def test_auto_poni_seed_center_uses_poni_validation_config():
