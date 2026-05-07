@@ -50,15 +50,15 @@ echo [INFO] Ensuring runtime dependencies in env: %GUI_ENV%
 if errorlevel 1 exit /b 1
 
 if "%DIFRA_LEGACY_PYTHON%"=="" (
-  if "%DIFRA_LEGACY_ENV%"=="" set DIFRA_LEGACY_ENV=ulster37
+  if "%DIFRA_LEGACY_ENV%"=="" set DIFRA_LEGACY_ENV=ulster38
 
   set LEGACY_ENV_PATH=
   for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$conda='%CONDA_CMD%'; $conda=$conda.Trim('\"'); try { $payload=& $conda env list --json | ConvertFrom-Json } catch { exit 0 }; $target='%DIFRA_LEGACY_ENV%'.ToLowerInvariant(); foreach($p in ($payload.envs | Where-Object { $_ })) { if ([System.IO.Path]::GetFileName($p).ToLowerInvariant() -eq $target) { Write-Output $p; break } }"`) do set LEGACY_ENV_PATH=%%P
 
   if "%LEGACY_ENV_PATH%"=="" (
     echo [ERROR] No working legacy environment found.
-    echo [ERROR] Expected legacy sidecar env: ulster37 ^(Python 3.7^).
-    echo [ERROR] Set DIFRA_LEGACY_ENV=ulster37 or DIFRA_LEGACY_PYTHON=path\to\python.exe.
+    echo [ERROR] Expected legacy sidecar env: ulster38 ^(Python 3.8^).
+    echo [ERROR] Set DIFRA_LEGACY_ENV=ulster38 or DIFRA_LEGACY_PYTHON=path\to\python.exe.
     exit /b 1
   )
 
@@ -69,8 +69,8 @@ if "%DIFRA_LEGACY_PYTHON%"=="" (
   )
 
   for /f "usebackq delims=" %%V in (`"%DIFRA_LEGACY_PYTHON%" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2^>nul`) do set LEGACY_PY=%%V
-  if /I not "%LEGACY_PY%"=="3.7" (
-    echo [ERROR] Legacy env '%DIFRA_LEGACY_ENV%' must be Python 3.7, found %LEGACY_PY%.
+  if /I not "%LEGACY_PY%"=="3.7" if /I not "%LEGACY_PY%"=="3.8" (
+    echo [ERROR] Legacy env '%DIFRA_LEGACY_ENV%' must be Python 3.7 or 3.8, found %LEGACY_PY%.
     exit /b 1
   )
   echo [INFO] Using legacy env: %DIFRA_LEGACY_ENV%
@@ -81,8 +81,8 @@ if "%DIFRA_LEGACY_PYTHON%"=="" (
     exit /b 1
   )
   for /f "usebackq delims=" %%V in (`"%DIFRA_LEGACY_PYTHON%" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2^>nul`) do set LEGACY_PY=%%V
-  if /I not "%LEGACY_PY%"=="3.7" (
-    echo [ERROR] DIFRA_LEGACY_PYTHON must be Python 3.7, found %LEGACY_PY%.
+  if /I not "%LEGACY_PY%"=="3.7" if /I not "%LEGACY_PY%"=="3.8" (
+    echo [ERROR] DIFRA_LEGACY_PYTHON must be Python 3.7 or 3.8, found %LEGACY_PY%.
     exit /b 1
   )
   echo [INFO] Using explicit legacy python: %DIFRA_LEGACY_PYTHON%
