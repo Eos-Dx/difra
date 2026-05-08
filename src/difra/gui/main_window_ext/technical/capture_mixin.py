@@ -1729,6 +1729,38 @@ class TechnicalCaptureMixin:
                 )
                 return False
 
+        set_state = getattr(self, "_set_container_state", None)
+        if callable(set_state):
+            set_state(
+                Path(active_path),
+                state=getattr(self, "STATE_PENDING_PONI_REVIEW", "pending_poni_review"),
+                reason="auto_poni_synced_review_required",
+            )
+
+        run_review = getattr(self, "_run_poni_center_review_workflow", None)
+        if callable(run_review):
+            reviewed = bool(
+                run_review(
+                    Path(active_path),
+                    container_id=Path(active_path).stem,
+                    prompt_reload_on_reject=False,
+                )
+            )
+            if not reviewed:
+                self._log_technical_event("Auto PONI validated, but PONI center review was not accepted")
+                return False
+        else:
+            show_preview = getattr(self, "_show_poni_center_preview_for_container", None)
+            if callable(show_preview):
+                try:
+                    show_preview(str(active_path))
+                except Exception:
+                    logger.debug("Suppressed PONI center preview error after Auto PONI validate", exc_info=True)
+
+        sync_state = getattr(self, "_sync_container_state", None)
+        if callable(sync_state):
+            sync_state(Path(active_path), reason="auto_poni_review_completed")
+
         self._log_technical_event(f"Auto PONI validated for {len(reviews)} detector(s)")
         app = tm.QApplication.instance() if hasattr(tm, "QApplication") else None
         if app is not None:

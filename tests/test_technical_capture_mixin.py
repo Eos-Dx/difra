@@ -536,6 +536,68 @@ def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
     assert harness.synced == 1
 
 
+def test_auto_poni_validate_runs_poni_review_after_sync(tmp_path):
+    class _ReviewHarness(_Harness):
+        STATE_PENDING_PONI_REVIEW = "pending_poni_review"
+
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self.state_calls = []
+            self.review_calls = []
+            self.sync_state_calls = []
+            self._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+        def _set_container_state(self, path, *, state, reason):
+            self.state_calls.append((Path(path), state, reason))
+
+        def _run_poni_center_review_workflow(
+            self,
+            container_path,
+            *,
+            container_id,
+            prompt_reload_on_reject=True,
+        ):
+            self.review_calls.append(
+                (Path(container_path), container_id, bool(prompt_reload_on_reject))
+            )
+            return True
+
+        def _sync_container_state(self, path, *, reason):
+            self.sync_state_calls.append((Path(path), reason))
+
+    harness = _ReviewHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text="Distance: 0.02\n",
+        source_path=agbh_path,
+    )
+
+    assert harness._validate_auto_poni_reviews({"PRIMARY": review})
+
+    container_path = harness._active_technical_container_path_obj()
+    assert harness.synced == 1
+    assert harness.state_calls == [
+        (container_path, "pending_poni_review", "auto_poni_synced_review_required")
+    ]
+    assert harness.review_calls == [
+        (container_path, container_path.stem, False)
+    ]
+    assert harness.sync_state_calls == [
+        (container_path, "auto_poni_review_completed")
+    ]
+
+
 def test_auto_poni_seed_center_uses_poni_validation_config():
     harness = _Harness()
     harness.config["detectors"][0]["size"] = {"width": 256, "height": 256}
