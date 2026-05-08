@@ -26,6 +26,7 @@ class SyncSummary:
         copied_files: int,
         updated_files: int,
         skipped_files: int,
+        permission_error_files: int,
         transferred_bytes: int,
     ) -> None:
         self.source_root = Path(source_root)
@@ -34,6 +35,7 @@ class SyncSummary:
         self.copied_files = int(copied_files)
         self.updated_files = int(updated_files)
         self.skipped_files = int(skipped_files)
+        self.permission_error_files = int(permission_error_files)
         self.transferred_bytes = int(transferred_bytes)
 
 
@@ -169,6 +171,8 @@ def sync_archive_tree(
     copied_files = 0
     updated_files = 0
     skipped_files = 0
+    permission_error_files = 0
+    first_permission_error = ""
     transferred_bytes = 0
 
     if not dry_run:
@@ -190,11 +194,9 @@ def sync_archive_tree(
             try:
                 shutil.copy2(str(file_path), str(destination_path))
             except PermissionError as exc:
-                print(
-                    f"[WARN] Skipping archive mirror file due to permission error: "
-                    f"{destination_path} ({exc})",
-                    file=sys.stderr,
-                )
+                permission_error_files += 1
+                if not first_permission_error:
+                    first_permission_error = f"{destination_path} ({exc})"
                 skipped_files += 1
                 continue
         if destination_exists:
@@ -203,6 +205,13 @@ def sync_archive_tree(
             copied_files += 1
         transferred_bytes += file_size
 
+    if permission_error_files:
+        print(
+            f"[WARN] Skipped {permission_error_files} archive mirror file(s) "
+            f"due to permission errors; first: {first_permission_error}",
+            file=sys.stderr,
+        )
+
     return SyncSummary(
         source_root=source,
         destination_root=destination_root,
@@ -210,6 +219,7 @@ def sync_archive_tree(
         copied_files=copied_files,
         updated_files=updated_files,
         skipped_files=skipped_files,
+        permission_error_files=permission_error_files,
         transferred_bytes=transferred_bytes,
     )
 
@@ -237,6 +247,7 @@ def main() -> int:
     print(f"New copies: {summary.copied_files}")
     print(f"Updated copies: {summary.updated_files}")
     print(f"Skipped files: {summary.skipped_files}")
+    print(f"Permission errors: {summary.permission_error_files}")
     print(f"Transferred bytes: {summary.transferred_bytes}")
     if args.dry_run:
         print("Dry run only: no files were copied.")
