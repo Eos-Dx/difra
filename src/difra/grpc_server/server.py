@@ -14,6 +14,21 @@ from typing import Any, Dict, List, Optional, Tuple
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
+
+def _configure_process_text_streams() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
+
+
+_configure_process_text_streams()
+
 from difra.hardware.hardware_control import HardwareController
 
 _GENERATED_STUB_ROOT = Path(__file__).resolve().parent / "generated"

@@ -122,6 +122,51 @@ def test_validate_technical_h5_main_handles_missing_and_quiet_success(
     assert "VALID:" in capsys.readouterr().out
 
 
+def test_filter_startup_stderr_forces_utf8_child_io(monkeypatch):
+    module = _load_module(
+        REPO_ROOT / "src" / "difra" / "scripts" / "filter_startup_stderr.py",
+        "test_filter_startup_stderr_script",
+    )
+    captured = {}
+
+    class _Pipe:
+        def readline(self):
+            return b""
+
+        def close(self):
+            return None
+
+    class _Thread:
+        daemon = False
+
+        def __init__(self, *args, **kwargs):
+            return None
+
+        def start(self):
+            return None
+
+        def join(self, timeout=None):
+            return None
+
+    class _Proc:
+        stdout = _Pipe()
+        stderr = _Pipe()
+
+        def wait(self):
+            return 0
+
+    def _popen(command, stdout, stderr, env):
+        captured["env"] = env
+        return _Proc()
+
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    monkeypatch.setattr(module.subprocess, "Popen", _popen)
+    monkeypatch.setattr(module.threading, "Thread", _Thread)
+
+    assert module.main(["--", "python", "-c", "print('ok')"]) == 0
+    assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
 def test_sync_archive_to_onedrive_parser_supports_overrides_and_dry_run():
     module = _load_module(
         REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",

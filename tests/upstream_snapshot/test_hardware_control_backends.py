@@ -7,7 +7,23 @@ if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
 from difra.hardware.detectors import DummyDetectorController
+from difra.hardware import hardware_control as hardware_control_module
 from difra.hardware.hardware_control import HardwareController
+
+
+class _Cp1252Stdout:
+    encoding = "cp1252"
+
+    def __init__(self):
+        self.parts = []
+
+    def write(self, text):
+        text.encode(self.encoding)
+        self.parts.append(text)
+        return len(text)
+
+    def flush(self):
+        return None
 
 
 def test_dummy_detector_stays_local_in_sidecar_backend(monkeypatch):
@@ -76,3 +92,44 @@ def test_production_mode_uses_active_profiles_not_dev_profiles():
     assert getattr(controller.stage_controller, "alias", "") == "PROD_STAGE"
     assert "PROD_DET" in controller.detectors
     assert "DEV_DET" not in controller.detectors
+
+
+def test_hardware_initialization_status_output_is_cp1252_safe(monkeypatch):
+    class FailingDetector:
+        def __init__(self, alias, size):
+            self.alias = alias
+            self.size = size
+
+        def init_detector(self):
+            return False
+
+    monkeypatch.setattr(sys, "stdout", _Cp1252Stdout())
+    monkeypatch.setitem(
+        hardware_control_module.DETECTOR_CLASSES,
+        "FailingDetector",
+        FailingDetector,
+    )
+    cfg = {
+        "DEV": False,
+        "detectors": [
+            {
+                "alias": "BAD_DET",
+                "id": "BAD-DET-001",
+                "type": "FailingDetector",
+                "size": {"width": 16, "height": 16},
+            }
+        ],
+        "active_detectors": ["BAD-DET-001"],
+        "dev_active_detectors": [],
+        "translation_stages": [],
+        "active_translation_stages": [],
+        "dev_active_stages": [],
+    }
+
+    stage_ok, detector_ok = HardwareController(cfg).initialize(
+        init_stage=True,
+        init_detector=True,
+    )
+
+    assert stage_ok is False
+    assert detector_ok is False

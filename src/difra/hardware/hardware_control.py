@@ -95,7 +95,7 @@ class HardwareController:
                 if det_type in {"Pixet", "PixetLegacy", "PixetSidecar"}:
                     if detector_backend not in {"sidecar", "socket", "ipc"}:
                         print(
-                            "⚠ Pixet detectors are restricted to legacy sidecar mode; "
+                            "[WARN] Pixet detectors are restricted to legacy sidecar mode; "
                             f"forcing DETECTOR_BACKEND=sidecar (was '{detector_backend or 'unset'}')."
                         )
                     os.environ["DETECTOR_BACKEND"] = "sidecar"
@@ -120,7 +120,7 @@ class HardwareController:
             for det_cfg in selected_detectors:
                 det_type, det_class, protocol = _resolve_detector_class(det_cfg)
                 if not det_class:
-                    print(f"⚠ Unknown detector type: {det_type}")
+                    print(f"[WARN] Unknown detector type: {det_type}")
                     continue
                 alias = det_cfg.get("alias", det_cfg["id"])
                 size = (det_cfg["size"]["width"], det_cfg["size"]["height"])
@@ -147,7 +147,7 @@ class HardwareController:
                     success = controller.init_detector()
                     if success:
                         self.detectors[alias] = controller
-                        print(f"✓ Detector '{alias}' ({det_type}) initialized successfully")
+                        print(f"[OK] Detector '{alias}' ({det_type}) initialized successfully")
                         logger.info(
                             "Detector initialized: alias=%s class=%s protocol=%s",
                             alias,
@@ -155,7 +155,7 @@ class HardwareController:
                             protocol,
                         )
                     else:
-                        print(f"✗ Detector '{alias}' ({det_type}) failed to initialize")
+                        print(f"[FAIL] Detector '{alias}' ({det_type}) failed to initialize")
                         logger.error(
                             "Detector initialization failed: alias=%s type=%s class=%s protocol=%s",
                             alias,
@@ -164,7 +164,7 @@ class HardwareController:
                             protocol,
                         )
                 except Exception as e:
-                    print(f"✗ Error initializing detector '{alias}' ({det_type}): {e}")
+                    print(f"[FAIL] Error initializing detector '{alias}' ({det_type}): {e}")
                     logger.exception(
                         "Detector initialization error: alias=%s type=%s class=%s protocol=%s",
                         alias,
@@ -199,7 +199,7 @@ class HardwareController:
                 stage_type = selected_stage.get("type")
                 stage_class = STAGE_CLASSES.get(stage_type)
                 if not stage_class:
-                    print(f"⚠ Unknown stage type: {stage_type}")
+                    print(f"[WARN] Unknown stage type: {stage_type}")
                     stage_success = False
                 else:
                     try:
@@ -222,7 +222,7 @@ class HardwareController:
                         )
                         stage_success = self.stage_controller.init_stage()
                         if stage_success:
-                            print(f"✓ Stage '{selected_stage.get('alias')}' ({stage_type}) initialized successfully")
+                            print(f"[OK] Stage '{selected_stage.get('alias')}' ({stage_type}) initialized successfully")
                             logger.info(
                                 "Stage initialized: alias=%s class=%s protocol=%s",
                                 selected_stage.get("alias", "unknown"),
@@ -230,7 +230,7 @@ class HardwareController:
                                 stage_protocol,
                             )
                         else:
-                            print(f"✗ Stage '{selected_stage.get('alias')}' ({stage_type}) failed to initialize")
+                            print(f"[FAIL] Stage '{selected_stage.get('alias')}' ({stage_type}) failed to initialize")
                             logger.error(
                                 "Stage initialization failed: alias=%s type=%s class=%s protocol=%s",
                                 selected_stage.get("alias", "unknown"),
@@ -239,7 +239,7 @@ class HardwareController:
                                 stage_protocol,
                             )
                     except Exception as e:
-                        print(f"✗ Error initializing stage '{selected_stage.get('alias')}' ({stage_type}): {e}")
+                        print(f"[FAIL] Error initializing stage '{selected_stage.get('alias')}' ({stage_type}): {e}")
                         logger.exception(
                             "Stage initialization error: alias=%s type=%s class=%s",
                             selected_stage.get("alias", "unknown"),
@@ -248,7 +248,7 @@ class HardwareController:
                         )
                         stage_success = False
             else:
-                print("⚠ No translation stage selected.")
+                print("[WARN] No translation stage selected.")
                 stage_success = False
 
         # Consider hardware initialized if at least one component succeeded
