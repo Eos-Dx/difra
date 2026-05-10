@@ -22,6 +22,7 @@ from urllib import request as urllib_request
 _DEFAULT_MATADOR_CACHE_PATH = (
     Path(__file__).resolve().parent.parent / "resources" / "config" / "matador_cache.json"
 )
+DEFAULT_REAL_MATADOR_TIMEOUT_SEC = 90.0
 
 
 def sha256_file(path: Path) -> str:
@@ -887,7 +888,7 @@ def build_matador_upload_api(config: Optional[dict] = None) -> MatadorUploadApi:
     if base_url and token and not bool(cfg.get("matador_force_stub", False)):
         timeout_sec = cfg.get("matador_timeout_sec")
         if timeout_sec is None:
-            timeout_sec = 30.0
+            timeout_sec = DEFAULT_REAL_MATADOR_TIMEOUT_SEC
         return RealMatadorUploadApi(
             base_url=base_url,
             token=token,

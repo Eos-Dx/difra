@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import threading
+import time
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import (
     QAbstractItemView,
     QApplication,
     QComboBox,
@@ -43,6 +45,9 @@ from difra.gui.main_window_ext.archive_session_edit_dialog import (
 from difra.gui.matador_runtime_context import (
     get_runtime_matador_context,
     set_runtime_matador_context,
+)
+from difra.gui.matador_upload_error_reporter import (
+    send_matador_upload_error_report,
 )
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
@@ -107,6 +112,7 @@ class SessionTabMixin:
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "uploadSessionId": str(getattr(workflow_result, "upload_session_id", "") or ""),
             "uploadSuccess": int(getattr(workflow_result, "upload_success", 0)),
+            "uploadPending": int(getattr(workflow_result, "upload_pending", 0)),
             "uploadFailed": int(getattr(workflow_result, "upload_failed", 0)),
             "moved": int(getattr(workflow_result, "moved", 0)),
             "archivedPaths": [str(path) for path in getattr(workflow_result, "archived_paths", [])],
@@ -118,6 +124,112 @@ class SessionTabMixin:
         with open(log_path, "w", encoding="utf-8") as file_handle:
             json.dump(payload, file_handle, indent=2, ensure_ascii=False)
         return log_path
+
+    def _send_matador_upload_error_report(
+        self,
+        *,
+        runtime_config: dict,
+        workflow_result,
+        log_path: Path,
+        context: str,
+    ) -> str:
+        if int(getattr(workflow_result, "upload_failed", 0) or 0) <= 0:
+            return ""
+        try:
+            result = send_matador_upload_error_report(
+                config=runtime_config,
+                workflow_result=workflow_result,
+                log_path=Path(log_path),
+                context=context,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send Matador upload error email", exc_info=True)
+            return f"Matador error email failed: {exc}"
+        return str(result.get("message") or "").strip()
+
+    def _schedule_matador_pending_verification(
+        self,
+        *,
+        container_paths: List[Path],
+        runtime_config: dict,
+    ) -> None:
+        paths = [Path(path) for path in (container_paths or []) if Path(path).exists()]
+        if not paths:
+            return
+        if getattr(self, "_matador_pending_verification_running", False):
+            return
+        interval_sec = max(
+            float(runtime_config.get("matador_async_verification_interval_sec", 30.0)),
+            5.0,
+        )
+        batch_size = max(
+            int(
+                runtime_config.get(
+                    "matador_async_verification_batch_size",
+                    runtime_config.get("matador_upload_max_parallel", 4),
+                )
+            ),
+            1,
+        )
+        max_rounds = max(
+            int(runtime_config.get("matador_async_verification_max_rounds", 40)),
+            1,
+        )
+        container_manager = self._container_manager()
+        setattr(self, "_matador_pending_verification_running", True)
+
+        def _worker():
+            try:
+                offset = 0
+                for round_index in range(1, max_rounds + 1):
+                    time.sleep(interval_sec)
+                    pending_paths = []
+                    for path in paths:
+                        try:
+                            info = SessionTabPresenter.read_session_container_metadata(
+                                path,
+                                schema=self._container_schema(),
+                                container_manager=container_manager,
+                            )
+                        except Exception:
+                            continue
+                        if str(info.get("upload_status") or "") == (
+                            SessionLifecycleActions.UPLOAD_STATUS_PENDING_VERIFICATION
+                        ):
+                            pending_paths.append(path)
+                    if not pending_paths:
+                        break
+                    if offset >= len(pending_paths):
+                        offset = 0
+                    batch = pending_paths[offset : offset + batch_size]
+                    if not batch:
+                        batch = pending_paths[:batch_size]
+                        offset = 0
+                    offset = (offset + batch_size) % max(len(pending_paths), 1)
+                    result = SessionLifecycleActions.verify_pending_matador_uploads(
+                        batch,
+                        container_manager=container_manager,
+                        config=runtime_config,
+                        operator_id=str(runtime_config.get("operator_id") or "unknown"),
+                    )
+                    logger.info(
+                        "Matador pending verification round %s/%s: checked=%s success=%s pending=%s failed=%s",
+                        round_index,
+                        max_rounds,
+                        len(batch),
+                        result.upload_success,
+                        result.upload_pending,
+                        result.upload_failed,
+                    )
+            finally:
+                setattr(self, "_matador_pending_verification_running", False)
+
+        thread = threading.Thread(
+            target=_worker,
+            name="matador-pending-verifier",
+            daemon=True,
+        )
+        thread.start()
 
     def _container_schema(self):
         return get_schema(self.config if hasattr(self, "config") else None)
@@ -539,14 +651,27 @@ class SessionTabMixin:
         if load_button is not None:
             load_button.setEnabled(True)
 
-        for attr_name in (
-            "close_session_btn",
-            "send_session_btn",
-            "preview_session_data_btn",
-        ):
+        for attr_name in ("close_session_btn", "send_session_btn"):
             button = getattr(self, attr_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
+        self._update_preview_session_data_enabled()
+
+    def _active_session_container_path(self) -> Optional[Path]:
+        session_manager = getattr(self, "session_manager", None)
+        active_path = getattr(session_manager, "session_path", None)
+        if not active_path:
+            return None
+        path = Path(active_path)
+        return path if path.exists() else None
+
+    def _preview_session_container_path(self) -> Optional[Path]:
+        return self._selected_pending_container() or self._active_session_container_path()
+
+    def _update_preview_session_data_enabled(self) -> None:
+        button = getattr(self, "preview_session_data_btn", None)
+        if button is not None:
+            button.setEnabled(self._preview_session_container_path() is not None)
 
     def _update_pending_session_summary(self, pending_rows: List[dict]) -> None:
         rows = list(pending_rows or [])
@@ -816,7 +941,7 @@ class SessionTabMixin:
             )
 
     def _show_session_data_preview_dialog(self, container_path: Path, payload: dict):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
 
         dialog = QDialog(self)
@@ -874,11 +999,7 @@ class SessionTabMixin:
         return dialog
 
     def _on_preview_session_data(self):
-        container_path = self._selected_pending_container()
-        if container_path is None:
-            session_manager = getattr(self, "session_manager", None)
-            active_path = getattr(session_manager, "session_path", None)
-            container_path = Path(active_path) if active_path else None
+        container_path = self._preview_session_container_path()
         if container_path is None or not Path(container_path).exists():
             QMessageBox.warning(
                 self,
@@ -1366,6 +1487,9 @@ class SessionTabMixin:
             return
         uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
         runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["operator_id"] = uploader_id
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
         runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = False
@@ -1442,6 +1566,7 @@ class SessionTabMixin:
         summary.append(
             "Upload result: "
             f"{workflow_result.upload_success} success / "
+            f"{getattr(workflow_result, 'upload_pending', 0)} pending / "
             f"{workflow_result.upload_failed} failed"
         )
         summary.append(f"Cleaned measurement artifacts: {workflow_result.cleaned_artifacts}")
@@ -1479,6 +1604,21 @@ class SessionTabMixin:
 
         if workflow_result.upload_failed > 0 and hasattr(self, "_append_session_log"):
             self._append_session_log(f"Matador send log saved: {log_path}")
+        report_status = self._send_matador_upload_error_report(
+            runtime_config=runtime_config,
+            workflow_result=workflow_result,
+            log_path=log_path,
+            context="send-and-archive",
+        )
+        if report_status:
+            summary.append(report_status)
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(report_status)
+        if getattr(workflow_result, "upload_pending", 0) > 0:
+            self._schedule_matador_pending_verification(
+                container_paths=list(workflow_result.archived_paths),
+                runtime_config=runtime_config,
+            )
 
         progress_log.appendPlainText("")
         for line in summary:
@@ -1486,6 +1626,8 @@ class SessionTabMixin:
         progress_label.setText(
             "Matador send finished with failures."
             if workflow_result.upload_failed > 0
+            else "Matador send uploaded files; verification pending."
+            if getattr(workflow_result, "upload_pending", 0) > 0
             else "Matador send finished successfully."
         )
         close_button.setEnabled(True)
@@ -1541,6 +1683,9 @@ class SessionTabMixin:
 
         uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
         runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["operator_id"] = uploader_id
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
         runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
@@ -1603,6 +1748,7 @@ class SessionTabMixin:
             f"Processed {len(container_paths)} archived session container(s).",
             "Upload result: "
             f"{workflow_result.upload_success} success / "
+            f"{getattr(workflow_result, 'upload_pending', 0)} pending / "
             f"{workflow_result.upload_failed} failed",
         ]
         if workflow_result.upload_session_id:
@@ -1628,6 +1774,21 @@ class SessionTabMixin:
         )
         summary.append("")
         summary.append(f"Matador log saved to: {log_path}")
+        report_status = self._send_matador_upload_error_report(
+            runtime_config=runtime_config,
+            workflow_result=workflow_result,
+            log_path=log_path,
+            context="archived-resend",
+        )
+        if report_status:
+            summary.append(report_status)
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(report_status)
+        if getattr(workflow_result, "upload_pending", 0) > 0:
+            self._schedule_matador_pending_verification(
+                container_paths=list(workflow_result.archived_paths),
+                runtime_config=runtime_config,
+            )
 
         progress_log.appendPlainText("")
         for line in summary:
@@ -1635,6 +1796,8 @@ class SessionTabMixin:
         progress_label.setText(
             "Matador resend finished with failures."
             if workflow_result.upload_failed > 0
+            else "Matador resend uploaded files; verification pending."
+            if getattr(workflow_result, "upload_pending", 0) > 0
             else "Matador resend finished successfully."
         )
         close_button.setEnabled(True)
@@ -1822,6 +1985,7 @@ class SessionTabMixin:
         self.session_info_label.setText(view_state.info_text)
 
         self._refresh_session_container_lists()
+        self._update_preview_session_data_enabled()
 
     def _on_close_finalize_session(self):
         """Close and finalize the active session container and archive measurement files."""
