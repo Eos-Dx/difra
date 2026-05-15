@@ -5,11 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from email.message import EmailMessage
+import base64
+import getpass
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import platform
 import smtplib
 import socket
+import subprocess
+import sys
 import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import zipfile
@@ -27,6 +34,14 @@ DEFAULT_REPORT_RECIPIENT = "sdenisov@matur.co.uk"
 DEFAULT_REPORT_SENDER = "difra-upload@company.co.uk"
 DEFAULT_POINTS = 100
 DEFAULT_DPI = 200
+DEFAULT_KEYCHAIN_SERVICE = "difra_daily_report_smtp_password"
+DEFAULT_EMAIL_SETUP_PASSWORD = "Ulster2025!"
+DEFAULT_ENCRYPTED_PASSWORD_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "resources"
+    / "secrets"
+    / "daily_report_smtp_password.enc.json"
+)
 SAXS_RANGE = (1.0, 3.0)
 WAXS_RANGE = (2.0, 23.0)
 
@@ -99,6 +114,247 @@ def _config_value(
     if fallback_key and isinstance(config, dict) and fallback_key in config:
         return config.get(fallback_key)
     return default
+
+
+def _read_macos_keychain_password(*, account: str, service: str) -> str:
+    if platform.system() != "Darwin":
+        return ""
+    account = str(account or "").strip()
+    service = str(service or "").strip()
+    if not account or not service:
+        return ""
+    try:
+        completed = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                account,
+                "-s",
+                service,
+                "-w",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return str(completed.stdout or "").strip()
+
+
+def _write_macos_keychain_password(
+    *,
+    account: str,
+    service: str,
+    password: str,
+) -> bool:
+    if platform.system() != "Darwin":
+        return False
+    account = str(account or "").strip()
+    service = str(service or "").strip()
+    password = str(password or "").strip()
+    if not account or not service or not password:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                "security",
+                "add-generic-password",
+                "-a",
+                account,
+                "-s",
+                service,
+                "-w",
+                password,
+                "-U",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+
+def _delete_macos_keychain_password(*, account: str, service: str) -> bool:
+    if platform.system() != "Darwin":
+        return False
+    account = str(account or "").strip()
+    service = str(service or "").strip()
+    if not account or not service:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                "security",
+                "delete-generic-password",
+                "-a",
+                account,
+                "-s",
+                service,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+
+def _xor_bytes(payload: bytes, key: bytes, nonce: bytes) -> bytes:
+    out = bytearray()
+    counter = 0
+    while len(out) < len(payload):
+        block = hmac.new(
+            key,
+            nonce + counter.to_bytes(8, "big"),
+            hashlib.sha256,
+        ).digest()
+        out.extend(block)
+        counter += 1
+    return bytes(left ^ right for left, right in zip(payload, out))
+
+
+def _derive_secret_keys(passphrase: str, salt: bytes, iterations: int) -> Tuple[bytes, bytes]:
+    key_material = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(passphrase or "").encode("utf-8"),
+        salt,
+        int(iterations),
+        dklen=64,
+    )
+    return key_material[:32], key_material[32:]
+
+
+def _blob_mac_payload(blob: Dict[str, Any]) -> bytes:
+    payload = {
+        key: blob[key]
+        for key in (
+            "version",
+            "kdf",
+            "iterations",
+            "salt",
+            "nonce",
+            "ciphertext",
+        )
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _encrypt_secret_blob(secret: str, passphrase: str, *, iterations: int = 600_000) -> Dict[str, Any]:
+    salt = os.urandom(16)
+    nonce = os.urandom(16)
+    enc_key, mac_key = _derive_secret_keys(passphrase, salt, iterations)
+    ciphertext = _xor_bytes(str(secret or "").encode("utf-8"), enc_key, nonce)
+    blob = {
+        "version": 1,
+        "kdf": "pbkdf2-sha256",
+        "iterations": int(iterations),
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+    }
+    mac = hmac.new(mac_key, _blob_mac_payload(blob), hashlib.sha256).digest()
+    blob["mac"] = base64.b64encode(mac).decode("ascii")
+    return blob
+
+
+def _decrypt_secret_blob(blob: Dict[str, Any], passphrase: str) -> str:
+    if int(blob.get("version", 0)) != 1:
+        return ""
+    if str(blob.get("kdf") or "") != "pbkdf2-sha256":
+        return ""
+    iterations = int(blob.get("iterations") or 0)
+    if iterations < 100_000:
+        return ""
+    try:
+        salt = base64.b64decode(str(blob.get("salt") or ""), validate=True)
+        nonce = base64.b64decode(str(blob.get("nonce") or ""), validate=True)
+        ciphertext = base64.b64decode(str(blob.get("ciphertext") or ""), validate=True)
+        expected_mac = base64.b64decode(str(blob.get("mac") or ""), validate=True)
+    except Exception:
+        return ""
+    enc_key, mac_key = _derive_secret_keys(passphrase, salt, iterations)
+    actual_mac = hmac.new(mac_key, _blob_mac_payload(blob), hashlib.sha256).digest()
+    if not hmac.compare_digest(actual_mac, expected_mac):
+        return ""
+    try:
+        return _xor_bytes(ciphertext, enc_key, nonce).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _encrypted_password_path(config: Optional[Dict[str, Any]]) -> Path:
+    configured = _as_text(
+        _config_value(
+            config,
+            "daily_report_smtp_encrypted_password_path",
+            "DIFRA_DAILY_REPORT_SMTP_ENCRYPTED_PASSWORD_PATH",
+            "",
+        )
+    )
+    if configured:
+        return Path(configured)
+    return DEFAULT_ENCRYPTED_PASSWORD_PATH
+
+
+def _read_encrypted_bundled_password(
+    *,
+    config: Optional[Dict[str, Any]],
+    passphrase: str,
+) -> str:
+    path = _encrypted_password_path(config)
+    try:
+        blob = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(blob, dict):
+        return ""
+    return _decrypt_secret_blob(blob, passphrase)
+
+
+def _interactive_keychain_password_setup(
+    *,
+    config: Optional[Dict[str, Any]],
+    account: str,
+    service: str,
+) -> str:
+    setup_password = _as_text(
+        _config_value(
+            config,
+            "daily_report_email_setup_password",
+            "DIFRA_DAILY_REPORT_EMAIL_SETUP_PASSWORD",
+            DEFAULT_EMAIL_SETUP_PASSWORD,
+        ),
+        DEFAULT_EMAIL_SETUP_PASSWORD,
+    )
+    entered_setup_password = getpass.getpass("Enter Ulster password to configure email: ")
+    if entered_setup_password != setup_password:
+        return ""
+    smtp_password = _read_encrypted_bundled_password(
+        config=config,
+        passphrase=entered_setup_password,
+    )
+    if not smtp_password:
+        smtp_password = getpass.getpass(f"Enter Gmail App Password for {account}: ")
+    smtp_password = str(smtp_password or "").replace(" ", "").strip()
+    if not smtp_password:
+        return ""
+    if not _write_macos_keychain_password(
+        account=account,
+        service=service,
+        password=smtp_password,
+    ):
+        return ""
+    return smtp_password
 
 
 def load_report_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -516,6 +772,7 @@ def send_daily_report_email(
     zip_path: Path,
     manifest: Dict[str, Any],
     test: bool = False,
+    allow_interactive_setup: bool = False,
 ) -> Dict[str, Any]:
     enabled = _as_bool(
         _config_value(
@@ -574,6 +831,26 @@ def send_daily_report_email(
         )
     )
     if username and not password:
+        keychain_service = _as_text(
+            _config_value(
+                config,
+                "daily_report_smtp_keychain_service",
+                "DIFRA_DAILY_REPORT_SMTP_KEYCHAIN_SERVICE",
+                DEFAULT_KEYCHAIN_SERVICE,
+            ),
+            DEFAULT_KEYCHAIN_SERVICE,
+        )
+        password = _read_macos_keychain_password(
+            account=username,
+            service=keychain_service,
+        )
+        if not password and allow_interactive_setup and sys.stdin.isatty():
+            password = _interactive_keychain_password_setup(
+                config=config,
+                account=username,
+                service=keychain_service,
+            )
+    if username and not password:
         return {
             "sent": False,
             "skipped": True,
@@ -626,6 +903,7 @@ def build_daily_report(
     output_dir: Path,
     since: Optional[datetime] = None,
     send_email: bool = False,
+    allow_interactive_setup: bool = False,
 ) -> DailyReportResult:
     cfg = dict(config or {})
     roots = [
@@ -658,6 +936,7 @@ def build_daily_report(
             config=cfg,
             zip_path=result.zip_path,
             manifest=manifest,
+            allow_interactive_setup=allow_interactive_setup,
         )
     return result
 
@@ -668,6 +947,7 @@ def run_daily_report_from_config(
     output_dir: Optional[Path] = None,
     since_days: float = 1.0,
     send_email: bool = False,
+    allow_interactive_setup: bool = False,
 ) -> DailyReportResult:
     config = load_report_config(config_path)
     base = output_dir
@@ -680,6 +960,7 @@ def run_daily_report_from_config(
         output_dir=Path(base),
         since=since,
         send_email=send_email,
+        allow_interactive_setup=allow_interactive_setup,
     )
 
 
@@ -687,6 +968,7 @@ def send_simple_test_email(
     *,
     config_path: Optional[Path] = None,
     output_dir: Optional[Path] = None,
+    allow_interactive_setup: bool = False,
 ) -> Dict[str, Any]:
     config = load_report_config(config_path)
     if output_dir is None:
@@ -707,4 +989,46 @@ def send_simple_test_email(
         zip_path=zip_path,
         manifest=manifest,
         test=True,
+        allow_interactive_setup=allow_interactive_setup,
     )
+
+
+def run_keychain_setup_self_test(
+    *,
+    config_path: Optional[Path] = None,
+    service: str = "difra_daily_report_smtp_password_self_test",
+) -> Dict[str, Any]:
+    config = load_report_config(config_path)
+    username = _as_text(
+        _config_value(
+            config,
+            "daily_report_smtp_username",
+            "DIFRA_DAILY_REPORT_SMTP_USERNAME",
+            "",
+            fallback_key="upload_error_smtp_username",
+            fallback_env_key="DIFRA_UPLOAD_ERROR_SMTP_USERNAME",
+        )
+    )
+    if not username:
+        return {"ok": False, "message": "daily report SMTP username not configured"}
+    if not sys.stdin.isatty():
+        return {"ok": False, "message": "interactive terminal required"}
+
+    _delete_macos_keychain_password(account=username, service=service)
+    password = _interactive_keychain_password_setup(
+        config=config,
+        account=username,
+        service=service,
+    )
+    if not password:
+        return {"ok": False, "message": "setup did not produce a password"}
+    loaded = _read_macos_keychain_password(account=username, service=service)
+    removed = _delete_macos_keychain_password(account=username, service=service)
+    return {
+        "ok": bool(loaded and loaded == password and removed),
+        "account": username,
+        "service": service,
+        "decrypted": bool(password),
+        "readBack": bool(loaded and loaded == password),
+        "removed": bool(removed),
+    }

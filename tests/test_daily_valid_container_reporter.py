@@ -114,3 +114,139 @@ def test_send_daily_report_email_uses_smtp(monkeypatch, tmp_path):
     assert ("starttls",) in calls
     assert ("login", "user", "secret") in calls
     assert ("send_message", "sdenisov@matur.co.uk", "difra-upload@company.co.uk") in calls
+
+
+def test_send_daily_report_email_uses_keychain_fallback(monkeypatch, tmp_path):
+    zip_path = reporter.create_simple_test_image_zip(tmp_path)
+    calls = []
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout):
+            calls.append(("connect", host, port, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            calls.append(("close",))
+
+        def starttls(self):
+            calls.append(("starttls",))
+
+        def login(self, username, password):
+            calls.append(("login", username, password))
+
+        def send_message(self, message):
+            calls.append(("send_message", message["To"], message["From"]))
+
+    monkeypatch.setattr(reporter.smtplib, "SMTP", FakeSmtp)
+    monkeypatch.setattr(
+        reporter,
+        "_read_macos_keychain_password",
+        lambda *, account, service: "keychain-secret",
+    )
+
+    result = reporter.send_daily_report_email(
+        config={
+            "daily_report_smtp_host": "smtp.gmail.com",
+            "daily_report_smtp_username": "saldenisov@gmail.com",
+            "daily_report_email_sender": "saldenisov@gmail.com",
+        },
+        zip_path=zip_path,
+        manifest={"imageCount": 2, "validContainers": 0, "scanned": 0},
+        test=True,
+    )
+
+    assert result["sent"] is True
+    assert ("login", "saldenisov@gmail.com", "keychain-secret") in calls
+
+
+def test_interactive_setup_decrypts_bundled_secret_and_stores_keychain(
+    monkeypatch, tmp_path
+):
+    secret_path = tmp_path / "smtp_password.enc.json"
+    secret_path.write_text(
+        reporter.json.dumps(
+            reporter._encrypt_secret_blob("app-password", "Ulster2025!", iterations=100_000)
+        ),
+        encoding="utf-8",
+    )
+    stored = {}
+    monkeypatch.setattr(reporter.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        reporter.getpass,
+        "getpass",
+        lambda prompt: "Ulster2025!",
+    )
+    monkeypatch.setattr(
+        reporter,
+        "_write_macos_keychain_password",
+        lambda *, account, service, password: stored.setdefault(
+            "value", (account, service, password)
+        )
+        or True,
+    )
+
+    password = reporter._interactive_keychain_password_setup(
+        config={"daily_report_smtp_encrypted_password_path": str(secret_path)},
+        account="saldenisov@gmail.com",
+        service="difra_daily_report_smtp_password",
+    )
+
+    assert password == "app-password"
+    assert stored["value"] == (
+        "saldenisov@gmail.com",
+        "difra_daily_report_smtp_password",
+        "app-password",
+    )
+
+
+def test_keychain_setup_self_test_runs_write_read_delete_sequence(
+    monkeypatch, tmp_path
+):
+    secret_path = tmp_path / "smtp_password.enc.json"
+    secret_path.write_text(
+        reporter.json.dumps(
+            reporter._encrypt_secret_blob("app-password", "Ulster2025!", iterations=100_000)
+        ),
+        encoding="utf-8",
+    )
+    store = {}
+    monkeypatch.setattr(reporter.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(reporter.getpass, "getpass", lambda prompt: "Ulster2025!")
+    monkeypatch.setattr(
+        reporter,
+        "_write_macos_keychain_password",
+        lambda *, account, service, password: store.setdefault(
+            (account, service), password
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        reporter,
+        "_read_macos_keychain_password",
+        lambda *, account, service: store.get((account, service), ""),
+    )
+    monkeypatch.setattr(
+        reporter,
+        "_delete_macos_keychain_password",
+        lambda *, account, service: store.pop((account, service), None) is not None,
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "daily_report_smtp_username": "saldenisov@gmail.com",
+                "daily_report_smtp_encrypted_password_path": str(secret_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = reporter.run_keychain_setup_self_test(config_path=config_path)
+
+    assert result["ok"] is True
+    assert result["decrypted"] is True
+    assert result["readBack"] is True
+    assert result["removed"] is True
+    assert store == {}
