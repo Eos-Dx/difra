@@ -4,6 +4,8 @@ Integrates SessionManager for HDF5 container-based data storage.
 """
 
 import json
+import hashlib
+import hmac
 import logging
 from pathlib import Path
 
@@ -31,7 +33,14 @@ from difra.gui.operator_manager import OperatorManager, OperatorSelectionDialog
 
 logger = logging.getLogger(__name__)
 
-_CONTAINER_INFORMATION_EDIT_PASSWORD = "Ulster2026_REDACTED"
+_CONTAINER_INFORMATION_EDIT_PASSWORD_HASH = (
+    "64ae5ac9f98ac4a2bb67a66cc913909022d4d0bb7d673fcf76d1999c33debd93"
+)
+
+
+def _verify_container_information_edit_password(password: str) -> bool:
+    provided = hashlib.sha256(str(password or "").encode("utf-8")).hexdigest()
+    return hmac.compare_digest(provided, _CONTAINER_INFORMATION_EDIT_PASSWORD_HASH)
 
 
 from difra.gui.main_window_ext.session_workspace_mixin import SessionWorkspaceMixin
@@ -499,7 +508,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         )
         if not accepted:
             return False, False
-        if str(password or "") == _CONTAINER_INFORMATION_EDIT_PASSWORD:
+        if _verify_container_information_edit_password(str(password or "")):
             return True, True
 
         QMessageBox.warning(
