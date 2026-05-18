@@ -42,6 +42,13 @@ DEFAULT_ENCRYPTED_PASSWORD_PATH = (
     / "secrets"
     / "daily_report_smtp_password.enc.json"
 )
+DEFAULT_EMAIL_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "resources"
+    / "config"
+    / "daily_report_email.json"
+)
+DEFAULT_REPORT_STATE_FILENAME = "daily_report_state.json"
 SAXS_RANGE = (1.0, 3.0)
 WAXS_RANGE = (2.0, 23.0)
 
@@ -65,6 +72,11 @@ class DailyReportResult:
     images: List[Path] = field(default_factory=list)
     zip_path: Optional[Path] = None
     email_result: Dict[str, Any] = field(default_factory=dict)
+    manifest: Dict[str, Any] = field(default_factory=dict)
+    state_path: Optional[Path] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    tracking_started_at: Optional[str] = None
 
 
 def _as_text(value: Any, default: str = "") -> str:
@@ -94,6 +106,20 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _as_email_recipients(value: Any, default: str) -> List[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        text = _as_text(value, default)
+        raw_items = str(text or "").replace(";", ",").split(",")
+    recipients = []
+    for item in raw_items:
+        text = _as_text(item, "").strip()
+        if text and text not in recipients:
+            recipients.append(text)
+    return recipients or [default]
 
 
 def _config_value(
@@ -207,6 +233,145 @@ def _delete_macos_keychain_password(*, account: str, service: str) -> bool:
     except Exception:
         return False
     return completed.returncode == 0
+
+
+def _read_windows_credential_password(*, account: str, service: str) -> str:
+    if platform.system() != "Windows":
+        return ""
+    service = str(service or "").strip()
+    if not service:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class CREDENTIAL(ctypes.Structure):
+            _fields_ = [
+                ("Flags", wintypes.DWORD),
+                ("Type", wintypes.DWORD),
+                ("TargetName", wintypes.LPWSTR),
+                ("Comment", wintypes.LPWSTR),
+                ("LastWritten", wintypes.FILETIME),
+                ("CredentialBlobSize", wintypes.DWORD),
+                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+                ("Persist", wintypes.DWORD),
+                ("AttributeCount", wintypes.DWORD),
+                ("Attributes", ctypes.c_void_p),
+                ("TargetAlias", wintypes.LPWSTR),
+                ("UserName", wintypes.LPWSTR),
+            ]
+
+        credential_ptr = ctypes.POINTER(CREDENTIAL)()
+        if not ctypes.windll.advapi32.CredReadW(service, 1, 0, ctypes.byref(credential_ptr)):
+            return ""
+        try:
+            credential = credential_ptr.contents
+            size = int(credential.CredentialBlobSize or 0)
+            if size <= 0:
+                return ""
+            payload = ctypes.string_at(credential.CredentialBlob, size)
+            return payload.decode("utf-16-le", errors="ignore").rstrip("\x00").strip()
+        finally:
+            ctypes.windll.advapi32.CredFree(credential_ptr)
+    except Exception:
+        return ""
+
+
+def _write_windows_credential_password(
+    *,
+    account: str,
+    service: str,
+    password: str,
+) -> bool:
+    if platform.system() != "Windows":
+        return False
+    account = str(account or "").strip()
+    service = str(service or "").strip()
+    password = str(password or "").strip()
+    if not account or not service or not password:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class CREDENTIAL(ctypes.Structure):
+            _fields_ = [
+                ("Flags", wintypes.DWORD),
+                ("Type", wintypes.DWORD),
+                ("TargetName", wintypes.LPWSTR),
+                ("Comment", wintypes.LPWSTR),
+                ("LastWritten", wintypes.FILETIME),
+                ("CredentialBlobSize", wintypes.DWORD),
+                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+                ("Persist", wintypes.DWORD),
+                ("AttributeCount", wintypes.DWORD),
+                ("Attributes", ctypes.c_void_p),
+                ("TargetAlias", wintypes.LPWSTR),
+                ("UserName", wintypes.LPWSTR),
+            ]
+
+        blob = password.encode("utf-16-le")
+        blob_buffer = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
+        credential = CREDENTIAL()
+        credential.Flags = 0
+        credential.Type = 1
+        credential.TargetName = service
+        credential.Comment = "DiFRA daily report SMTP password"
+        credential.CredentialBlobSize = len(blob)
+        credential.CredentialBlob = blob_buffer
+        credential.Persist = 2
+        credential.AttributeCount = 0
+        credential.Attributes = None
+        credential.TargetAlias = None
+        credential.UserName = account
+        return bool(ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0))
+    except Exception:
+        return False
+
+
+def _delete_windows_credential_password(*, account: str, service: str) -> bool:
+    if platform.system() != "Windows":
+        return False
+    service = str(service or "").strip()
+    if not service:
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.advapi32.CredDeleteW(service, 1, 0))
+    except Exception:
+        return False
+
+
+def _read_stored_smtp_password(*, account: str, service: str) -> str:
+    if platform.system() == "Windows":
+        return _read_windows_credential_password(account=account, service=service)
+    return _read_macos_keychain_password(account=account, service=service)
+
+
+def _write_stored_smtp_password(
+    *,
+    account: str,
+    service: str,
+    password: str,
+) -> bool:
+    if platform.system() == "Windows":
+        return _write_windows_credential_password(
+            account=account,
+            service=service,
+            password=password,
+        )
+    return _write_macos_keychain_password(
+        account=account,
+        service=service,
+        password=password,
+    )
+
+
+def _delete_stored_smtp_password(*, account: str, service: str) -> bool:
+    if platform.system() == "Windows":
+        return _delete_windows_credential_password(account=account, service=service)
+    return _delete_macos_keychain_password(account=account, service=service)
 
 
 def _xor_bytes(payload: bytes, key: bytes, nonce: bytes) -> bytes:
@@ -348,13 +513,172 @@ def _interactive_keychain_password_setup(
     smtp_password = str(smtp_password or "").replace(" ", "").strip()
     if not smtp_password:
         return ""
-    if not _write_macos_keychain_password(
+    if not _write_stored_smtp_password(
         account=account,
         service=service,
         password=smtp_password,
     ):
         return ""
     return smtp_password
+
+
+def ensure_daily_report_email_password_configured_gui(
+    *,
+    parent: Any = None,
+    config_path: Optional[Path] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    cfg = load_report_config(config_path)
+    if config:
+        cfg.update(config)
+    if not _as_bool(
+        _config_value(
+            cfg,
+            "daily_report_email_enabled",
+            "DIFRA_DAILY_REPORT_EMAIL_ENABLED",
+            True,
+        ),
+        True,
+    ):
+        return {"ok": True, "required": False, "message": "daily report email disabled"}
+
+    smtp_host = _as_text(
+        _config_value(
+            cfg,
+            "daily_report_smtp_host",
+            "DIFRA_DAILY_REPORT_SMTP_HOST",
+            "",
+            fallback_key="upload_error_smtp_host",
+            fallback_env_key="DIFRA_UPLOAD_ERROR_SMTP_HOST",
+        )
+    )
+    username = _as_text(
+        _config_value(
+            cfg,
+            "daily_report_smtp_username",
+            "DIFRA_DAILY_REPORT_SMTP_USERNAME",
+            "",
+            fallback_key="upload_error_smtp_username",
+            fallback_env_key="DIFRA_UPLOAD_ERROR_SMTP_USERNAME",
+        )
+    )
+    if not smtp_host or not username:
+        return {
+            "ok": True,
+            "required": False,
+            "message": "daily report SMTP host or username not configured",
+        }
+
+    configured_password = _as_text(
+        _config_value(
+            cfg,
+            "daily_report_smtp_password",
+            "DIFRA_DAILY_REPORT_SMTP_PASSWORD",
+            "",
+            fallback_key="upload_error_smtp_password",
+            fallback_env_key="DIFRA_UPLOAD_ERROR_SMTP_PASSWORD",
+        )
+    )
+    keychain_service = _as_text(
+        _config_value(
+            cfg,
+            "daily_report_smtp_keychain_service",
+            "DIFRA_DAILY_REPORT_SMTP_KEYCHAIN_SERVICE",
+            DEFAULT_KEYCHAIN_SERVICE,
+        ),
+        DEFAULT_KEYCHAIN_SERVICE,
+    )
+    if configured_password or _read_stored_smtp_password(
+        account=username,
+        service=keychain_service,
+    ):
+        return {"ok": True, "required": False, "message": "daily report SMTP password configured"}
+
+    try:
+        from difra.gui.qt_compat import QInputDialog, QLineEdit, QMessageBox
+    except Exception as exc:
+        return {
+            "ok": False,
+            "required": True,
+            "message": f"Qt password dialog unavailable: {type(exc).__name__}: {exc}",
+        }
+
+    setup_password = _as_text(
+        _config_value(
+            cfg,
+            "daily_report_email_setup_password",
+            "DIFRA_DAILY_REPORT_EMAIL_SETUP_PASSWORD",
+            DEFAULT_EMAIL_SETUP_PASSWORD,
+        ),
+        DEFAULT_EMAIL_SETUP_PASSWORD,
+    )
+    entered_setup_password, ok = QInputDialog.getText(
+        parent,
+        "Daily Report Email",
+        "Enter Ulster password to configure daily report email:",
+        QLineEdit.Password,
+    )
+    if not ok:
+        return {"ok": False, "required": True, "message": "daily report email setup cancelled"}
+    if str(entered_setup_password or "") != setup_password:
+        QMessageBox.warning(parent, "Daily Report Email", "Incorrect Ulster password.")
+        return {"ok": False, "required": True, "message": "incorrect Ulster password"}
+
+    smtp_password = _read_encrypted_bundled_password(
+        config=cfg,
+        passphrase=str(entered_setup_password or ""),
+    )
+    if not smtp_password:
+        smtp_password, ok = QInputDialog.getText(
+            parent,
+            "Daily Report Email",
+            f"Enter Gmail App Password for {username}:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return {
+                "ok": False,
+                "required": True,
+                "message": "Gmail App Password entry cancelled",
+            }
+    smtp_password = str(smtp_password or "").replace(" ", "").strip()
+    if not smtp_password:
+        QMessageBox.warning(parent, "Daily Report Email", "SMTP password is empty.")
+        return {"ok": False, "required": True, "message": "SMTP password is empty"}
+
+    if not _write_stored_smtp_password(
+        account=username,
+        service=keychain_service,
+        password=smtp_password,
+    ):
+        QMessageBox.critical(
+            parent,
+            "Daily Report Email",
+            "Failed to save SMTP password in local credential storage.",
+        )
+        return {"ok": False, "required": True, "message": "failed to save SMTP password"}
+
+    QMessageBox.information(
+        parent,
+        "Daily Report Email",
+        "SMTP password saved. Daily reports can be sent automatically.",
+    )
+    return {
+        "ok": True,
+        "required": True,
+        "message": "daily report SMTP password saved",
+    }
+
+
+def _load_json_config(path: Path) -> Dict[str, Any]:
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        return {}
+    return {}
 
 
 def load_report_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -368,13 +692,100 @@ def load_report_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
             root / "resources" / "config" / "main.json",
         ]
     )
+    config: Dict[str, Any] = {}
+    base_path: Optional[Path] = None
     for candidate in candidates:
-        try:
-            if candidate.exists():
-                return json.loads(candidate.read_text(encoding="utf-8"))
-        except Exception:
+        loaded = _load_json_config(candidate)
+        if loaded:
+            config.update(loaded)
+            base_path = Path(candidate)
+            break
+
+    overlay_candidates = []
+    env_overlay = os.environ.get("DIFRA_DAILY_REPORT_EMAIL_CONFIG")
+    if env_overlay:
+        overlay_candidates.append(Path(env_overlay))
+    if base_path is not None:
+        overlay_candidates.append(base_path.parent / "daily_report_email.json")
+    overlay_candidates.append(DEFAULT_EMAIL_CONFIG_PATH)
+
+    seen = set()
+    for candidate in overlay_candidates:
+        resolved = str(Path(candidate).expanduser())
+        if resolved in seen:
             continue
-    return {}
+        seen.add(resolved)
+        config.update(_load_json_config(Path(candidate).expanduser()))
+    return config
+
+
+def _parse_report_datetime(value: Any) -> Optional[datetime]:
+    text = _as_text(value, "")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _report_state_path(config: Optional[Dict[str, Any]], output_dir: Path) -> Path:
+    configured = _as_text(
+        _config_value(
+            config,
+            "daily_report_state_path",
+            "DIFRA_DAILY_REPORT_STATE_PATH",
+            "",
+        )
+    )
+    if configured:
+        return Path(configured).expanduser()
+    return Path(output_dir) / DEFAULT_REPORT_STATE_FILENAME
+
+
+def _load_report_state(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_report_state(path: Path, state: Dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+
+
+def _append_report_attempt(
+    state: Dict[str, Any],
+    *,
+    result: "DailyReportResult",
+    manifest: Dict[str, Any],
+    email_result: Dict[str, Any],
+    period_start: datetime,
+    period_end: datetime,
+) -> None:
+    attempts = state.get("attempts")
+    if not isinstance(attempts, list):
+        attempts = []
+    attempts.append(
+        {
+            "attemptedAt": datetime.now().isoformat(timespec="seconds"),
+            "periodStart": period_start.isoformat(timespec="seconds"),
+            "periodEnd": period_end.isoformat(timespec="seconds"),
+            "sent": bool(email_result.get("sent")),
+            "skipped": bool(email_result.get("skipped")),
+            "message": _as_text(email_result.get("message"), ""),
+            "zipPath": str(result.zip_path or ""),
+            "scanned": int(result.scanned),
+            "validContainers": int(result.valid_containers),
+            "imageCount": len(result.images),
+            "projectIds": manifest.get("projectIds", []),
+            "matadorUploaded": int(manifest.get("matadorUploaded", 0) or 0),
+        }
+    )
+    state["attempts"] = attempts[-200:]
 
 
 def _safe_token(value: str, fallback: str = "unknown") -> str:
@@ -626,6 +1037,45 @@ def collect_report_series(
     return series, skipped, valid_count
 
 
+def summarize_valid_containers(container_paths: Iterable[Path]) -> Dict[str, Any]:
+    project_ids: List[str] = []
+    valid_containers = 0
+    matador_uploaded = 0
+    for container_path in container_paths:
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                is_valid, _reason = _is_container_valid(h5f)
+                if not is_valid:
+                    continue
+                valid_containers += 1
+                project_id = _as_text(
+                    h5f.attrs.get(
+                        "matadorProjectId",
+                        h5f.attrs.get("project_id", h5f.attrs.get("matadorProjectName", "")),
+                    )
+                )
+                if project_id and project_id not in project_ids:
+                    project_ids.append(project_id)
+                upload_status = _as_text(h5f.attrs.get("upload_status", "")).lower()
+                matador_send_status = _as_text(
+                    h5f.attrs.get("matador_send_status", "")
+                ).lower()
+                transfer_status = _as_text(h5f.attrs.get("transfer_status", "")).lower()
+                if (
+                    upload_status == "success"
+                    or matador_send_status == "successful"
+                    or transfer_status == "sent"
+                ):
+                    matador_uploaded += 1
+        except Exception:
+            continue
+    return {
+        "projectIds": project_ids,
+        "validContainers": valid_containers,
+        "matadorUploaded": matador_uploaded,
+    }
+
+
 def render_report_images(
     series: Iterable[DetectorSeries],
     output_dir: Path,
@@ -707,7 +1157,7 @@ def build_daily_report_email(
     manifest: Dict[str, Any],
     test: bool = False,
 ) -> EmailMessage:
-    recipient = _as_text(
+    recipients = _as_email_recipients(
         _config_value(
             config,
             "daily_report_email_recipient",
@@ -729,13 +1179,21 @@ def build_daily_report_email(
         ),
         DEFAULT_REPORT_SENDER,
     )
-    prefix = "[DiFRA] Daily valid container plot report"
+    report_date = _as_text(manifest.get("reportDate"), "")
+    if not report_date:
+        generated = _as_text(manifest.get("generatedAt"), "")
+        report_date = generated[:10] if len(generated) >= 10 else datetime.now().strftime("%Y-%m-%d")
+    subject = f"DifraReport:{report_date}"
     if test:
-        prefix = "[DiFRA] TEST daily plot report"
-    subject = (
-        f"{prefix}: {manifest.get('imageCount', 0)} image(s), "
-        f"{manifest.get('validContainers', 0)} valid container(s)"
-    )
+        subject = f"{subject} TEST"
+
+    project_ids = manifest.get("projectIds", [])
+    if isinstance(project_ids, (list, tuple, set)):
+        project_text = ", ".join(_as_text(item) for item in project_ids if _as_text(item))
+    else:
+        project_text = _as_text(project_ids, "-")
+    if not project_text:
+        project_text = "-"
 
     body = "\n".join(
         [
@@ -743,8 +1201,13 @@ def build_daily_report_email(
             "",
             f"Host: {socket.gethostname()}",
             f"Generated: {manifest.get('generatedAt', datetime.now().isoformat(timespec='seconds'))}",
+            f"Period start: {manifest.get('periodStart') or manifest.get('since') or '-'}",
+            f"Period end: {manifest.get('periodEnd') or '-'}",
+            f"Tracking started: {manifest.get('trackingStartedAt') or '-'}",
+            f"Project ID(s): {project_text}",
             f"Scanned: {manifest.get('scanned', 0)}",
-            f"Valid containers: {manifest.get('validContainers', 0)}",
+            f"Containers: {manifest.get('validContainers', 0)} valid / {manifest.get('scanned', 0)} scanned",
+            f"Successfully uploaded to Matador: {manifest.get('matadorUploaded', 0)}",
             f"Images: {manifest.get('imageCount', 0)}",
             "",
             "Attached ZIP contains 200 dpi PNG files and manifest.json.",
@@ -752,7 +1215,7 @@ def build_daily_report_email(
     )
 
     message = EmailMessage()
-    message["To"] = recipient
+    message["To"] = ", ".join(recipients)
     message["From"] = sender
     message["Subject"] = subject
     message.set_content(body)
@@ -840,7 +1303,7 @@ def send_daily_report_email(
             ),
             DEFAULT_KEYCHAIN_SERVICE,
         )
-        password = _read_macos_keychain_password(
+        password = _read_stored_smtp_password(
             account=username,
             service=keychain_service,
         )
@@ -902,42 +1365,64 @@ def build_daily_report(
     config: Optional[Dict[str, Any]],
     output_dir: Path,
     since: Optional[datetime] = None,
+    period_end: Optional[datetime] = None,
+    tracking_started_at: Optional[str] = None,
     send_email: bool = False,
     allow_interactive_setup: bool = False,
 ) -> DailyReportResult:
     cfg = dict(config or {})
+    generated_at = datetime.now()
+    period_end = period_end or generated_at
     roots = [
         Path(cfg.get("measurements_archive_folder") or ""),
         Path(cfg.get("measurements_folder") or ""),
     ]
     containers = _candidate_containers([root for root in roots if str(root)], since=since)
     result = DailyReportResult(scanned=len(containers))
+    result.period_start = since.isoformat(timespec="seconds") if since else None
+    result.period_end = period_end.isoformat(timespec="seconds")
+    result.tracking_started_at = tracking_started_at
     series, skipped, valid_count = collect_report_series(containers, points=DEFAULT_POINTS)
+    summary = summarize_valid_containers(containers)
     result.skipped.extend(skipped)
     result.valid_containers = valid_count
     out = Path(output_dir)
     image_dir = out / "images"
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
     manifest = {
-        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "generatedAt": generated_at.isoformat(timespec="seconds"),
+        "reportDate": generated_at.strftime("%Y-%m-%d"),
         "since": since.isoformat(timespec="seconds") if since else None,
+        "periodStart": since.isoformat(timespec="seconds") if since else None,
+        "periodEnd": period_end.isoformat(timespec="seconds"),
+        "trackingStartedAt": tracking_started_at,
         "scanned": result.scanned,
         "validContainers": result.valid_containers,
+        "projectIds": summary.get("projectIds", []),
+        "matadorUploaded": int(summary.get("matadorUploaded", 0) or 0),
         "imageCount": len(result.images),
         "skipped": result.skipped[:200],
     }
+    result.manifest = manifest
     result.zip_path = create_zip(
         out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
         result.images,
         manifest=manifest,
     )
     if send_email:
-        result.email_result = send_daily_report_email(
-            config=cfg,
-            zip_path=result.zip_path,
-            manifest=manifest,
-            allow_interactive_setup=allow_interactive_setup,
-        )
+        try:
+            result.email_result = send_daily_report_email(
+                config=cfg,
+                zip_path=result.zip_path,
+                manifest=manifest,
+                allow_interactive_setup=allow_interactive_setup,
+            )
+        except Exception as exc:
+            result.email_result = {
+                "sent": False,
+                "skipped": False,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
     return result
 
 
@@ -954,14 +1439,51 @@ def run_daily_report_from_config(
     if base is None:
         base_folder = config.get("difra_base_folder") or Path.home() / "difra"
         base = Path(base_folder) / "daily_reports"
-    since = datetime.now() - timedelta(days=float(since_days))
-    return build_daily_report(
+    base = Path(base)
+    period_end = datetime.now()
+    fallback_since = period_end - timedelta(days=float(since_days))
+    since = fallback_since
+    state_path = _report_state_path(config, base)
+    state: Dict[str, Any] = {}
+    tracking_started_at: Optional[str] = None
+    if send_email:
+        state = _load_report_state(state_path)
+        tracking_started = _parse_report_datetime(state.get("trackingStartedAt"))
+        last_successful = _parse_report_datetime(state.get("lastSuccessfulUntil"))
+        if last_successful is not None:
+            since = last_successful
+        elif tracking_started is not None:
+            since = tracking_started
+        else:
+            tracking_started = fallback_since
+            state["trackingStartedAt"] = tracking_started.isoformat(timespec="seconds")
+        tracking_started_at = state.get("trackingStartedAt")
+
+    result = build_daily_report(
         config=config,
-        output_dir=Path(base),
+        output_dir=base,
         since=since,
+        period_end=period_end,
+        tracking_started_at=tracking_started_at,
         send_email=send_email,
         allow_interactive_setup=allow_interactive_setup,
     )
+    result.state_path = state_path if send_email else None
+    if send_email:
+        _append_report_attempt(
+            state,
+            result=result,
+            manifest=result.manifest,
+            email_result=result.email_result,
+            period_start=since,
+            period_end=period_end,
+        )
+        if result.email_result.get("sent"):
+            state["lastSuccessfulUntil"] = period_end.isoformat(timespec="seconds")
+            state["lastSuccessfulAt"] = datetime.now().isoformat(timespec="seconds")
+            state["lastSuccessfulZipPath"] = str(result.zip_path or "")
+        _write_report_state(state_path, state)
+    return result
 
 
 def send_simple_test_email(
@@ -979,9 +1501,12 @@ def send_simple_test_email(
     zip_path = create_simple_test_image_zip(output, dpi=DEFAULT_DPI)
     manifest = {
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "reportDate": datetime.now().strftime("%Y-%m-%d"),
         "kind": "test",
         "scanned": 0,
         "validContainers": 0,
+        "projectIds": [],
+        "matadorUploaded": 0,
         "imageCount": 2,
     }
     return send_daily_report_email(
@@ -1014,7 +1539,7 @@ def run_keychain_setup_self_test(
     if not sys.stdin.isatty():
         return {"ok": False, "message": "interactive terminal required"}
 
-    _delete_macos_keychain_password(account=username, service=service)
+    _delete_stored_smtp_password(account=username, service=service)
     password = _interactive_keychain_password_setup(
         config=config,
         account=username,
@@ -1022,8 +1547,8 @@ def run_keychain_setup_self_test(
     )
     if not password:
         return {"ok": False, "message": "setup did not produce a password"}
-    loaded = _read_macos_keychain_password(account=username, service=service)
-    removed = _delete_macos_keychain_password(account=username, service=service)
+    loaded = _read_stored_smtp_password(account=username, service=service)
+    removed = _delete_stored_smtp_password(account=username, service=service)
     return {
         "ok": bool(loaded and loaded == password and removed),
         "account": username,

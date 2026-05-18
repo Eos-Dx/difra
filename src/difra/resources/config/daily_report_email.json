@@ -1,0 +1,12 @@
+{
+    "daily_report_email_enabled": true,
+    "daily_report_email_recipient": [
+        "sdenisov@matur.co.uk",
+        "smurokh@matur.co.uk"
+    ],
+    "daily_report_email_sender": "saldenisov@gmail.com",
+    "daily_report_smtp_host": "smtp.gmail.com",
+    "daily_report_smtp_port": 587,
+    "daily_report_smtp_tls": true,
+    "daily_report_smtp_username": "saldenisov@gmail.com"
+}
