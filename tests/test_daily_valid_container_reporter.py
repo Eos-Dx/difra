@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime, time
+import os
 from pathlib import Path
 import zipfile
 
@@ -29,6 +31,20 @@ def _create_container(path: Path) -> Path:
                 data=np.full((8, 8), value, dtype=float),
             )
     return path
+
+
+def _set_mtime(path: Path, value: datetime) -> None:
+    timestamp = value.timestamp()
+    os.utime(path, (timestamp, timestamp))
+
+
+def _patch_report_rendering(monkeypatch) -> None:
+    def _fake_integrate(data, poni_text, *, npt=400):
+        q = np.linspace(0.5, 24.0, 400)
+        return q, np.full_like(q, float(np.asarray(data).mean()))
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
 
 def test_create_simple_test_image_zip_contains_two_pngs(tmp_path):
@@ -468,6 +484,109 @@ def test_daily_report_state_keeps_watermark_after_failed_send(monkeypatch, tmp_p
     assert state["lastSuccessfulUntil"] == "2026-05-10T08:00:00"
     assert state["attempts"][-1]["sent"] is False
     assert state["attempts"][-1]["message"] == "daily report SMTP password not configured"
+
+
+def test_daily_report_for_date_sends_calendar_day_once(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    selected_day = date(2026, 5, 17)
+    selected = _create_container(archive / "selected_day.nxs.h5")
+    later = _create_container(archive / "later_day.nxs.h5")
+    _set_mtime(selected, datetime.combine(selected_day, time(hour=12)))
+    _set_mtime(later, datetime(2026, 5, 18, 12, 0, 0))
+    _patch_report_rendering(monkeypatch)
+    state_path = tmp_path / "report_state.json"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "measurements_archive_folder": str(archive),
+                "measurements_folder": str(tmp_path / "missing"),
+                "daily_report_state_path": str(state_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_manifests = []
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **kwargs: sent_manifests.append(kwargs["manifest"])
+        or {"sent": True, "skipped": False, "message": "sent"},
+    )
+
+    result = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=selected_day,
+        send_email=True,
+    )
+    repeat = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=selected_day,
+        send_email=True,
+    )
+    added = _create_container(archive / "selected_day_added.nxs.h5")
+    _set_mtime(added, datetime.combine(selected_day, time(hour=13)))
+    changed = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=selected_day,
+        send_email=True,
+        resend_if_changed=True,
+    )
+
+    state = reporter.json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.scanned == 1
+    assert result.manifest["reportDate"] == "2026-05-17"
+    assert result.period_start == "2026-05-17T00:00:00"
+    assert result.period_end == "2026-05-18T00:00:00"
+    assert sent_manifests[0] == result.manifest
+    assert state["sentDates"]["2026-05-17"]["sent"] is True
+    assert state["attempts"][-1]["reportDate"] == "2026-05-17"
+    assert repeat.email_result["skipped"] is True
+    assert repeat.email_result["message"] == "daily report for 2026-05-17 already sent"
+    assert changed.scanned == 2
+    assert changed.email_result["sent"] is True
+    assert len(sent_manifests) == 2
+    assert state["sentDates"]["2026-05-17"]["scanned"] == 2
+
+
+def test_daily_report_for_date_skips_empty_day(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    state_path = tmp_path / "report_state.json"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "measurements_archive_folder": str(archive),
+                "measurements_folder": str(tmp_path / "missing"),
+                "daily_report_state_path": str(state_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **_kwargs: {"sent": True, "skipped": False, "message": "sent"},
+    )
+
+    result = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date="2026-05-17",
+        send_email=True,
+    )
+
+    state = reporter.json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.scanned == 0
+    assert result.email_result["skipped"] is True
+    assert result.email_result["message"] == "no measured session containers for 2026-05-17"
+    assert "sentDates" not in state
+    assert state["attempts"][-1]["reportDate"] == "2026-05-17"
 
 
 def test_gui_email_password_setup_skips_when_password_exists(monkeypatch):

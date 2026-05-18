@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from email.message import EmailMessage
 import base64
 import getpass
@@ -729,6 +729,25 @@ def _parse_report_datetime(value: Any) -> Optional[datetime]:
         return None
 
 
+def _parse_report_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = _as_text(value, "")
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+def _report_date_key(value: Any) -> str:
+    parsed = _parse_report_date(value)
+    return parsed.isoformat() if parsed else _as_text(value, "")
+
+
 def _report_state_path(config: Optional[Dict[str, Any]], output_dir: Path) -> Path:
     configured = _as_text(
         _config_value(
@@ -765,6 +784,7 @@ def _append_report_attempt(
     email_result: Dict[str, Any],
     period_start: datetime,
     period_end: datetime,
+    report_date: Optional[str] = None,
 ) -> None:
     attempts = state.get("attempts")
     if not isinstance(attempts, list):
@@ -772,6 +792,7 @@ def _append_report_attempt(
     attempts.append(
         {
             "attemptedAt": datetime.now().isoformat(timespec="seconds"),
+            "reportDate": report_date or _as_text(manifest.get("reportDate"), ""),
             "periodStart": period_start.isoformat(timespec="seconds"),
             "periodEnd": period_end.isoformat(timespec="seconds"),
             "sent": bool(email_result.get("sent")),
@@ -788,15 +809,78 @@ def _append_report_attempt(
     state["attempts"] = attempts[-200:]
 
 
+def _is_report_date_sent(state: Dict[str, Any], report_date: str) -> bool:
+    entry = _sent_report_date_entry(state, report_date)
+    if isinstance(entry, dict):
+        return bool(entry.get("sent"))
+    return bool(entry)
+
+
+def _sent_report_date_entry(state: Dict[str, Any], report_date: str) -> Any:
+    sent_dates = state.get("sentDates")
+    if not isinstance(sent_dates, dict):
+        return None
+    return sent_dates.get(report_date)
+
+
+def _sent_report_date_matches_result(
+    state: Dict[str, Any],
+    *,
+    report_date: str,
+    result: "DailyReportResult",
+) -> bool:
+    entry = _sent_report_date_entry(state, report_date)
+    if not isinstance(entry, dict):
+        return False
+    return (
+        int(entry.get("scanned", -1)) == int(result.scanned)
+        and _as_text(entry.get("latestContainerMtime"), "")
+        == _as_text(result.manifest.get("latestContainerMtime"), "")
+    )
+
+
+def _mark_report_date_sent(
+    state: Dict[str, Any],
+    *,
+    report_date: str,
+    result: "DailyReportResult",
+    period_start: datetime,
+    period_end: datetime,
+) -> None:
+    sent_dates = state.get("sentDates")
+    if not isinstance(sent_dates, dict):
+        sent_dates = {}
+    sent_dates[report_date] = {
+        "sent": True,
+        "sentAt": datetime.now().isoformat(timespec="seconds"),
+        "periodStart": period_start.isoformat(timespec="seconds"),
+        "periodEnd": period_end.isoformat(timespec="seconds"),
+        "zipPath": str(result.zip_path or ""),
+        "scanned": int(result.scanned),
+        "validContainers": int(result.valid_containers),
+        "imageCount": len(result.images),
+        "latestContainerMtime": _as_text(
+            result.manifest.get("latestContainerMtime"), ""
+        ),
+    }
+    state["sentDates"] = sent_dates
+
+
 def _safe_token(value: str, fallback: str = "unknown") -> str:
     token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     token = "_".join(part for part in token.split("_") if part)
     return token or fallback
 
 
-def _candidate_containers(roots: Iterable[Path], *, since: Optional[datetime]) -> List[Path]:
+def _candidate_containers(
+    roots: Iterable[Path],
+    *,
+    since: Optional[datetime],
+    until: Optional[datetime] = None,
+) -> List[Path]:
     paths: List[Path] = []
     min_mtime = since.timestamp() if since is not None else None
+    max_mtime = until.timestamp() if until is not None else None
     for root in roots:
         folder = Path(root)
         if not folder.exists():
@@ -807,7 +891,10 @@ def _candidate_containers(roots: Iterable[Path], *, since: Optional[datetime]) -
                 continue
             if not (path.name.endswith(".nxs.h5") or path.name.endswith(".h5")):
                 continue
-            if min_mtime is not None and path.stat().st_mtime < min_mtime:
+            mtime = path.stat().st_mtime
+            if min_mtime is not None and mtime < min_mtime:
+                continue
+            if max_mtime is not None and mtime >= max_mtime:
                 continue
             paths.append(path)
     return sorted(set(paths))
@@ -1366,6 +1453,7 @@ def build_daily_report(
     output_dir: Path,
     since: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
+    report_date: Optional[str] = None,
     tracking_started_at: Optional[str] = None,
     send_email: bool = False,
     allow_interactive_setup: bool = False,
@@ -1377,11 +1465,20 @@ def build_daily_report(
         Path(cfg.get("measurements_archive_folder") or ""),
         Path(cfg.get("measurements_folder") or ""),
     ]
-    containers = _candidate_containers([root for root in roots if str(root)], since=since)
+    containers = _candidate_containers(
+        [root for root in roots if str(root)],
+        since=since,
+        until=period_end,
+    )
     result = DailyReportResult(scanned=len(containers))
     result.period_start = since.isoformat(timespec="seconds") if since else None
     result.period_end = period_end.isoformat(timespec="seconds")
     result.tracking_started_at = tracking_started_at
+    latest_container_mtime = None
+    if containers:
+        latest_container_mtime = datetime.fromtimestamp(
+            max(path.stat().st_mtime for path in containers)
+        ).isoformat(timespec="seconds")
     series, skipped, valid_count = collect_report_series(containers, points=DEFAULT_POINTS)
     summary = summarize_valid_containers(containers)
     result.skipped.extend(skipped)
@@ -1391,13 +1488,14 @@ def build_daily_report(
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
     manifest = {
         "generatedAt": generated_at.isoformat(timespec="seconds"),
-        "reportDate": generated_at.strftime("%Y-%m-%d"),
+        "reportDate": report_date or generated_at.strftime("%Y-%m-%d"),
         "since": since.isoformat(timespec="seconds") if since else None,
         "periodStart": since.isoformat(timespec="seconds") if since else None,
         "periodEnd": period_end.isoformat(timespec="seconds"),
         "trackingStartedAt": tracking_started_at,
         "scanned": result.scanned,
         "validContainers": result.valid_containers,
+        "latestContainerMtime": latest_container_mtime,
         "projectIds": summary.get("projectIds", []),
         "matadorUploaded": int(summary.get("matadorUploaded", 0) or 0),
         "imageCount": len(result.images),
@@ -1464,6 +1562,7 @@ def run_daily_report_from_config(
         output_dir=base,
         since=since,
         period_end=period_end,
+        report_date=period_end.strftime("%Y-%m-%d"),
         tracking_started_at=tracking_started_at,
         send_email=send_email,
         allow_interactive_setup=allow_interactive_setup,
@@ -1477,9 +1576,148 @@ def run_daily_report_from_config(
             email_result=result.email_result,
             period_start=since,
             period_end=period_end,
+            report_date=result.manifest.get("reportDate"),
         )
         if result.email_result.get("sent"):
+            report_date = _report_date_key(result.manifest.get("reportDate"))
+            if report_date:
+                _mark_report_date_sent(
+                    state,
+                    report_date=report_date,
+                    result=result,
+                    period_start=since,
+                    period_end=period_end,
+                )
             state["lastSuccessfulUntil"] = period_end.isoformat(timespec="seconds")
+            state["lastSuccessfulAt"] = datetime.now().isoformat(timespec="seconds")
+            state["lastSuccessfulZipPath"] = str(result.zip_path or "")
+        _write_report_state(state_path, state)
+    return result
+
+
+def run_daily_report_for_date_from_config(
+    *,
+    config_path: Optional[Path] = None,
+    config: Optional[Dict[str, Any]] = None,
+    output_dir: Optional[Path] = None,
+    report_date: Optional[Any] = None,
+    send_email: bool = True,
+    allow_interactive_setup: bool = False,
+    skip_if_sent: bool = True,
+    resend_if_changed: bool = False,
+    skip_if_no_containers: bool = True,
+) -> DailyReportResult:
+    loaded = load_report_config(config_path)
+    if config:
+        loaded.update(dict(config))
+    config = loaded
+    base = output_dir
+    if base is None:
+        base_folder = config.get("difra_base_folder") or Path.home() / "difra"
+        base = Path(base_folder) / "daily_reports"
+    base = Path(base)
+    day = _parse_report_date(report_date) or date.today()
+    day_key = day.isoformat()
+    period_start = datetime.combine(day, time.min)
+    period_end = period_start + timedelta(days=1)
+    state_path = _report_state_path(config, base)
+    state = _load_report_state(state_path) if send_email or skip_if_sent else {}
+    tracking_started_at = state.get("trackingStartedAt")
+    if not tracking_started_at:
+        state["trackingStartedAt"] = period_start.isoformat(timespec="seconds")
+        tracking_started_at = state["trackingStartedAt"]
+
+    date_already_sent = skip_if_sent and _is_report_date_sent(state, day_key)
+    if date_already_sent and not resend_if_changed:
+        result = DailyReportResult()
+        result.state_path = state_path
+        result.period_start = period_start.isoformat(timespec="seconds")
+        result.period_end = period_end.isoformat(timespec="seconds")
+        result.tracking_started_at = tracking_started_at
+        result.manifest = {
+            "reportDate": day_key,
+            "periodStart": result.period_start,
+            "periodEnd": result.period_end,
+            "trackingStartedAt": tracking_started_at,
+            "scanned": 0,
+            "validContainers": 0,
+            "projectIds": [],
+            "matadorUploaded": 0,
+            "imageCount": 0,
+            "skipped": [],
+        }
+        result.email_result = {
+            "sent": False,
+            "skipped": True,
+            "message": f"daily report for {day_key} already sent",
+        }
+        return result
+
+    result = build_daily_report(
+        config=config,
+        output_dir=base,
+        since=period_start,
+        period_end=period_end,
+        report_date=day_key,
+        tracking_started_at=tracking_started_at,
+        send_email=False,
+        allow_interactive_setup=allow_interactive_setup,
+    )
+    result.state_path = state_path if send_email else None
+
+    if date_already_sent and _sent_report_date_matches_result(
+        state,
+        report_date=day_key,
+        result=result,
+    ):
+        result.email_result = {
+            "sent": False,
+            "skipped": True,
+            "message": f"daily report for {day_key} already sent",
+        }
+        return result
+
+    if send_email:
+        if skip_if_no_containers and result.scanned <= 0:
+            result.email_result = {
+                "sent": False,
+                "skipped": True,
+                "message": f"no measured session containers for {day_key}",
+            }
+        else:
+            try:
+                result.email_result = send_daily_report_email(
+                    config=config,
+                    zip_path=result.zip_path,
+                    manifest=result.manifest,
+                    allow_interactive_setup=allow_interactive_setup,
+                )
+            except Exception as exc:
+                result.email_result = {
+                    "sent": False,
+                    "skipped": False,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+        _append_report_attempt(
+            state,
+            result=result,
+            manifest=result.manifest,
+            email_result=result.email_result,
+            period_start=period_start,
+            period_end=period_end,
+            report_date=day_key,
+        )
+        if result.email_result.get("sent"):
+            _mark_report_date_sent(
+                state,
+                report_date=day_key,
+                result=result,
+                period_start=period_start,
+                period_end=period_end,
+            )
+            last_successful = _parse_report_datetime(state.get("lastSuccessfulUntil"))
+            if last_successful is None or period_end > last_successful:
+                state["lastSuccessfulUntil"] = period_end.isoformat(timespec="seconds")
             state["lastSuccessfulAt"] = datetime.now().isoformat(timespec="seconds")
             state["lastSuccessfulZipPath"] = str(result.zip_path or "")
         _write_report_state(state_path, state)

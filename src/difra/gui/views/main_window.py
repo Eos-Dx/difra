@@ -24,6 +24,10 @@ from difra.gui.main_window_ext.technical_measurements import (
 )
 from difra.gui.main_window_ext.zone_measurements import ZoneMeasurementsMixin
 from difra.gui.main_window_ext.zone_points_extension import ZonePointsMixin
+from difra.gui.daily_report_app_scheduler import (
+    start_previous_day_report_on_startup,
+    start_today_report_on_shutdown,
+)
 from difra.gui.views.image_view import ImageView
 from difra.gui.views.main_window_basic import MainWindowBasic
 from difra.hardware.hardware_control import HardwareController
@@ -217,7 +221,19 @@ class MainWindow(
             logger.debug("Initializing SessionManager...")
             self.init_session_manager()
             logger.debug("SessionManager initialized")
+            self._daily_report_startup_thread = start_previous_day_report_on_startup(
+                self.config
+            )
             
         except Exception as e:
             logger.error(f"Error in setup_main_layout: {e}", exc_info=True)
             raise
+
+    def closeEvent(self, event):
+        try:
+            self._daily_report_shutdown_thread = start_today_report_on_shutdown(
+                self.config
+            )
+        except Exception as e:
+            logger.warning("Failed to start shutdown daily report: %s", e, exc_info=True)
+        super().closeEvent(event)
