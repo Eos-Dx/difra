@@ -74,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
         "validContainers": result.valid_containers,
         "imageCount": len(result.images),
         "zipPath": str(result.zip_path or ""),
+        "statePath": str(result.state_path or ""),
+        "periodStart": result.period_start,
+        "periodEnd": result.period_end,
+        "trackingStartedAt": result.tracking_started_at,
         "email": result.email_result,
         "skippedCount": len(result.skipped),
     }

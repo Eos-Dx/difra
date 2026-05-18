@@ -387,6 +387,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         if dialog.exec_() == QDialog.Accepted:
             operator_id = dialog.get_selected_operator_id()
             logger.info(f"Operator selected: {operator_id}")
+            self._ensure_daily_report_email_password_after_operator_selection()
         else:
             # User cancelled - use default or show warning
             logger.warning("Operator selection cancelled")
@@ -396,6 +397,34 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 "No operator selected. Using default operator.\n\n"
                 "You can change this later from File → Operator Settings...",
             )
+
+    def _ensure_daily_report_email_password_after_operator_selection(self):
+        try:
+            from difra.gui.daily_valid_container_reporter import (
+                ensure_daily_report_email_password_configured_gui,
+            )
+
+            result = ensure_daily_report_email_password_configured_gui(
+                parent=self,
+                config=self.config if hasattr(self, "config") else None,
+            )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Daily report email password setup failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return
+
+        if result.get("ok"):
+            logger.info("Daily report email password setup: %s", result.get("message"))
+            return
+
+        logger.info("Daily report email password setup cancelled: %s", result.get("message"))
+        if result.get("required"):
+            raise SystemExit(0)
 
     def _active_session_container_information(self) -> dict:
         """Read editable metadata from the active session container."""
