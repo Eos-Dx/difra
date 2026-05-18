@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
+import hmac
 import shutil
 import logging
 from pathlib import Path
@@ -38,7 +40,14 @@ from difra.gui.technical.analysis_compat import (
     initialize_azimuthal_integrator_poni_text,
 )
 logger = logging.getLogger(__name__)
-_PONI_RANGE_EDIT_PASSWORD = "Ulster2026_REDACTED"
+_PONI_RANGE_EDIT_PASSWORD_HASH = (
+    "64ae5ac9f98ac4a2bb67a66cc913909022d4d0bb7d673fcf76d1999c33debd93"
+)
+
+
+def _verify_poni_range_edit_password(password: str) -> bool:
+    provided = hashlib.sha256(str(password or "").encode("utf-8")).hexdigest()
+    return hmac.compare_digest(provided, _PONI_RANGE_EDIT_PASSWORD_HASH)
 
 
 def _dsc_candidates(path: Path):
@@ -1123,7 +1132,7 @@ def show_poni_centers_preview_window(
         )
         if not ok:
             return
-        if str(password) != _PONI_RANGE_EDIT_PASSWORD:
+        if not _verify_poni_range_edit_password(str(password or "")):
             QMessageBox.warning(dialog, "Wrong Password", "Password is incorrect.")
             return
         for alias_key, patch in list(zone_patches.items()):

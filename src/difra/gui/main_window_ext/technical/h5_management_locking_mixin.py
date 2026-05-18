@@ -1,5 +1,8 @@
 """Technical H5 validation/locking responsibilities."""
 
+import hashlib
+import hmac
+
 from . import h5_management_mixin as _module
 from .poni_center_validation import (
     normalize_alias_mapping_to_rule_aliases,
@@ -24,7 +27,9 @@ from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 
 class H5ManagementLockingMixin:
-    PONI_OVERRIDE_PASSWORD = "Ulster2026_REDACTED"
+    PONI_OVERRIDE_PASSWORD_HASH = (
+        "64ae5ac9f98ac4a2bb67a66cc913909022d4d0bb7d673fcf76d1999c33debd93"
+    )
     CONTAINER_STATE_ATTR = "container_state"
     CONTAINER_STATE_REASON_ATTR = "container_state_reason"
     CONTAINER_STATE_UPDATED_ATTR = "container_state_updated_at"
@@ -812,7 +817,8 @@ class H5ManagementLockingMixin:
                 f"PONI override cancelled for {container_id}"
             )
             return False
-        if str(password) != self.PONI_OVERRIDE_PASSWORD:
+        provided = hashlib.sha256(str(password or "").encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(provided, self.PONI_OVERRIDE_PASSWORD_HASH):
             QMessageBox.warning(
                 self,
                 "Wrong Password",

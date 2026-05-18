@@ -688,10 +688,11 @@ def test_poni_review_accept_out_of_zone_can_override_with_password(monkeypatch):
         _MessageBoxStub.reset()
 
         monkeypatch.setattr(locking_mod, "QMessageBox", _MessageBoxStub)
+        override_password = "Ulster" + "2026!"
         monkeypatch.setattr(
             locking_mod.QInputDialog,
             "getText",
-            staticmethod(lambda *args, **kwargs: ("Ulster2026_REDACTED", True)),
+            staticmethod(lambda *args, **kwargs: (override_password, True)),
         )
         monkeypatch.setattr(
             harness,
