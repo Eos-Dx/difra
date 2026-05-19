@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QVBoxLayout,
 )
 
@@ -1237,6 +1238,7 @@ def show_auto_poni_review_window(
         parse_poni_parameters,
         pixel_size_m,
         refine_poni_from_clicked_ring_points,
+        refine_poni_from_points_by_ring,
         ring_two_theta_rad,
         write_agbh_clicked_points_npt,
         write_agbh_points_by_ring_npt,
@@ -1911,6 +1913,31 @@ def show_auto_poni_review_window(
             points_by_ring[int(manual_ring_index)] = deduped
         return points_by_ring
 
+    def _refine_review_from_auto_points(alias: str, review, auto_entries):
+        points_by_ring = _points_by_ring(auto_entries)
+        if not points_by_ring:
+            return review, False
+        ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
+        try:
+            poni_text = refine_poni_from_points_by_ring(
+                poni_text=str(getattr(review, "poni_text", "") or ""),
+                detector_config=detector_state_by_alias.get(alias, {}),
+                points_by_ring=points_by_ring,
+                preferred_ring_index=ring_index,
+                alias=alias,
+            )
+        except Exception as exc:
+            logger.debug("Auto PONI preview refit failed for %s: %s", alias, exc, exc_info=True)
+            return review, False
+        if poni_text == str(getattr(review, "poni_text", "") or ""):
+            return review, False
+        updated = _review_with_poni_text(alias, review, poni_text)
+        review_state_by_alias[alias] = updated
+        review_by_alias[alias] = updated
+        review_by_alias[str(alias).upper()] = updated
+        base_review_by_alias[alias] = updated
+        return updated, True
+
     def _finalize_review_geometry(alias: str, review, *, redraw_integrations: bool = True):
         points = manual_points_by_alias.get(alias) or []
         ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
@@ -1998,8 +2025,13 @@ def show_auto_poni_review_window(
     for alias in aliases:
         review = review_state_by_alias.get(alias)
         if review is not None:
-            auto_points_by_alias[alias] = _auto_points_for_review(alias, review)
-            _draw_ring_overlays(alias)
+            auto_entries = _auto_points_for_review(alias, review)
+            auto_points_by_alias[alias] = auto_entries
+            refined_review, refined = _refine_review_from_auto_points(alias, review, auto_entries)
+            if refined:
+                _finalize_review_geometry(alias, refined_review, redraw_integrations=False)
+            else:
+                _draw_ring_overlays(alias)
 
     def _apply_center_hint(alias: str, col: float, row: float):
         review = review_state_by_alias.get(alias)
@@ -2397,8 +2429,16 @@ def show_auto_poni_review_window(
     fixed_rotations_check.toggled.connect(_set_rotation_constraint)
     layout.addWidget(fixed_rotations_check)
 
+    delete_row = QHBoxLayout()
+    delete_row.addWidget(QLabel("Delete last clicked point:", dialog))
+    for alias in aliases:
+        delete_alias_btn = QPushButton(f"{alias}: Delete last point", dialog)
+        delete_alias_btn.setToolTip(f"Delete last manually clicked point on {alias}")
+        delete_alias_btn.clicked.connect(lambda _checked=False, a=alias: _delete_last_point(a))
+        delete_row.addWidget(delete_alias_btn)
+    layout.addLayout(delete_row)
+
     buttons = QDialogButtonBox(dialog)
-    delete_btn = buttons.addButton("Delete last point", QDialogButtonBox.ActionRole)
     integrate_btn = buttons.addButton("Compute integrations", QDialogButtonBox.ActionRole)
     validate_btn = buttons.addButton("Validate", QDialogButtonBox.AcceptRole)
     correct_btn = buttons.addButton("Correct", QDialogButtonBox.ActionRole)
@@ -2415,7 +2455,6 @@ def show_auto_poni_review_window(
         dialog.accept()
 
     validate_btn.clicked.connect(_validate)
-    delete_btn.clicked.connect(lambda: _delete_last_point())
     integrate_btn.clicked.connect(_draw_all_integrations)
     correct_btn.clicked.connect(_correct)
     cancel_btn.clicked.connect(dialog.reject)

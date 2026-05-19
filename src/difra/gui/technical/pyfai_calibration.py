@@ -776,6 +776,36 @@ def refine_poni_from_clicked_ring_points(
     )
 
 
+def refine_poni_from_points_by_ring(
+    *,
+    poni_text: str,
+    detector_config: Mapping | None,
+    points_by_ring: Mapping[int, Sequence[tuple[float, float]]],
+    preferred_ring_index: int | None = None,
+    alias: str = "",
+) -> str:
+    candidates: list[int] = []
+    if preferred_ring_index is not None:
+        candidates.append(int(preferred_ring_index))
+    candidates.extend(sorted(int(ring) for ring in points_by_ring.keys()))
+    seen = set()
+    for ring_index in candidates:
+        if ring_index in seen:
+            continue
+        seen.add(ring_index)
+        points = list(points_by_ring.get(ring_index, []) or [])
+        if len(points) < 3:
+            continue
+        return refine_poni_from_clicked_ring_points(
+            poni_text=poni_text,
+            detector_config=detector_config,
+            ring_index=ring_index,
+            points_col_row=points,
+            alias=alias,
+        )
+    raise ValueError("At least 3 points on one ring are required")
+
+
 def run_headless_agbh_fit(
     *,
     source_image: str | Path,

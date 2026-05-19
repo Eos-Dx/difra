@@ -15,6 +15,7 @@ from difra.gui.technical.pyfai_calibration import (
     prepare_agbh_calib2_review,
     pyfai_detector_name,
     refine_poni_from_clicked_ring_points,
+    refine_poni_from_points_by_ring,
     write_agbh_control_points_npt,
     write_agbh_clicked_points_npt,
     write_agbh_points_by_ring_npt,
@@ -315,6 +316,36 @@ def test_clicked_ring_points_write_npt_and_refine_poni(tmp_path):
     assert abs(parsed["Poni1"] - 0.0064) < 1e-9
     assert abs(parsed["Poni2"] - 0.0005) < 1e-9
     assert parsed["Distance"] > 0.0
+
+
+def test_refine_poni_from_points_by_ring_prefers_first_visible_ring():
+    detector_config = {
+        "size": {"width": 256, "height": 256},
+        "pixel_size_um": [50, 50],
+    }
+    poni = build_seed_poni_text(
+        detector_config=detector_config,
+        distance_m=0.02,
+        alias="PRIMARY",
+        wavelength_m=energy_kev_to_wavelength_m(8.04),
+        center_px=(128.0, 10.0),
+        created_at="now",
+    )
+
+    refined = refine_poni_from_points_by_ring(
+        poni_text=poni,
+        detector_config=detector_config,
+        preferred_ring_index=2,
+        points_by_ring={
+            1: [(1.0, 1.0), (2.0, 2.0)],
+            2: [(10.0, 64.0), (74.0, 128.0), (10.0, 192.0), (-54.0, 128.0)],
+        },
+        alias="PRIMARY",
+    )
+    parsed = parse_poni_parameters(refined)
+
+    assert abs(parsed["Poni1"] - 0.0064) < 1e-9
+    assert abs(parsed["Poni2"] - 0.0005) < 1e-9
 
 
 def test_points_by_ring_npt_writes_auto_points_for_multiple_rings(tmp_path):
