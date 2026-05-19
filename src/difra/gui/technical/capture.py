@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
@@ -1237,7 +1238,6 @@ def show_auto_poni_review_window(
         build_seed_poni_text,
         parse_poni_parameters,
         pixel_size_m,
-        refine_poni_from_clicked_ring_points,
         refine_poni_from_points_by_ring,
         ring_two_theta_rad,
         write_agbh_clicked_points_npt,
@@ -1411,6 +1411,10 @@ def show_auto_poni_review_window(
     manual_points_by_alias = {}
     manual_artists_by_alias = {}
     auto_points_by_alias = {}
+    selected_ring_by_alias = {}
+    ring_spin_by_alias = {}
+    ring_label_by_alias = {}
+    fit_label_by_alias = {}
     review_state_by_alias = {}
     base_review_by_alias = {}
     top_axes_by_alias = {}
@@ -1424,6 +1428,58 @@ def show_auto_poni_review_window(
     rotation_constraints = {"fixed": True}
     drag_state = {"alias": None, "index": None, "artist": None}
     profile_drag_state = {"alias": None, "x0": None, "x": None, "artists": []}
+
+    def _ring_color(ring_index: int) -> str:
+        palette = (
+            "#35d0ff",
+            "#f9f871",
+            "#ff8f4f",
+            "#b48cff",
+            "#6ee7a8",
+            "#ff6fae",
+        )
+        return palette[(max(1, int(ring_index)) - 1) % len(palette)]
+
+    def _set_selected_ring(alias: str, ring_index: int, *, update_spin: bool = True):
+        ring_index = min(len(AGBH_D_SPACING_A), max(1, int(ring_index or 1)))
+        previous = selected_ring_by_alias.get(alias)
+        selected_ring_by_alias[alias] = ring_index
+        label = ring_label_by_alias.get(alias)
+        if label is not None:
+            label.setText(f"{alias}: selected ring {ring_index}")
+        spin = ring_spin_by_alias.get(alias)
+        if update_spin and spin is not None and int(spin.value()) != ring_index:
+            blocked = spin.blockSignals(True)
+            spin.setValue(ring_index)
+            spin.blockSignals(blocked)
+        return previous != ring_index
+
+    def _selected_ring(alias: str) -> int:
+        return int(
+            selected_ring_by_alias.get(
+                alias,
+                first_ring_by_alias.get(alias, 1),
+            )
+            or 1
+        )
+
+    def _manual_point_coords(entry):
+        if isinstance(entry, dict):
+            return float(entry.get("col", 0.0)), float(entry.get("row", 0.0))
+        col, row = entry
+        return float(col), float(row)
+
+    def _manual_point_ring(entry, fallback: int = 1) -> int:
+        if isinstance(entry, dict):
+            return int(entry.get("ring_index", fallback) or fallback)
+        return int(fallback or 1)
+
+    def _manual_points_for_ring(entries, ring_index: int):
+        return [
+            _manual_point_coords(entry)
+            for entry in entries or []
+            if _manual_point_ring(entry, ring_index) == int(ring_index)
+        ]
 
     def _center_marker_payload(alias: str):
         review = review_state_by_alias.get(alias)
@@ -1461,6 +1517,13 @@ def show_auto_poni_review_window(
             ),
         }
 
+    def _update_fit_label(alias: str):
+        label = fit_label_by_alias.get(alias)
+        if label is None:
+            return
+        payload = _center_marker_payload(alias)
+        label.setText(f"{alias}: {payload['text'] if payload else 'fit parameters unavailable'}")
+
     def _draw_center_marker(alias: str):
         ax = top_axes_by_alias.get(alias)
         if ax is None:
@@ -1479,19 +1542,8 @@ def show_auto_poni_review_window(
             linestyle="None",
             zorder=8,
         )[0]
-        label = ax.text(
-            0.98,
-            0.98,
-            str(payload["text"]),
-            transform=ax.transAxes,
-            va="top",
-            ha="right",
-            fontsize=8.2,
-            color="#ff2a2a",
-            bbox=dict(facecolor=(0, 0, 0, 0.58), edgecolor="#ff2a2a", linewidth=0.7),
-            zorder=9,
-        )
-        overlay_artists_by_alias.setdefault(alias, []).extend([marker, label])
+        overlay_artists_by_alias.setdefault(alias, []).append(marker)
+        _update_fit_label(alias)
 
     def _expanded_image_view(alias: str, width: float, height: float):
         margin = max(8.0, min(float(width), float(height)) * 0.05)
@@ -1611,6 +1663,39 @@ def show_auto_poni_review_window(
         _draw_auto_points(alias)
         _ensure_center_visible(alias)
         _draw_center_marker(alias)
+
+    def _nearest_ring_index(alias: str, col: float, row: float):
+        review = review_state_by_alias.get(alias)
+        if review is None:
+            return None
+        overlays = build_agbh_ring_overlays(
+            poni_text=str(getattr(review, "poni_text", "") or ""),
+            detector_config=detector_state_by_alias.get(alias, {}),
+            first_visible_ring=int(first_ring_by_alias.get(alias, 1) or 1),
+            rings_to_show=_rings_to_show_for_alias(alias),
+        )
+        if not overlays:
+            return None
+        import math
+
+        best_ring = None
+        best_delta = None
+        for overlay in overlays:
+            radius = float(overlay["radius_px"])
+            distance = math.hypot(
+                float(col) - float(overlay["center_col_px"]),
+                float(row) - float(overlay["center_row_px"]),
+            )
+            delta = abs(distance - radius)
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_ring = int(overlay["ring_index"])
+        if best_ring is None or best_delta is None:
+            return None
+        tolerance = max(8.0, float(np.nanmax([overlay["radius_px"] for overlay in overlays])) * 0.035)
+        if best_delta > tolerance:
+            return None
+        return best_ring
 
     def _draw_integrations(alias: str):
         cake_ax = cake_axes_by_alias.get(alias)
@@ -1739,6 +1824,7 @@ def show_auto_poni_review_window(
         image_data_by_alias[alias] = data
         detector_state_by_alias[alias] = detector_config
         first_ring_by_alias[alias] = first_ring
+        selected_ring_by_alias[alias] = first_ring
         manual_points_by_alias[alias] = []
         manual_artists_by_alias[alias] = []
         auto_points_by_alias[alias] = []
@@ -1894,14 +1980,17 @@ def show_auto_poni_review_window(
                 result.append({"ring_index": ring_index, "points": points})
         return result
 
-    def _points_by_ring(entries, *, manual_ring_index: int | None = None, manual_points=None):
+    def _points_by_ring(entries, *, manual_entries=None):
         points_by_ring = {}
         for entry in entries:
             points = list(entry.get("points", []) or [])
             if points:
                 points_by_ring[int(entry.get("ring_index"))] = points
-        if manual_ring_index is not None and manual_points:
-            ring_points = list(manual_points) + list(points_by_ring.get(int(manual_ring_index), []))
+        for manual_entry in manual_entries or []:
+            ring_index = _manual_point_ring(manual_entry, 1)
+            col, row = _manual_point_coords(manual_entry)
+            points_by_ring.setdefault(ring_index, []).insert(0, (col, row))
+        for ring_index, ring_points in list(points_by_ring.items()):
             deduped = []
             seen = set()
             for col, row in ring_points:
@@ -1910,7 +1999,7 @@ def show_auto_poni_review_window(
                     continue
                 seen.add(key)
                 deduped.append((float(col), float(row)))
-            points_by_ring[int(manual_ring_index)] = deduped
+            points_by_ring[int(ring_index)] = deduped
         return points_by_ring
 
     def _refine_review_from_auto_points(alias: str, review, auto_entries):
@@ -1940,15 +2029,14 @@ def show_auto_poni_review_window(
 
     def _finalize_review_geometry(alias: str, review, *, redraw_integrations: bool = True):
         points = manual_points_by_alias.get(alias) or []
-        ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
+        ring_index = _selected_ring(alias)
         output_dir = Path(getattr(review, "poni_path", "") or ".").parent
         npt_path = output_dir / f"{_alias_file_token(alias)}.npt"
         auto_entries = _auto_points_for_review(alias, review)
         auto_points_by_alias[alias] = auto_entries
         auto_points = _points_by_ring(
             auto_entries,
-            manual_ring_index=ring_index,
-            manual_points=points,
+            manual_entries=points,
         )
         if auto_points:
             write_agbh_points_by_ring_npt(
@@ -1962,7 +2050,7 @@ def show_auto_poni_review_window(
                 poni_text=str(getattr(review, "poni_text", "") or ""),
                 output_path=npt_path,
                 ring_index=ring_index,
-                points_col_row=points,
+                points_col_row=_manual_points_for_ring(points, ring_index),
                 calibrant="AgBh",
             )
         command = build_pyfai_calib2_command(
@@ -1993,9 +2081,16 @@ def show_auto_poni_review_window(
         review = review_state_by_alias.get(alias)
         if review is None:
             return None, False
-        ring_index = int(first_ring_by_alias.get(alias, 1) or 1)
+        ring_index = _selected_ring(alias)
         refit = False
-        if len(points) < 3:
+        manual_by_ring = _points_by_ring([], manual_entries=points)
+        preferred_points = _manual_points_for_ring(points, ring_index)
+        refit_points_by_ring = {
+            ring: ring_points
+            for ring, ring_points in manual_by_ring.items()
+            if len(ring_points) >= 3
+        }
+        if not refit_points_by_ring:
             base_review = base_review_by_alias.get(alias)
             if base_review is not None:
                 review = base_review
@@ -2006,17 +2101,22 @@ def show_auto_poni_review_window(
                 npt_path = _finalize_review_geometry(alias, review)
                 return npt_path, False
         else:
-            poni_text = refine_poni_from_clicked_ring_points(
+            poni_text = refine_poni_from_points_by_ring(
                 poni_text=str(getattr(review, "poni_text", "") or ""),
                 detector_config=detector_state_by_alias.get(alias, {}),
-                ring_index=ring_index,
-                points_col_row=points,
+                points_by_ring=refit_points_by_ring,
+                preferred_ring_index=ring_index,
                 alias=alias,
             )
             review = _review_with_poni_text(alias, review, poni_text)
             refit = True
         if points and not refit:
-            hinted_poni_text = _poni_text_with_manual_hint(alias, review, points, ring_index)
+            hinted_poni_text = _poni_text_with_manual_hint(
+                alias,
+                review,
+                preferred_points,
+                ring_index,
+            )
             if hinted_poni_text != str(getattr(review, "poni_text", "") or ""):
                 review = _review_with_poni_text(alias, review, hinted_poni_text)
         npt_path = _finalize_review_geometry(alias, review)
@@ -2137,7 +2237,8 @@ def show_auto_poni_review_window(
         event_xy = np.asarray([float(event.x), float(event.y)])
         best = None
         best_distance = None
-        for index, (col, row) in enumerate(points):
+        for index, entry in enumerate(points):
+            col, row = _manual_point_coords(entry)
             point_xy = np.asarray(ax.transData.transform((col, row)), dtype=float)
             distance = float(np.linalg.norm(point_xy - event_xy))
             if best_distance is None or distance < best_distance:
@@ -2157,7 +2258,8 @@ def show_auto_poni_review_window(
         point_index = len(points) - 1 if index is None else int(index)
         if point_index < 0 or point_index >= len(points):
             return
-        points.pop(point_index)
+        removed = points.pop(point_index)
+        removed_ring = _manual_point_ring(removed, _selected_ring(target_alias))
         if point_index < len(artists):
             artist = artists.pop(point_index)
             try:
@@ -2171,8 +2273,8 @@ def show_auto_poni_review_window(
             canvas.draw_idle()
             return
         _set_status(
-            f"{target_alias}: deleted point {point_index + 1}; {len(points)} clicked points on ring "
-            f"{first_ring_by_alias.get(target_alias, 1)}"
+            f"{target_alias}: deleted point {point_index + 1} from ring {removed_ring}; "
+            f"{len(points)} clicked points"
             + ("; refit" if refit else "; integrations recomputed" if points else "")
             + (f"; saved {npt_path}" if npt_path else "")
         )
@@ -2231,11 +2333,17 @@ def show_auto_poni_review_window(
             drag_state["artist"] = (
                 artists[point_index] if point_index < len(artists) else None
             )
-            _set_status(f"{alias}: dragging point {point_index + 1}")
+            ring_index = _manual_point_ring(points[point_index], _selected_ring(alias))
+            _set_status(f"{alias}: dragging point {point_index + 1} on ring {ring_index}")
             return
 
         col, row = float(event.xdata), float(event.ydata)
-        points.append((col, row))
+        hover_ring = _nearest_ring_index(alias, col, row)
+        if hover_ring is not None:
+            _set_selected_ring(alias, hover_ring)
+        ring_index = _selected_ring(alias)
+        points.append({"col": col, "row": row, "ring_index": ring_index})
+        color = _ring_color(ring_index)
         artist = event.inaxes.plot(
             [col],
             [row],
@@ -2243,7 +2351,7 @@ def show_auto_poni_review_window(
             markersize=6,
             markeredgewidth=1.0,
             markerfacecolor="none",
-            color="#ffffff",
+            color=color,
             linestyle="None",
         )[0]
         artists.append(artist)
@@ -2255,7 +2363,7 @@ def show_auto_poni_review_window(
             return
         _set_status(
             f"{alias}: added point ({col:.1f}, {row:.1f}) on ring "
-            f"{first_ring_by_alias.get(alias, 1)}; total {len(points)}"
+            f"{ring_index}; total {len(points)}"
             + ("; refit" if refit else "; integrations recomputed")
             + (f"; saved {npt_path}" if npt_path else "")
         )
@@ -2280,7 +2388,17 @@ def show_auto_poni_review_window(
         alias = drag_state.get("alias")
         index = drag_state.get("index")
         artist = drag_state.get("artist")
-        if alias is None or index is None or artist is None:
+        if alias is None or index is None:
+            hover_alias = axis_to_alias.get(event.inaxes)
+            if hover_alias and event.xdata is not None and event.ydata is not None:
+                ring_index = _nearest_ring_index(
+                    hover_alias,
+                    float(event.xdata),
+                    float(event.ydata),
+                )
+                if ring_index is not None and _set_selected_ring(hover_alias, ring_index):
+                    _set_status(f"{hover_alias}: selected ring {ring_index}")
+                    canvas.draw_idle()
             return
         if event.inaxes is not top_axes_by_alias.get(alias):
             return
@@ -2290,9 +2408,19 @@ def show_auto_poni_review_window(
         if int(index) >= len(points):
             return
         col, row = float(event.xdata), float(event.ydata)
-        points[int(index)] = (col, row)
-        artist.set_data([col], [row])
-        _set_status(f"{alias}: moving point {int(index) + 1} to ({col:.1f}, {row:.1f})")
+        entry = points[int(index)]
+        ring_index = _manual_point_ring(entry, _selected_ring(alias))
+        if isinstance(entry, dict):
+            entry["col"] = col
+            entry["row"] = row
+        else:
+            points[int(index)] = {"col": col, "row": row, "ring_index": ring_index}
+        if artist is not None:
+            artist.set_data([col], [row])
+        _set_status(
+            f"{alias}: moving point {int(index) + 1} on ring {ring_index} "
+            f"to ({col:.1f}, {row:.1f})"
+        )
         canvas.draw_idle()
 
     def _on_release(event):
@@ -2331,8 +2459,12 @@ def show_auto_poni_review_window(
             canvas.draw_idle()
             return
         points = manual_points_by_alias.get(str(alias)) or []
+        ring_index = _selected_ring(str(alias))
+        if int(index) < len(points):
+            ring_index = _manual_point_ring(points[int(index)], ring_index)
         _set_status(
-            f"{alias}: moved point {int(index) + 1}; {len(points)} clicked points"
+            f"{alias}: moved point {int(index) + 1} on ring {ring_index}; "
+            f"{len(points)} clicked points"
             + ("; refit" if refit else "; integrations recomputed")
             + (f"; saved {npt_path}" if npt_path else "")
         )
@@ -2393,12 +2525,44 @@ def show_auto_poni_review_window(
     dialog.setModal(True)
     layout = QVBoxLayout(dialog)
     layout.addWidget(canvas)
+
+    fit_row = QHBoxLayout()
+    fit_row.addWidget(QLabel("Fit parameters:", dialog))
+    for alias in aliases:
+        fit_label = QLabel(f"{alias}: fit parameters unavailable", dialog)
+        fit_label.setWordWrap(True)
+        fit_label.setStyleSheet("color: #b00020;")
+        fit_label_by_alias[alias] = fit_label
+        fit_row.addWidget(fit_label)
+        _update_fit_label(alias)
+    layout.addLayout(fit_row)
+
+    ring_row = QHBoxLayout()
+    ring_row.addWidget(QLabel("Manual point ring:", dialog))
+    for alias in aliases:
+        ring_label = QLabel(dialog)
+        ring_label_by_alias[alias] = ring_label
+        ring_row.addWidget(ring_label)
+        ring_spin = QSpinBox(dialog)
+        ring_spin.setMinimum(1)
+        ring_spin.setMaximum(len(AGBH_D_SPACING_A))
+        ring_spin.setValue(_selected_ring(alias))
+        ring_spin.setToolTip(f"Ring number assigned to new manual points on {alias}")
+        ring_spin.valueChanged.connect(
+            lambda value, a=alias: _set_selected_ring(a, int(value), update_spin=False)
+        )
+        ring_spin_by_alias[alias] = ring_spin
+        ring_row.addWidget(ring_spin)
+        _set_selected_ring(alias, _selected_ring(alias))
+    layout.addLayout(ring_row)
+
     note = QLabel(dialog)
     note.setWordWrap(True)
     note.setText(
         "Validate saves generated PONI files and updates the active technical container. "
         "Correct opens pyFAI-calib2 for manual refinement. "
-        "Left-click an AgBh image to add a point on the selected first ring; drag points to move them. "
+        "Move over an AgBh ring or set the ring number control, then left-click to add a point on that ring. "
+        "Drag points to move them. "
         "Right-click a point to delete it; right-click empty image space to set a center hint. "
         "Drag the first-ring vertical line in cake/radial plots, then release to shift the first-ring radius. "
         "Use mouse wheel to zoom around cursor; double-click to reset zoom."
