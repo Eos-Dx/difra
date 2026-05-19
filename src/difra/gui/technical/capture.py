@@ -1399,9 +1399,16 @@ def show_auto_poni_review_window(
         local_row, local_col = np.unravel_index(int(np.argmax(safe)), safe.shape)
         return float(x0 + local_col), float(y0 + local_row)
 
-    fig = Figure(figsize=(5.2 * cols, 10.8))
+    fig = Figure(figsize=(5.6 * cols, 11.2))
     canvas = FigureCanvas(fig)
-    axes = fig.subplots(3, cols, squeeze=False)
+    axes = fig.subplots(
+        3,
+        cols,
+        squeeze=False,
+        gridspec_kw={"height_ratios": [1.85, 1.0, 1.0]},
+    )
+    heatmap_min_px = int((6.0 / 2.54) * max(72, canvas.logicalDpiY()))
+    canvas.setMinimumHeight(max(canvas.minimumHeight(), int(heatmap_min_px * 2.1)))
     if cols == 1:
         axes = np.asarray(axes).reshape(3, 1)
     axis_to_alias = {}
@@ -1412,6 +1419,7 @@ def show_auto_poni_review_window(
     manual_artists_by_alias = {}
     auto_points_by_alias = {}
     selected_ring_by_alias = {}
+    hover_ring_by_alias = {}
     ring_spin_by_alias = {}
     ring_label_by_alias = {}
     fit_label_by_alias = {}
@@ -1444,15 +1452,33 @@ def show_auto_poni_review_window(
         ring_index = min(len(AGBH_D_SPACING_A), max(1, int(ring_index or 1)))
         previous = selected_ring_by_alias.get(alias)
         selected_ring_by_alias[alias] = ring_index
-        label = ring_label_by_alias.get(alias)
-        if label is not None:
-            label.setText(f"{alias}: selected ring {ring_index}")
+        _update_ring_label(alias)
         spin = ring_spin_by_alias.get(alias)
         if update_spin and spin is not None and int(spin.value()) != ring_index:
             blocked = spin.blockSignals(True)
             spin.setValue(ring_index)
             spin.blockSignals(blocked)
         return previous != ring_index
+
+    def _set_hover_ring(alias: str, ring_index: int | None):
+        previous = hover_ring_by_alias.get(alias)
+        if ring_index is None:
+            hover_ring_by_alias.pop(alias, None)
+        else:
+            hover_ring_by_alias[alias] = int(ring_index)
+        _update_ring_label(alias)
+        return previous != hover_ring_by_alias.get(alias)
+
+    def _update_ring_label(alias: str):
+        label = ring_label_by_alias.get(alias)
+        if label is None:
+            return
+        selected = _selected_ring(alias)
+        hover = hover_ring_by_alias.get(alias)
+        if hover is None or int(hover) == int(selected):
+            label.setText(f"{alias}: point ring {selected}")
+        else:
+            label.setText(f"{alias}: point ring {selected}; hover {hover}")
 
     def _selected_ring(alias: str) -> int:
         return int(
@@ -1522,7 +1548,7 @@ def show_auto_poni_review_window(
         if label is None:
             return
         payload = _center_marker_payload(alias)
-        label.setText(f"{alias}: {payload['text'] if payload else 'fit parameters unavailable'}")
+        label.setText(f"{alias}: {payload['text'] if payload else 'fit unavailable'}")
 
     def _draw_center_marker(alias: str):
         ax = top_axes_by_alias.get(alias)
@@ -2338,9 +2364,6 @@ def show_auto_poni_review_window(
             return
 
         col, row = float(event.xdata), float(event.ydata)
-        hover_ring = _nearest_ring_index(alias, col, row)
-        if hover_ring is not None:
-            _set_selected_ring(alias, hover_ring)
         ring_index = _selected_ring(alias)
         points.append({"col": col, "row": row, "ring_index": ring_index})
         color = _ring_color(ring_index)
@@ -2396,8 +2419,14 @@ def show_auto_poni_review_window(
                     float(event.xdata),
                     float(event.ydata),
                 )
-                if ring_index is not None and _set_selected_ring(hover_alias, ring_index):
-                    _set_status(f"{hover_alias}: selected ring {ring_index}")
+                if _set_hover_ring(hover_alias, ring_index):
+                    if ring_index is None:
+                        _set_status(f"{hover_alias}: point ring {_selected_ring(hover_alias)}")
+                    else:
+                        _set_status(
+                            f"{hover_alias}: hover ring {ring_index}; "
+                            f"point ring {_selected_ring(hover_alias)}"
+                        )
                     canvas.draw_idle()
             return
         if event.inaxes is not top_axes_by_alias.get(alias):
@@ -2529,7 +2558,7 @@ def show_auto_poni_review_window(
     fit_row = QHBoxLayout()
     fit_row.addWidget(QLabel("Fit parameters:", dialog))
     for alias in aliases:
-        fit_label = QLabel(f"{alias}: fit parameters unavailable", dialog)
+        fit_label = QLabel(f"{alias}: fit unavailable", dialog)
         fit_label.setWordWrap(True)
         fit_label.setStyleSheet("color: #b00020;")
         fit_label_by_alias[alias] = fit_label
@@ -2538,7 +2567,7 @@ def show_auto_poni_review_window(
     layout.addLayout(fit_row)
 
     ring_row = QHBoxLayout()
-    ring_row.addWidget(QLabel("Manual point ring:", dialog))
+    ring_row.addWidget(QLabel("Point ring:", dialog))
     for alias in aliases:
         ring_label = QLabel(dialog)
         ring_label_by_alias[alias] = ring_label
@@ -2547,7 +2576,7 @@ def show_auto_poni_review_window(
         ring_spin.setMinimum(1)
         ring_spin.setMaximum(len(AGBH_D_SPACING_A))
         ring_spin.setValue(_selected_ring(alias))
-        ring_spin.setToolTip(f"Ring number assigned to new manual points on {alias}")
+        ring_spin.setToolTip(f"Ring number for new {alias} points")
         ring_spin.valueChanged.connect(
             lambda value, a=alias: _set_selected_ring(a, int(value), update_spin=False)
         )
@@ -2559,13 +2588,7 @@ def show_auto_poni_review_window(
     note = QLabel(dialog)
     note.setWordWrap(True)
     note.setText(
-        "Validate saves generated PONI files and updates the active technical container. "
-        "Correct opens pyFAI-calib2 for manual refinement. "
-        "Move over an AgBh ring or set the ring number control, then left-click to add a point on that ring. "
-        "Drag points to move them. "
-        "Right-click a point to delete it; right-click empty image space to set a center hint. "
-        "Drag the first-ring vertical line in cake/radial plots, then release to shift the first-ring radius. "
-        "Use mouse wheel to zoom around cursor; double-click to reset zoom."
+        "Ring box sets new points. Left-click add/drag. Right-click delete. Wheel zoom. Double-click reset."
     )
     layout.addWidget(note)
     clicked_status = QLabel(dialog)
