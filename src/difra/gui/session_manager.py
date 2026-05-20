@@ -10,7 +10,9 @@ Handles HDF5 session container lifecycle:
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 from typing import Dict, List, Optional, Tuple
 
 import h5py
@@ -1289,7 +1291,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
         """Update editable session metadata without touching measurements."""
         self._check_active()
 
-        if self.is_locked():
+        if self.is_locked() and not password_authorized:
             logger.warning(
                 "Cannot update session container information: container is locked",
                 session_path=str(self.session_path),
@@ -1317,6 +1319,20 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             machine_id_int = _optional_int(matador_machine_id)
         except Exception:
             return False
+
+        session_path = Path(self.session_path)
+        restore_mode = None
+        if self.is_locked() and password_authorized:
+            try:
+                restore_mode = session_path.stat().st_mode
+                os.chmod(session_path, restore_mode | stat.S_IWUSR)
+            except Exception:
+                logger.warning(
+                    "Failed to temporarily unlock session file permissions",
+                    session_path=str(session_path),
+                    exc_info=True,
+                )
+                return False
 
         try:
             with h5py.File(self.session_path, "a") as h5f:
@@ -1428,6 +1444,16 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
                 exc_info=True,
             )
             return False
+        finally:
+            if restore_mode is not None:
+                try:
+                    os.chmod(session_path, restore_mode)
+                except Exception:
+                    logger.warning(
+                        "Failed to restore session file permissions after metadata edit",
+                        session_path=str(session_path),
+                        exc_info=True,
+                    )
     
     def get_session_info(self) -> Dict:
         """Get current session information.

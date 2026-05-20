@@ -268,6 +268,60 @@ def test_session_manager_update_container_information_rejects_locked_container(
         assert session_file.attrs.get(schema.ATTR_STUDY_NAME) == "LOCKED_GROUP"
 
 
+def test_session_manager_update_container_information_allows_locked_with_password(
+    temp_dir, technical_container, monkeypatch
+):
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="P146_WRONG",
+        study_name="LOCKED_GROUP",
+        project_id="LOCKED_PROJECT",
+        matadorProjectId=10,
+        matadorStudyId=20,
+        matadorMachineId=30,
+        distance_cm=17.0,
+        operator_id="operator",
+    )
+    manager.container_manager.lock_container(session_path)
+    runtime_events = []
+    original_append_runtime_log = manager.writer.append_runtime_log
+
+    def _append_runtime_log_spy(**kwargs):
+        runtime_events.append(kwargs)
+        return original_append_runtime_log(**kwargs)
+
+    monkeypatch.setattr(manager.writer, "append_runtime_log", _append_runtime_log_spy)
+
+    assert manager.update_container_information(
+        specimen_id="64146",
+        study_name="Mouse_claws",
+        project_id="Ulster",
+        operator_id="new_operator",
+        matador_project_id=6701,
+        matador_project_name="Ulster",
+        matador_study_id=6751,
+        matador_machine_id=1751,
+        password_authorized=True,
+    )
+
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get(schema.ATTR_SAMPLE_ID) == "64146"
+        assert session_file.attrs.get("specimenId") == "64146"
+        assert session_file.attrs.get(schema.ATTR_STUDY_NAME) == "Mouse_claws"
+        assert session_file.attrs.get(schema.ATTR_PROJECT_ID) == "Ulster"
+        assert bool(session_file.attrs.get("locked")) is True
+        sample_group = session_file[schema.GROUP_SAMPLE]
+        assert sample_group.attrs.get(schema.ATTR_SAMPLE_ID) == "64146"
+        assert sample_group.attrs.get("specimenId") == "64146"
+
+    update_event = runtime_events[-1]
+    assert update_event["message"] == "Specimen ID changed under password: P146_WRONG -> 64146"
+    assert update_event["details"]["password_authorized"] is True
+    assert update_event["details"]["previous_specimenId"] == "P146_WRONG"
+    assert update_event["details"]["new_specimenId"] == "64146"
+
+
 def test_session_manager_falls_back_to_locked_technical_container(
     temp_dir, technical_container, monkeypatch
 ):

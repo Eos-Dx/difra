@@ -485,7 +485,17 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         return info
 
     def _confirm_container_information_edit_allowed(self) -> tuple[bool, bool]:
-        """Require Ulster password once measurements have started."""
+        """Require Ulster password once measurements started or session is locked."""
+        is_locked = False
+        try:
+            is_locked = bool(self.session_manager.is_locked())
+        except Exception as exc:
+            logger.warning(
+                "Failed to check lock state before metadata edit: %s",
+                exc,
+                exc_info=True,
+            )
+            is_locked = True
         has_measurements = False
         try:
             has_measurements = bool(self.session_manager.has_point_measurements())
@@ -497,13 +507,16 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             )
             has_measurements = True
 
-        if not has_measurements:
+        if not is_locked and not has_measurements:
             return True, False
 
         password, accepted = QInputDialog.getText(
             self,
             "Password Required",
-            "Measurements have already started. Enter password to edit container information:",
+            (
+                "This session is locked/finalized or measurements have already started.\n"
+                "Enter password to edit container information:"
+            ),
             QLineEdit.Password,
         )
         if not accepted:
@@ -528,15 +541,6 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
                 "No Session Open",
                 "Open or create a session container first.",
             )
-            return
-
-        if self.session_manager.is_locked():
-            QMessageBox.warning(
-                self,
-                "Session Locked",
-                "Locked/finalized session containers cannot be edited.",
-            )
-            self._append_session_log("Container information edit blocked: session locked")
             return
 
         initial_info = self._active_session_container_information()
