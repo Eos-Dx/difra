@@ -14,6 +14,10 @@ from typing import Any, Dict, Optional
 
 DEFAULT_ERROR_EMAIL_RECIPIENT = "sdenisov@matur.co"
 DEFAULT_ERROR_EMAIL_SENDER = "difra-upload@company.co.uk"
+DEFAULT_DAILY_REPORT_KEYCHAIN_SERVICE = "difra_daily_report_smtp_password"
+DEFAULT_DAILY_REPORT_EMAIL_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "resources" / "config" / "daily_report_email.json"
+)
 
 
 def _as_text(value: Any, default: str = "") -> str:
@@ -53,6 +57,57 @@ def _config_value(config: Optional[Dict[str, Any]], key: str, env_key: str, defa
     return default
 
 
+def _load_json_config(path: Path) -> Dict[str, Any]:
+    try:
+        if not Path(path).exists():
+            return {}
+        with Path(path).open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _load_email_fallback_config() -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    env_path = os.environ.get("DIFRA_DAILY_REPORT_EMAIL_CONFIG")
+    if env_path:
+        config.update(_load_json_config(Path(env_path).expanduser()))
+    config.update(_load_json_config(DEFAULT_DAILY_REPORT_EMAIL_CONFIG_PATH))
+    return config
+
+
+def _config_is_blank(config: Dict[str, Any], key: str) -> bool:
+    return key not in config or _as_text(config.get(key), "") == ""
+
+
+def _with_daily_report_email_fallbacks(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged = dict(config or {})
+    fallback = _load_email_fallback_config()
+    key_map = {
+        "upload_error_smtp_host": "daily_report_smtp_host",
+        "upload_error_smtp_port": "daily_report_smtp_port",
+        "upload_error_smtp_tls": "daily_report_smtp_tls",
+        "upload_error_smtp_username": "daily_report_smtp_username",
+        "upload_error_smtp_password": "daily_report_smtp_password",
+        "upload_error_smtp_timeout_sec": "daily_report_smtp_timeout_sec",
+        "upload_error_smtp_keychain_service": "daily_report_smtp_keychain_service",
+    }
+    for target_key, source_key in key_map.items():
+        if _config_is_blank(merged, target_key) and source_key in fallback:
+            merged[target_key] = fallback.get(source_key)
+    return merged
+
+
+def _read_stored_upload_error_smtp_password(*, account: str, service: str) -> str:
+    try:
+        from difra.gui.daily_valid_container_reporter import _read_stored_smtp_password
+
+        return _read_stored_smtp_password(account=account, service=service)
+    except Exception:
+        return ""
+
+
 def _workflow_value(workflow_result: Any, name: str, default: Any = "") -> Any:
     return getattr(workflow_result, name, default)
 
@@ -64,6 +119,7 @@ def build_matador_upload_error_email(
     log_path: Path,
     context: str,
 ) -> EmailMessage:
+    config = _with_daily_report_email_fallbacks(config)
     recipient = _as_text(
         _config_value(
             config,
@@ -156,6 +212,7 @@ def send_matador_upload_error_report(
     log_path: Path,
     context: str,
 ) -> Dict[str, Any]:
+    config = _with_daily_report_email_fallbacks(config)
     enabled = _as_bool(
         _config_value(
             config,
@@ -194,6 +251,26 @@ def send_matador_upload_error_report(
             "",
         )
     )
+    if username and not password:
+        keychain_service = _as_text(
+            _config_value(
+                config,
+                "upload_error_smtp_keychain_service",
+                "DIFRA_UPLOAD_ERROR_SMTP_KEYCHAIN_SERVICE",
+                DEFAULT_DAILY_REPORT_KEYCHAIN_SERVICE,
+            ),
+            DEFAULT_DAILY_REPORT_KEYCHAIN_SERVICE,
+        )
+        password = _read_stored_upload_error_smtp_password(
+            account=username,
+            service=keychain_service,
+        )
+    if username and not password:
+        return {
+            "sent": False,
+            "skipped": True,
+            "message": "upload error SMTP password not configured",
+        }
     use_tls = _as_bool(
         _config_value(config, "upload_error_smtp_tls", "DIFRA_UPLOAD_ERROR_SMTP_TLS", True),
         True,

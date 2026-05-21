@@ -508,7 +508,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         )
         if not accepted:
             return False, False
-        if str(password or "") == _CONTAINER_INFORMATION_EDIT_PASSWORD:
+        if _verify_container_information_edit_password(str(password or "")):
             return True, True
 
         QMessageBox.warning(
