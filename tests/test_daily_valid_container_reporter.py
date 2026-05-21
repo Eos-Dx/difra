@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import zipfile
+from datetime import date
 
 import h5py
 import numpy as np
@@ -28,6 +29,13 @@ def _create_container(path: Path) -> Path:
                 "processed_signal",
                 data=np.full((8, 8), value, dtype=float),
             )
+    return path
+
+
+def _create_dated_container(path: Path, acquisition_date: str) -> Path:
+    _create_container(path)
+    with h5py.File(path, "a") as h5f:
+        h5f.attrs["acquisition_date"] = acquisition_date
     return path
 
 
@@ -468,6 +476,93 @@ def test_daily_report_state_keeps_watermark_after_failed_send(monkeypatch, tmp_p
     assert state["lastSuccessfulUntil"] == "2026-05-10T08:00:00"
     assert state["attempts"][-1]["sent"] is False
     assert state["attempts"][-1]["message"] == "daily report SMTP password not configured"
+
+
+def test_run_daily_report_for_date_sends_missed_previous_day(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _create_dated_container(archive / "session_previous.nxs.h5", "2026-05-20")
+    _create_dated_container(archive / "session_today.nxs.h5", "2026-05-21")
+    state_path = tmp_path / "report_state.json"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "measurements_archive_folder": str(archive),
+                "measurements_folder": str(tmp_path / "missing"),
+                "daily_report_state_path": str(state_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **_kwargs: {
+            "sent": True,
+            "skipped": False,
+            "message": "daily report email sent",
+        },
+    )
+    monkeypatch.setattr(reporter, "integrate_detector_signal", lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)))
+    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+
+    result = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=date(2026, 5, 20),
+        send_email=True,
+    )
+
+    state = reporter.json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.scanned == 1
+    assert result.valid_containers == 1
+    assert result.email_result["sent"] is True
+    assert state["byDate"]["2026-05-20"]["sent"] is True
+
+
+def test_run_daily_report_for_date_skips_when_already_sent(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    container = _create_dated_container(archive / "session_previous.nxs.h5", "2026-05-20")
+    fingerprint = reporter.hashlib.sha256(
+        f"{container}:{container.stat().st_mtime_ns}:{container.stat().st_size}".encode("utf-8")
+    ).hexdigest()
+    state_path = tmp_path / "report_state.json"
+    state_path.write_text(
+        reporter.json.dumps(
+            {
+                "byDate": {
+                    "2026-05-20": {
+                        "sent": True,
+                        "fingerprint": fingerprint,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "measurements_archive_folder": str(archive),
+                "measurements_folder": str(tmp_path / "missing"),
+                "daily_report_state_path": str(state_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=date(2026, 5, 20),
+        send_email=True,
+    )
+
+    assert result.email_result["skipped"] is True
+    assert "already sent" in result.email_result["message"]
 
 
 def test_gui_email_password_setup_skips_when_password_exists(monkeypatch):

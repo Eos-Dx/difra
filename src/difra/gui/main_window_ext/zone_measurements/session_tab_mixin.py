@@ -39,6 +39,7 @@ from difra.gui.qt_compat import (
 )
 
 from difra.gui.container_api import get_container_manager, get_schema
+from difra.gui.daily_valid_container_reporter import build_daily_report_for_containers
 from difra.gui.main_window_ext.archive_session_edit_dialog import (
     ArchiveSessionEditDialog,
 )
@@ -1372,6 +1373,7 @@ class SessionTabMixin:
         )
         if transfer_status == "NOT_COMPLETE":
             send_action.setEnabled(False)
+        analyst_report_action = menu.addAction("Send Report to Analysts")
         old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
@@ -1388,8 +1390,73 @@ class SessionTabMixin:
                     table, fallback_path=container_path
                 )
             )
+        elif selected == analyst_report_action:
+            self._send_selected_archived_report_to_analysts(
+                self._selected_paths_from_archive_table(
+                    table, fallback_path=container_path
+                )
+            )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
+
+    def _send_selected_archived_report_to_analysts(self, container_paths: List[Path]):
+        targets = [Path(path) for path in container_paths if Path(path).exists()]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "Select archived session container(s) to report.",
+            )
+            return
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        base_folder = runtime_config.get("difra_base_folder") or Path.home() / "difra"
+        output_dir = Path(base_folder) / "daily_reports" / "manual_analyst_reports"
+        try:
+            result = build_daily_report_for_containers(
+                config=runtime_config,
+                container_paths=targets,
+                output_dir=output_dir,
+                send_email=True,
+                allow_interactive_setup=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send selected analyst report",
+                exc_info=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Report Failed",
+                f"Could not send report to analysts:\n{exc}",
+            )
+            return
+
+        email_result = result.email_result or {}
+        summary = [
+            f"Selected containers: {len(targets)}",
+            f"Valid containers: {result.valid_containers}",
+            f"Images: {len(result.images)}",
+            f"ZIP: {result.zip_path}",
+            f"Email: {email_result.get('message', 'not sent')}",
+        ]
+        if result.skipped:
+            summary.append("")
+            summary.append("Skipped:")
+            summary.extend(result.skipped[:8])
+            if len(result.skipped) > 8:
+                summary.append(f"... and {len(result.skipped) - 8} more")
+        if email_result.get("sent"):
+            QMessageBox.information(
+                self,
+                "Report Sent to Analysts",
+                "\n".join(summary),
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Report Not Sent",
+                "\n".join(summary),
+            )
 
     def _on_send_selected_archived_sessions(self):
         container_paths = self._selected_archived_containers()

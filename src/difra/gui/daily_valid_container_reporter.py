@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from email.message import EmailMessage
 import base64
 import getpass
@@ -813,6 +813,47 @@ def _candidate_containers(roots: Iterable[Path], *, since: Optional[datetime]) -
     return sorted(set(paths))
 
 
+def _container_report_datetime(path: Path) -> Optional[datetime]:
+    try:
+        with h5py.File(path, "r") as h5f:
+            for attr_name in (
+                "acquisition_date",
+                "creation_timestamp",
+                "created_at",
+                "timestamp_start",
+                "lock_timestamp",
+                "archived_timestamp",
+            ):
+                text = _as_text(h5f.attrs.get(attr_name), "").strip()
+                if not text:
+                    continue
+                for candidate in (
+                    text,
+                    text.replace("Z", ""),
+                    text.replace(" ", "T"),
+                ):
+                    try:
+                        return datetime.fromisoformat(candidate)
+                    except Exception:
+                        continue
+    except Exception:
+        return None
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime)
+    except Exception:
+        return None
+
+
+def _filter_containers_for_date(container_paths: Iterable[Path], report_date: date) -> List[Path]:
+    target = report_date.isoformat()
+    selected: List[Path] = []
+    for path in container_paths:
+        stamp = _container_report_datetime(Path(path))
+        if stamp is not None and stamp.date().isoformat() == target:
+            selected.append(Path(path))
+    return sorted(set(selected))
+
+
 def _is_container_valid(h5f: h5py.File) -> Tuple[bool, str]:
     specimen = _as_text(h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", "")))
     if not specimen:
@@ -1426,6 +1467,69 @@ def build_daily_report(
     return result
 
 
+def build_daily_report_for_containers(
+    *,
+    config: Optional[Dict[str, Any]],
+    container_paths: Iterable[Path],
+    output_dir: Path,
+    send_email: bool = False,
+    allow_interactive_setup: bool = False,
+    report_date: Optional[date] = None,
+    tracking_started_at: Optional[str] = None,
+) -> DailyReportResult:
+    cfg = dict(config or {})
+    generated_at = datetime.now()
+    paths = sorted({Path(path) for path in container_paths if Path(path).exists()})
+    result = DailyReportResult(scanned=len(paths))
+    result.period_start = None
+    result.period_end = generated_at.isoformat(timespec="seconds")
+    result.tracking_started_at = tracking_started_at
+    series, skipped, valid_count = collect_report_series(paths, points=DEFAULT_POINTS)
+    summary = summarize_valid_containers(paths)
+    result.skipped.extend(skipped)
+    result.valid_containers = valid_count
+    out = Path(output_dir)
+    image_dir = out / "images"
+    result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
+    report_day = report_date or generated_at.date()
+    manifest = {
+        "generatedAt": generated_at.isoformat(timespec="seconds"),
+        "reportDate": report_day.isoformat(),
+        "since": None,
+        "periodStart": None,
+        "periodEnd": generated_at.isoformat(timespec="seconds"),
+        "trackingStartedAt": tracking_started_at,
+        "scanned": result.scanned,
+        "validContainers": result.valid_containers,
+        "projectIds": summary.get("projectIds", []),
+        "matadorUploaded": int(summary.get("matadorUploaded", 0) or 0),
+        "imageCount": len(result.images),
+        "selectedContainers": [str(path) for path in paths],
+        "skipped": result.skipped[:200],
+    }
+    result.manifest = manifest
+    result.zip_path = create_zip(
+        out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+        result.images,
+        manifest=manifest,
+    )
+    if send_email:
+        try:
+            result.email_result = send_daily_report_email(
+                config=cfg,
+                zip_path=result.zip_path,
+                manifest=manifest,
+                allow_interactive_setup=allow_interactive_setup,
+            )
+        except Exception as exc:
+            result.email_result = {
+                "sent": False,
+                "skipped": False,
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+    return result
+
+
 def run_daily_report_from_config(
     *,
     config_path: Optional[Path] = None,
@@ -1482,6 +1586,122 @@ def run_daily_report_from_config(
             state["lastSuccessfulUntil"] = period_end.isoformat(timespec="seconds")
             state["lastSuccessfulAt"] = datetime.now().isoformat(timespec="seconds")
             state["lastSuccessfulZipPath"] = str(result.zip_path or "")
+        _write_report_state(state_path, state)
+    return result
+
+
+def run_daily_report_for_date_from_config(
+    *,
+    config: Optional[Dict[str, Any]] = None,
+    config_path: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
+    report_date: date,
+    send_email: bool = False,
+    allow_interactive_setup: bool = False,
+    skip_if_sent: bool = True,
+    resend_if_changed: bool = True,
+    skip_if_no_containers: bool = True,
+) -> DailyReportResult:
+    cfg = load_report_config(config_path)
+    if config:
+        cfg.update(config)
+    base = output_dir
+    if base is None:
+        base_folder = cfg.get("difra_base_folder") or Path.home() / "difra"
+        base = Path(base_folder) / "daily_reports"
+    base = Path(base)
+    state_path = _report_state_path(cfg, base)
+    state: Dict[str, Any] = _load_report_state(state_path) if send_email else {}
+    by_date = state.get("byDate")
+    if not isinstance(by_date, dict):
+        by_date = {}
+    date_key = report_date.isoformat()
+    date_state = by_date.get(date_key) if isinstance(by_date.get(date_key), dict) else {}
+
+    roots = [
+        Path(cfg.get("measurements_archive_folder") or ""),
+        Path(cfg.get("measurements_folder") or ""),
+    ]
+    all_containers = _candidate_containers([root for root in roots if str(root)], since=None)
+    containers = _filter_containers_for_date(all_containers, report_date)
+    fingerprint = hashlib.sha256(
+        "\n".join(
+            f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}" for path in containers
+        ).encode("utf-8")
+    ).hexdigest()
+
+    if send_email and skip_if_sent and date_state.get("sent") is True:
+        if not resend_if_changed or date_state.get("fingerprint") == fingerprint:
+            result = DailyReportResult(scanned=len(containers))
+            result.period_start = datetime.combine(report_date, time.min).isoformat(timespec="seconds")
+            result.period_end = datetime.combine(report_date, time.max).isoformat(timespec="seconds")
+            result.state_path = state_path
+            result.email_result = {
+                "sent": False,
+                "skipped": True,
+                "message": f"daily report already sent for {date_key}",
+            }
+            return result
+
+    if send_email and skip_if_no_containers and not containers:
+        result = DailyReportResult(scanned=0)
+        result.period_start = datetime.combine(report_date, time.min).isoformat(timespec="seconds")
+        result.period_end = datetime.combine(report_date, time.max).isoformat(timespec="seconds")
+        result.state_path = state_path
+        result.email_result = {
+            "sent": False,
+            "skipped": True,
+            "message": f"no containers for {date_key}",
+        }
+        date_state.update(
+            {
+                "lastAttemptAt": datetime.now().isoformat(timespec="seconds"),
+                "sent": False,
+                "fingerprint": fingerprint,
+                "message": result.email_result["message"],
+            }
+        )
+        by_date[date_key] = date_state
+        state["byDate"] = by_date
+        _write_report_state(state_path, state)
+        return result
+
+    result = build_daily_report_for_containers(
+        config=cfg,
+        container_paths=containers,
+        output_dir=base / date_key,
+        send_email=send_email,
+        allow_interactive_setup=allow_interactive_setup,
+        report_date=report_date,
+        tracking_started_at=state.get("trackingStartedAt"),
+    )
+    result.period_start = datetime.combine(report_date, time.min).isoformat(timespec="seconds")
+    result.period_end = datetime.combine(report_date, time.max).isoformat(timespec="seconds")
+    result.state_path = state_path if send_email else None
+    if send_email:
+        _append_report_attempt(
+            state,
+            result=result,
+            manifest=result.manifest,
+            email_result=result.email_result,
+            period_start=datetime.combine(report_date, time.min),
+            period_end=datetime.combine(report_date, time.max),
+        )
+        sent = bool(result.email_result.get("sent"))
+        date_state.update(
+            {
+                "lastAttemptAt": datetime.now().isoformat(timespec="seconds"),
+                "sent": sent,
+                "fingerprint": fingerprint,
+                "message": _as_text(result.email_result.get("message"), ""),
+                "zipPath": str(result.zip_path or ""),
+                "validContainers": int(result.valid_containers),
+            }
+        )
+        if sent:
+            date_state["lastSentAt"] = datetime.now().isoformat(timespec="seconds")
+        by_date[date_key] = date_state
+        state["byDate"] = by_date
         _write_report_state(state_path, state)
     return result
 
