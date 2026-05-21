@@ -50,7 +50,7 @@ DEFAULT_EMAIL_CONFIG_PATH = (
 )
 DEFAULT_REPORT_STATE_FILENAME = "daily_report_state.json"
 SAXS_RANGE = (1.0, 3.0)
-WAXS_RANGE = (2.0, 23.0)
+WAXS_RANGE = (2.0, 21.0)
 
 
 @dataclass(frozen=True)
@@ -954,7 +954,8 @@ def integrate_detector_signal(
     data: np.ndarray,
     poni_text: str,
     *,
-    npt: int = 400,
+    npt: int = DEFAULT_POINTS,
+    q_range: Optional[Tuple[float, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     arr = np.asarray(data, dtype=float)
     if arr.ndim != 2 or not poni_text.strip():
@@ -965,11 +966,15 @@ def integrate_detector_signal(
         )
 
         ai = initialize_azimuthal_integrator_poni_text(poni_text)
+        kwargs: Dict[str, Any] = {}
+        if q_range is not None:
+            kwargs["radial_range"] = (float(q_range[0]), float(q_range[1]))
         result = ai.integrate1d(
             arr,
             max(int(npt), 2),
             unit="q_nm^-1",
             error_model="azimuthal",
+            **kwargs,
         )
         q = np.asarray(result.radial, dtype=float).reshape(-1)
         intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
@@ -1061,15 +1066,17 @@ def collect_report_series(
                             q, intensity = integrate_detector_signal(
                                 det_group["processed_signal"][()],
                                 poni_text,
-                                npt=400,
+                                npt=points,
+                                q_range=q_range,
                             )
-                            q_out, i_out = _resample_range(
-                                q,
-                                intensity,
-                                q_range,
-                                points=points,
-                            )
-                            if q_out.size != points:
+                            q_min = float(np.nanmin(q)) if q.size else float("nan")
+                            q_max = float(np.nanmax(q)) if q.size else float("nan")
+                            if (
+                                q.size != points
+                                or intensity.size != points
+                                or q_min < float(q_range[0]) - 1e-6
+                                or q_max > float(q_range[1]) + 1e-6
+                            ):
                                 skipped.append(
                                     f"{path.name}:{det_group.name}: no q data in {q_range[0]}-{q_range[1]} nm^-1"
                                 )
@@ -1079,8 +1086,8 @@ def collect_report_series(
                                     specimen_id=specimen_id,
                                     detector_group=group_name,
                                     detector_alias=alias,
-                                    q=q_out,
-                                    intensity=i_out,
+                                    q=q,
+                                    intensity=intensity,
                                     source_container=path,
                                     source_dataset=det_group["processed_signal"].name,
                                 )
@@ -1144,7 +1151,7 @@ def render_report_images(
     images: List[Path] = []
     for (specimen_id, group_name), items in sorted(grouped.items()):
         q_range = SAXS_RANGE if group_name == "PRIMARY" else WAXS_RANGE
-        range_label = "SAXS 1-3 nm^-1" if group_name == "PRIMARY" else "WAXS 2-23 nm^-1"
+        range_label = "SAXS 1-3 nm^-1" if group_name == "PRIMARY" else "WAXS 2-21 nm^-1"
         fig, ax = plt.subplots(figsize=(8, 5), dpi=dpi)
         for index, item in enumerate(items, start=1):
             label = f"{item.detector_alias} #{index}"
@@ -1189,11 +1196,12 @@ def create_simple_test_image_zip(output_dir: Path, *, dpi: int = DEFAULT_DPI) ->
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     image_paths = []
-    q = np.linspace(1.0, 3.0, DEFAULT_POINTS)
-    for name, y in (
-        ("test_PRIMARY_SAXS_1-3nm-1.png", np.sin(q * 4.0) + 2.0),
-        ("test_SECONDARY_WAXS_2-23nm-1.png", np.cos(q * 3.0) + 2.0),
+    for name, q_range, fn in (
+        ("test_PRIMARY_SAXS_1-3nm-1.png", SAXS_RANGE, lambda q: np.sin(q * 4.0) + 2.0),
+        ("test_SECONDARY_WAXS_2-21nm-1.png", WAXS_RANGE, lambda q: np.cos(q * 3.0) + 2.0),
     ):
+        q = np.linspace(float(q_range[0]), float(q_range[1]), DEFAULT_POINTS)
+        y = fn(q)
         fig, ax = plt.subplots(figsize=(6, 4), dpi=dpi)
         ax.plot(q, y, linewidth=1.5)
         ax.set_xlabel("q (nm^-1)")

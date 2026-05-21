@@ -90,8 +90,8 @@ def test_build_daily_report_renders_two_images_for_primary_secondary(
 ):
     container = _create_container(tmp_path / "session_test.nxs.h5")
 
-    def _fake_integrate(data, poni_text, *, npt=400):
-        q = np.linspace(0.5, 24.0, 400)
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (0.5, 24.0)), int(npt))
         return q, np.full_like(q, float(np.asarray(data).mean()))
 
     monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
@@ -143,8 +143,8 @@ def test_resolve_poni_text_prefers_detector_specific_over_legacy_attr(tmp_path):
 def test_build_daily_report_does_not_fallback_when_backend_q_range_is_empty(tmp_path, monkeypatch):
     _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
 
-    def _wrong_range_integrate(data, poni_text, *, npt=400):
-        q = np.linspace(100.0, 120.0, 400)
+    def _wrong_range_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(100.0, 120.0, int(npt))
         return q, np.ones_like(q)
 
     monkeypatch.setattr(reporter, "integrate_detector_signal", _wrong_range_integrate)
@@ -170,7 +170,7 @@ def test_resample_range_requires_full_q_coverage():
     q = np.linspace(2.0, 4.0, 20)
     intensity = np.ones_like(q)
 
-    q_out, i_out = reporter._resample_range(q, intensity, (2.0, 23.0), points=100)
+    q_out, i_out = reporter._resample_range(q, intensity, (2.0, 21.0), points=100)
 
     assert q_out.size == 0
     assert i_out.size == 0
@@ -181,7 +181,7 @@ def test_build_daily_report_does_not_send_email_without_images(tmp_path, monkeyp
     monkeypatch.setattr(
         reporter,
         "integrate_detector_signal",
-        lambda data, poni_text, *, npt=400: (np.linspace(100.0, 120.0, 400), np.ones(400)),
+        lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(100.0, 120.0, int(npt)), np.ones(int(npt))),
     )
     monkeypatch.setattr(
         reporter,
@@ -536,7 +536,7 @@ def test_daily_report_state_advances_only_after_success(monkeypatch, tmp_path):
     monkeypatch.setattr(
         reporter,
         "integrate_detector_signal",
-        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+        lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
     monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
@@ -593,7 +593,7 @@ def test_daily_report_state_keeps_watermark_after_failed_send(monkeypatch, tmp_p
     monkeypatch.setattr(
         reporter,
         "integrate_detector_signal",
-        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+        lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
     monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
@@ -637,7 +637,7 @@ def test_run_daily_report_for_date_sends_missed_previous_day(monkeypatch, tmp_pa
             "message": "daily report email sent",
         },
     )
-    monkeypatch.setattr(reporter, "integrate_detector_signal", lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)))
+    monkeypatch.setattr(reporter, "integrate_detector_signal", lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))))
     monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
     result = reporter.run_daily_report_for_date_from_config(
@@ -744,7 +744,7 @@ def test_run_daily_report_for_date_resends_previous_empty_image_report(monkeypat
     monkeypatch.setattr(
         reporter,
         "integrate_detector_signal",
-        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+        lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
     monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
