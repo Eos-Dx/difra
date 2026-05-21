@@ -904,24 +904,34 @@ def _detector_group(alias: str, detector_name: str) -> str:
 
 def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str:
     candidates = []
-    for attr_name in ("poni_ref", "poni_path"):
-        ref = _as_text(det_group.attrs.get(attr_name)).strip()
-        if ref:
-            candidates.append(ref)
     role = str(det_group.name.rsplit("/", 1)[-1])
+    detector_id = _as_text(det_group.attrs.get("detector_id")).strip().lower()
+    detector_alias = _as_text(det_group.attrs.get("detector_alias")).strip().lower()
+    if detector_id:
+        candidates.extend(
+            [
+                f"/entry/technical/poni/poni_det_{detector_id}",
+                f"/entry/technical/poni/poni_{detector_id}",
+            ]
+        )
     if role.startswith("det_"):
         candidates.extend(
             [
                 f"/entry/technical/poni/poni_{role}",
-                f"/entry/technical/poni/poni_{role[4:]}",
             ]
         )
+    for attr_name in ("poni_ref", "poni_path"):
+        ref = _as_text(det_group.attrs.get(attr_name)).strip()
+        if ref:
+            candidates.append(ref)
+    if role.startswith("det_"):
+        candidates.append(f"/entry/technical/poni/poni_{role[4:]}")
     tokens = {
         alias.strip().lower(),
         role.lower(),
         role.replace("det_", "").lower(),
-        _as_text(det_group.attrs.get("detector_alias")).lower(),
-        _as_text(det_group.attrs.get("detector_id")).lower(),
+        detector_alias,
+        detector_id,
     }
     poni_group = h5f.get("/entry/technical/poni")
     if poni_group is not None:
@@ -938,75 +948,6 @@ def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str
         if text:
             return text
     return ""
-
-
-def _poni_value(lines: Dict[str, str], key: str, default: float = 0.0) -> float:
-    try:
-        return float(lines.get(key, default))
-    except Exception:
-        return default
-
-
-def _manual_integrate_q_nm(
-    data: np.ndarray,
-    poni_text: str,
-    *,
-    npt: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    arr = np.asarray(data, dtype=float)
-    if arr.ndim != 2 or not str(poni_text or "").strip():
-        return np.asarray([]), np.asarray([])
-
-    lines: Dict[str, str] = {}
-    for raw_line in str(poni_text or "").splitlines():
-        if ":" not in raw_line:
-            continue
-        key, value = raw_line.split(":", 1)
-        lines[key.strip()] = value.strip()
-
-    detector_config: Dict[str, Any] = {}
-    try:
-        detector_config = json.loads(lines.get("Detector_config", "") or "{}")
-    except Exception:
-        detector_config = {}
-
-    pixel1 = _poni_value(lines, "PixelSize1", float(detector_config.get("pixel1", 0.0) or 0.0))
-    pixel2 = _poni_value(lines, "PixelSize2", float(detector_config.get("pixel2", 0.0) or 0.0))
-    distance = _poni_value(lines, "Distance")
-    poni1 = _poni_value(lines, "Poni1")
-    poni2 = _poni_value(lines, "Poni2")
-    wavelength_m = _poni_value(lines, "Wavelength")
-    if min(pixel1, pixel2, distance, wavelength_m) <= 0:
-        return np.asarray([]), np.asarray([])
-
-    yy, xx = np.indices(arr.shape)
-    y_m = (yy + 0.5) * pixel1
-    x_m = (xx + 0.5) * pixel2
-    radius_m = np.sqrt((y_m - poni1) ** 2 + (x_m - poni2) ** 2)
-    two_theta = np.arctan2(radius_m, distance)
-    q_nm = (4.0 * np.pi * np.sin(two_theta / 2.0)) / (wavelength_m * 1e9)
-    finite = np.isfinite(q_nm) & np.isfinite(arr)
-    q_flat = q_nm[finite].reshape(-1)
-    i_flat = arr[finite].reshape(-1)
-    if q_flat.size < 2:
-        return np.asarray([]), np.asarray([])
-
-    q_min = float(np.nanmin(q_flat))
-    q_max = float(np.nanmax(q_flat))
-    if not np.isfinite(q_min) or not np.isfinite(q_max) or q_max <= q_min:
-        return np.asarray([]), np.asarray([])
-
-    bins = np.linspace(q_min, q_max, max(int(npt), 2) + 1)
-    which = np.digitize(q_flat, bins) - 1
-    q_values: List[float] = []
-    i_values: List[float] = []
-    for idx in range(len(bins) - 1):
-        mask = which == idx
-        if not np.any(mask):
-            continue
-        q_values.append((bins[idx] + bins[idx + 1]) / 2.0)
-        i_values.append(float(np.nanmean(i_flat[mask])))
-    return np.asarray(q_values), np.asarray(i_values)
 
 
 def integrate_detector_signal(
@@ -1035,7 +976,7 @@ def integrate_detector_signal(
         finite = np.isfinite(q) & np.isfinite(intensity)
         return q[finite], intensity[finite]
     except Exception:
-        return _manual_integrate_q_nm(arr, poni_text, npt=npt)
+        return np.asarray([]), np.asarray([])
 
 
 def _resample_range(
@@ -1055,6 +996,8 @@ def _resample_range(
     order = np.argsort(q)
     q = q[order]
     intensity = intensity[order]
+    if q[0] > float(q_range[0]) or q[-1] < float(q_range[1]):
+        return np.asarray([]), np.asarray([])
     mask = (q >= float(q_range[0])) & (q <= float(q_range[1]))
     if np.count_nonzero(mask) < 2:
         return np.asarray([]), np.asarray([])
@@ -1126,18 +1069,6 @@ def collect_report_series(
                                 q_range,
                                 points=points,
                             )
-                            if q_out.size != points:
-                                q_manual, i_manual = _manual_integrate_q_nm(
-                                    det_group["processed_signal"][()],
-                                    poni_text,
-                                    npt=400,
-                                )
-                                q_out, i_out = _resample_range(
-                                    q_manual,
-                                    i_manual,
-                                    q_range,
-                                    points=points,
-                                )
                             if q_out.size != points:
                                 skipped.append(
                                     f"{path.name}:{det_group.name}: no q data in {q_range[0]}-{q_range[1]} nm^-1"

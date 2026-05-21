@@ -120,36 +120,27 @@ def test_build_daily_report_renders_two_images_for_primary_secondary(
     assert container.name in str(container)
 
 
-def test_build_daily_report_falls_back_to_poni_geometry_without_backend(tmp_path, monkeypatch):
-    _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
+def test_resolve_poni_text_prefers_detector_specific_over_legacy_attr(tmp_path):
+    path = tmp_path / "session_poni_priority.nxs.h5"
+    legacy_text = "Distance: 0.024\n# legacy"
+    detector_text = "Distance: 0.172\n# detector-specific"
+    with h5py.File(path, "w") as h5f:
+        poni_group = h5f.require_group("/entry/technical/poni")
+        poni_group.create_dataset("poni_primary", data=legacy_text)
+        poni_group.create_dataset("poni_det_minipix g08-w0299", data=detector_text)
+        det = h5f.require_group("/entry/measurements/pt_001/meas_0001/det_primary")
+        det.attrs["detector_alias"] = "PRIMARY"
+        det.attrs["detector_id"] = "MiniPIX G08-W0299"
+        det.attrs["poni_path"] = "/entry/technical/poni/poni_primary"
+        det.create_dataset("processed_signal", data=np.ones((8, 8)))
 
-    def _raise_no_backend(_poni_text):
-        raise RuntimeError("No azimuthal integration backend is available")
+        text = reporter._resolve_poni_text(h5f, det, "PRIMARY")
 
-    monkeypatch.setattr(
-        "difra.gui.technical.analysis_compat."
-        "initialize_azimuthal_integrator_poni_text",
-        _raise_no_backend,
-    )
-
-    result = reporter.build_daily_report(
-        config={
-            "measurements_archive_folder": str(tmp_path),
-            "measurements_folder": str(tmp_path / "missing"),
-        },
-        output_dir=tmp_path / "report",
-        since=None,
-        send_email=False,
-    )
-
-    assert result.valid_containers == 1
-    assert result.skipped == []
-    assert len(result.images) == 2
-    with zipfile.ZipFile(result.zip_path, "r") as archive:
-        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
+    assert "detector-specific" in text
+    assert "legacy" not in text
 
 
-def test_build_daily_report_falls_back_when_backend_q_range_is_empty(tmp_path, monkeypatch):
+def test_build_daily_report_does_not_fallback_when_backend_q_range_is_empty(tmp_path, monkeypatch):
     _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
 
     def _wrong_range_integrate(data, poni_text, *, npt=400):
@@ -169,10 +160,20 @@ def test_build_daily_report_falls_back_when_backend_q_range_is_empty(tmp_path, m
     )
 
     assert result.valid_containers == 1
-    assert result.skipped == []
-    assert len(result.images) == 2
+    assert result.skipped
+    assert len(result.images) == 0
     with zipfile.ZipFile(result.zip_path, "r") as archive:
-        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
+        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 0
+
+
+def test_resample_range_requires_full_q_coverage():
+    q = np.linspace(2.0, 4.0, 20)
+    intensity = np.ones_like(q)
+
+    q_out, i_out = reporter._resample_range(q, intensity, (2.0, 23.0), points=100)
+
+    assert q_out.size == 0
+    assert i_out.size == 0
 
 
 def test_send_daily_report_email_uses_smtp(monkeypatch, tmp_path):
