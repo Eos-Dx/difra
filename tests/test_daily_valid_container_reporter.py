@@ -176,6 +176,35 @@ def test_resample_range_requires_full_q_coverage():
     assert i_out.size == 0
 
 
+def test_build_daily_report_does_not_send_email_without_images(tmp_path, monkeypatch):
+    _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
+    monkeypatch.setattr(
+        reporter,
+        "integrate_detector_signal",
+        lambda data, poni_text, *, npt=400: (np.linspace(100.0, 120.0, 400), np.ones(400)),
+    )
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not send")),
+    )
+
+    result = reporter.build_daily_report(
+        config={
+            "measurements_archive_folder": str(tmp_path),
+            "measurements_folder": str(tmp_path / "missing"),
+        },
+        output_dir=tmp_path / "report",
+        since=None,
+        send_email=True,
+    )
+
+    assert len(result.images) == 0
+    assert result.email_result["sent"] is False
+    assert result.email_result["skipped"] is True
+    assert "no PNG images" in result.email_result["message"]
+
+
 def test_send_daily_report_email_uses_smtp(monkeypatch, tmp_path):
     zip_path = reporter.create_simple_test_image_zip(tmp_path)
     calls = []
@@ -504,6 +533,12 @@ def test_daily_report_state_advances_only_after_success(monkeypatch, tmp_path):
             "message": "daily report email sent",
         },
     )
+    monkeypatch.setattr(
+        reporter,
+        "integrate_detector_signal",
+        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+    )
+    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
     result = reporter.run_daily_report_from_config(
         config_path=config_path,
@@ -555,6 +590,12 @@ def test_daily_report_state_keeps_watermark_after_failed_send(monkeypatch, tmp_p
             "message": "daily report SMTP password not configured",
         },
     )
+    monkeypatch.setattr(
+        reporter,
+        "integrate_detector_signal",
+        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+    )
+    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
     result = reporter.run_daily_report_from_config(
         config_path=config_path,

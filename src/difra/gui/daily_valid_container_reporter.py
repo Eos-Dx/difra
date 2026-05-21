@@ -1166,6 +1166,14 @@ def render_report_images(
     return images
 
 
+def _no_report_images_email_result() -> Dict[str, Any]:
+    return {
+        "sent": False,
+        "skipped": True,
+        "message": "daily report has no PNG images; email not sent",
+    }
+
+
 def create_zip(zip_path: Path, image_paths: Iterable[Path], *, manifest: Dict[str, Any]) -> Path:
     target = Path(zip_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1463,19 +1471,22 @@ def build_daily_report(
         manifest=manifest,
     )
     if send_email:
-        try:
-            result.email_result = send_daily_report_email(
-                config=cfg,
-                zip_path=result.zip_path,
-                manifest=manifest,
-                allow_interactive_setup=allow_interactive_setup,
-            )
-        except Exception as exc:
-            result.email_result = {
-                "sent": False,
-                "skipped": False,
-                "message": f"{type(exc).__name__}: {exc}",
-            }
+        if not result.images:
+            result.email_result = _no_report_images_email_result()
+        else:
+            try:
+                result.email_result = send_daily_report_email(
+                    config=cfg,
+                    zip_path=result.zip_path,
+                    manifest=manifest,
+                    allow_interactive_setup=allow_interactive_setup,
+                )
+            except Exception as exc:
+                result.email_result = {
+                    "sent": False,
+                    "skipped": False,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
     return result
 
 
@@ -1526,19 +1537,22 @@ def build_daily_report_for_containers(
         manifest=manifest,
     )
     if send_email:
-        try:
-            result.email_result = send_daily_report_email(
-                config=cfg,
-                zip_path=result.zip_path,
-                manifest=manifest,
-                allow_interactive_setup=allow_interactive_setup,
-            )
-        except Exception as exc:
-            result.email_result = {
-                "sent": False,
-                "skipped": False,
-                "message": f"{type(exc).__name__}: {exc}",
-            }
+        if not result.images:
+            result.email_result = _no_report_images_email_result()
+        else:
+            try:
+                result.email_result = send_daily_report_email(
+                    config=cfg,
+                    zip_path=result.zip_path,
+                    manifest=manifest,
+                    allow_interactive_setup=allow_interactive_setup,
+                )
+            except Exception as exc:
+                result.email_result = {
+                    "sent": False,
+                    "skipped": False,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
     return result
 
 
