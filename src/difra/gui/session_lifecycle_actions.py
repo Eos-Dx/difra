@@ -437,6 +437,7 @@ class SessionLifecycleActions:
         project_name: Any,
         study_id: Any,
         study_name: Any,
+        specimen_id: Any = None,
         edited_by: Optional[str] = None,
         auth_mode: str = "password",
     ) -> Dict[str, Any]:
@@ -451,6 +452,7 @@ class SessionLifecycleActions:
 
         resolved_project_id = cls._coerce_optional_int(project_id)
         resolved_study_id = cls._coerce_optional_int(study_id)
+        resolved_specimen = cls._decode_attr(specimen_id).strip()
         resolved_project_name = cls._decode_attr(project_name).strip()
         resolved_study_name = cls._decode_attr(study_name).strip()
         resolved_editor = cls._decode_attr(edited_by).strip() or "unknown"
@@ -493,6 +495,9 @@ class SessionLifecycleActions:
                 original_mode = None
 
             with h5py.File(path, "a") as h5f:
+                previous_specimen = cls._decode_attr(
+                    h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", ""))
+                ).strip()
                 previous_project_name = cls._decode_attr(
                     h5f.attrs.get(
                         "matadorProjectName",
@@ -509,6 +514,17 @@ class SessionLifecycleActions:
                     h5f.attrs.get("matadorStudyId")
                 )
 
+                if resolved_specimen:
+                    h5f.attrs["sample_id"] = resolved_specimen
+                    h5f.attrs["specimenId"] = resolved_specimen
+                    matador_specimen_id = cls._coerce_optional_int(
+                        resolved_specimen.split("__", 1)[0]
+                    )
+                    if matador_specimen_id is None:
+                        if "matadorSpecimenId" in h5f.attrs:
+                            del h5f.attrs["matadorSpecimenId"]
+                    else:
+                        h5f.attrs["matadorSpecimenId"] = int(matador_specimen_id)
                 h5f.attrs["project_id"] = resolved_project_name
                 h5f.attrs["matadorProjectId"] = int(resolved_project_id)
                 h5f.attrs["matadorProjectName"] = resolved_project_name
@@ -517,6 +533,9 @@ class SessionLifecycleActions:
 
                 sample_group = h5f.get("/entry/sample")
                 if sample_group is not None:
+                    if resolved_specimen:
+                        sample_group.attrs["sample_id"] = resolved_specimen
+                        sample_group.attrs["specimenId"] = resolved_specimen
                     sample_group.attrs["project_id"] = resolved_project_name
 
                 raw_state = h5f.attrs.get("meta_json")
@@ -526,6 +545,16 @@ class SessionLifecycleActions:
                     except Exception:
                         state_payload = None
                     if isinstance(state_payload, dict):
+                        if resolved_specimen:
+                            state_payload["sample_id"] = resolved_specimen
+                            state_payload["specimenId"] = resolved_specimen
+                            matador_specimen_id = cls._coerce_optional_int(
+                                resolved_specimen.split("__", 1)[0]
+                            )
+                            if matador_specimen_id is None:
+                                state_payload.pop("matadorSpecimenId", None)
+                            else:
+                                state_payload["matadorSpecimenId"] = int(matador_specimen_id)
                         state_payload["project_id"] = resolved_project_name
                         state_payload["matadorProjectId"] = int(resolved_project_id)
                         state_payload["matadorProjectName"] = resolved_project_name
@@ -538,6 +567,8 @@ class SessionLifecycleActions:
 
                 line = (
                     f"{timestamp} | operator={resolved_editor} | auth={resolved_auth_mode} | "
+                    f"specimen='{previous_specimen or '-'}'"
+                    f" -> '{resolved_specimen or previous_specimen or '-'}' | "
                     f"project='{previous_project_name or '-'}'[{previous_project_id if previous_project_id is not None else '-'}]"
                     f" -> '{resolved_project_name}'[{resolved_project_id}] | "
                     f"study='{previous_study_name or '-'}'[{previous_study_id if previous_study_id is not None else '-'}]"

@@ -1162,6 +1162,7 @@ class SessionTabMixin:
         for container_path in targets:
             result = SessionLifecycleActions.edit_archived_session_matador_metadata(
                 container_path=container_path,
+                specimen_id=selection.get("specimen_id"),
                 project_id=selection.get("project_id"),
                 project_name=selection.get("project_name"),
                 study_id=selection.get("study_id"),
@@ -1177,6 +1178,7 @@ class SessionTabMixin:
                 unchanged.append(container_path.name)
 
         summary = [
+            f"Specimen ID: {selection.get('specimen_id') or 'unchanged'}",
             f"Project: {selection.get('project_name')} [{selection.get('project_id')}]",
             f"Study: {selection.get('study_name')} [{selection.get('study_id')}]",
             f"Changed by: {editor_id}",

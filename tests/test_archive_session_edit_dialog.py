@@ -7,7 +7,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QDialogButtonBox
+from difra.gui.qt_compat import QApplication, QDialog, QDialogButtonBox, QTest, Qt
 
 from container.v0_2 import writer as session_writer
 from difra.gui.main_window_ext.archive_session_edit_dialog import ArchiveSessionEditDialog
@@ -103,12 +103,65 @@ def test_archive_edit_dialog_loads_projects_and_studies_live_from_matador(qapp, 
 
         selection = dialog.get_selection()
         assert selection == {
+            "specimen_id": "SAMPLE_A",
             "project_id": 6701,
             "project_name": "NewProject",
             "study_id": 6751,
             "study_name": "NewStudy",
         }
         assert "matador data loaded" in dialog.matador_status_label.text().lower()
+    finally:
+        dialog.deleteLater()
+
+
+def test_archive_edit_dialog_specimen_scan_enter_does_not_accept(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A", "STUDY_A")
+    monkeypatch.setattr(
+        dialog_module,
+        "get_runtime_matador_context",
+        lambda _owner: {
+            "token": "jwt-token",
+            "matador_url": "https://portal.matur.co.uk",
+        },
+    )
+    monkeypatch.setattr(
+        dialog_module,
+        "refresh_matador_reference_cache",
+        lambda **_kwargs: {
+            "studies": [
+                {
+                    "id": 6751,
+                    "name": "NewStudy",
+                    "projectId": 6701,
+                    "projectName": "NewProject",
+                }
+            ],
+        },
+    )
+
+    dialog = ArchiveSessionEditDialog(
+        container_paths=[session_path],
+        matador_cache_path=tmp_path / "matador_cache.json",
+    )
+    try:
+        dialog.show()
+        qapp.processEvents()
+        dialog.project_combo.setCurrentIndex(1)
+        dialog.study_combo.setCurrentIndex(1)
+        dialog.specimen_id_edit.setFocus()
+        dialog.specimen_id_edit.clear()
+
+        QTest.keyClicks(dialog.specimen_id_edit, "64146__338189_P146_S01_FL")
+        QTest.keyClick(dialog.specimen_id_edit, Qt.Key_Return)
+        qapp.processEvents()
+
+        assert dialog.result() != QDialog.Accepted
+        assert dialog.isVisible() is True
+        assert dialog.get_selection()["specimen_id"] == "64146__338189_P146_S01_FL"
     finally:
         dialog.deleteLater()
 

@@ -198,6 +198,7 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
 
     result = SessionLifecycleActions.edit_archived_session_matador_metadata(
         container_path=session_path,
+        specimen_id="64146__338189_P146_S01_FL",
         project_id=6701,
         project_name="NewProject",
         study_id=6751,
@@ -208,18 +209,29 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
 
     assert result["success"] is True
     with h5py.File(session_path, "r") as h5f:
+        assert h5f.attrs["sample_id"] == "64146__338189_P146_S01_FL"
+        assert h5f.attrs["specimenId"] == "64146__338189_P146_S01_FL"
+        assert int(h5f.attrs["matadorSpecimenId"]) == 64146
         assert h5f.attrs["project_id"] == "NewProject"
         assert int(h5f.attrs["matadorProjectId"]) == 6701
         assert h5f.attrs["matadorProjectName"] == "NewProject"
         assert h5f.attrs["study_name"] == "NewStudy"
         assert int(h5f.attrs["matadorStudyId"]) == 6751
+        assert h5f["/entry/sample"].attrs["sample_id"] == "64146__338189_P146_S01_FL"
+        assert h5f["/entry/sample"].attrs["specimenId"] == "64146__338189_P146_S01_FL"
         assert h5f["/entry/sample"].attrs["project_id"] == "NewProject"
         state_payload = json.loads(h5f.attrs["meta_json"])
+        assert state_payload["sample_id"] == "64146__338189_P146_S01_FL"
+        assert state_payload["specimenId"] == "64146__338189_P146_S01_FL"
+        assert int(state_payload["matadorSpecimenId"]) == 64146
         assert state_payload["project_id"] == "NewProject"
         assert state_payload["study_name"] == "NewStudy"
         assert int(state_payload["matadorProjectId"]) == 6701
         assert int(state_payload["matadorStudyId"]) == 6751
         assert "operator=sad" in str(h5f.attrs.get("archive_metadata_edit_log", ""))
+        assert "specimen='SAMPLE_EDIT' -> '64146__338189_P146_S01_FL'" in str(
+            h5f.attrs.get("archive_metadata_edit_log", "")
+        )
         assert h5f.attrs["archive_metadata_edit_last_auth"] == "password"
 
     summary = SessionOldFormatExporter.export_from_session_container(
@@ -227,6 +239,7 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
         target_root=tmp_path / "old_format",
     )
     exported_state = json.loads(summary.state_path.read_text(encoding="utf-8"))
+    assert exported_state["sample_id"] == "64146__338189_P146_S01_FL"
     assert exported_state["project_id"] == "NewProject"
     assert exported_state["study_name"] == "NewStudy"
 
