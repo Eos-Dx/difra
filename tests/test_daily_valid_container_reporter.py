@@ -149,6 +149,32 @@ def test_build_daily_report_falls_back_to_poni_geometry_without_backend(tmp_path
         assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
 
 
+def test_build_daily_report_falls_back_when_backend_q_range_is_empty(tmp_path, monkeypatch):
+    _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
+
+    def _wrong_range_integrate(data, poni_text, *, npt=400):
+        q = np.linspace(100.0, 120.0, 400)
+        return q, np.ones_like(q)
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _wrong_range_integrate)
+
+    result = reporter.build_daily_report(
+        config={
+            "measurements_archive_folder": str(tmp_path),
+            "measurements_folder": str(tmp_path / "missing"),
+        },
+        output_dir=tmp_path / "report",
+        since=None,
+        send_email=False,
+    )
+
+    assert result.valid_containers == 1
+    assert result.skipped == []
+    assert len(result.images) == 2
+    with zipfile.ZipFile(result.zip_path, "r") as archive:
+        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
+
+
 def test_send_daily_report_email_uses_smtp(monkeypatch, tmp_path):
     zip_path = reporter.create_simple_test_image_zip(tmp_path)
     calls = []

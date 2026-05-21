@@ -1127,6 +1127,18 @@ def collect_report_series(
                                 points=points,
                             )
                             if q_out.size != points:
+                                q_manual, i_manual = _manual_integrate_q_nm(
+                                    det_group["processed_signal"][()],
+                                    poni_text,
+                                    npt=400,
+                                )
+                                q_out, i_out = _resample_range(
+                                    q_manual,
+                                    i_manual,
+                                    q_range,
+                                    points=points,
+                                )
+                            if q_out.size != points:
                                 skipped.append(
                                     f"{path.name}:{det_group.name}: no q data in {q_range[0]}-{q_range[1]} nm^-1"
                                 )
