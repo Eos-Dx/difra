@@ -39,6 +39,42 @@ def _create_dated_container(path: Path, acquisition_date: str) -> Path:
     return path
 
 
+def _create_reportable_container(path: Path) -> Path:
+    poni_text = "\n".join(
+        [
+            "poni_version: 2.1",
+            "Detector: Detector",
+            'Detector_config: {"pixel1": 5.5e-05, "pixel2": 5.5e-05, "max_shape": [256, 256]}',
+            "Distance: 0.0240169241576942",
+            "Poni1: 0.00728105874428302",
+            "Poni2: 0.00018897223180544494",
+            "Rot1: 0.0",
+            "Rot2: 0.0",
+            "Rot3: 0.0",
+            "Wavelength: 1.5420920203134363e-10",
+        ]
+    )
+    with h5py.File(path, "w") as h5f:
+        h5f.attrs["specimenId"] = "SPEC_REPORT"
+        h5f.attrs["sample_id"] = "SPEC_REPORT"
+        h5f.attrs["session_state"] = "measuring"
+        h5f.attrs["matadorProjectId"] = 6701
+        poni_group = h5f.require_group("/entry/technical/poni")
+        poni_group.create_dataset("poni_primary", data=poni_text)
+        poni_group.create_dataset("poni_secondary", data=poni_text)
+        meas = h5f.require_group("/entry/measurements/pt_001/meas_0001")
+        yy, xx = np.indices((256, 256))
+        signal = (xx + yy).astype(float)
+        for det_name, alias in (
+            ("det_primary", "PRIMARY"),
+            ("det_secondary", "SECONDARY"),
+        ):
+            det = meas.require_group(det_name)
+            det.attrs["detector_alias"] = alias
+            det.create_dataset("processed_signal", data=signal)
+    return path
+
+
 def test_create_simple_test_image_zip_contains_two_pngs(tmp_path):
     zip_path = reporter.create_simple_test_image_zip(tmp_path)
 
@@ -82,6 +118,35 @@ def test_build_daily_report_renders_two_images_for_primary_secondary(
     assert manifest["projectIds"] == ["6701"]
     assert manifest["matadorUploaded"] == 1
     assert container.name in str(container)
+
+
+def test_build_daily_report_falls_back_to_poni_geometry_without_backend(tmp_path, monkeypatch):
+    _create_reportable_container(tmp_path / "session_reportable.nxs.h5")
+
+    def _raise_no_backend(_poni_text):
+        raise RuntimeError("No azimuthal integration backend is available")
+
+    monkeypatch.setattr(
+        "difra.gui.technical.analysis_compat."
+        "initialize_azimuthal_integrator_poni_text",
+        _raise_no_backend,
+    )
+
+    result = reporter.build_daily_report(
+        config={
+            "measurements_archive_folder": str(tmp_path),
+            "measurements_folder": str(tmp_path / "missing"),
+        },
+        output_dir=tmp_path / "report",
+        since=None,
+        send_email=False,
+    )
+
+    assert result.valid_containers == 1
+    assert result.skipped == []
+    assert len(result.images) == 2
+    with zipfile.ZipFile(result.zip_path, "r") as archive:
+        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
 
 
 def test_send_daily_report_email_uses_smtp(monkeypatch, tmp_path):
@@ -519,9 +584,55 @@ def test_run_daily_report_for_date_sends_missed_previous_day(monkeypatch, tmp_pa
     assert result.valid_containers == 1
     assert result.email_result["sent"] is True
     assert state["byDate"]["2026-05-20"]["sent"] is True
+    assert state["byDate"]["2026-05-20"]["imageCount"] == 2
 
 
 def test_run_daily_report_for_date_skips_when_already_sent(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    container = _create_dated_container(archive / "session_previous.nxs.h5", "2026-05-20")
+    fingerprint = reporter.hashlib.sha256(
+        f"{container}:{container.stat().st_mtime_ns}:{container.stat().st_size}".encode("utf-8")
+    ).hexdigest()
+    state_path = tmp_path / "report_state.json"
+    state_path.write_text(
+        reporter.json.dumps(
+            {
+                "byDate": {
+                    "2026-05-20": {
+                        "sent": True,
+                        "fingerprint": fingerprint,
+                        "imageCount": 2,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        reporter.json.dumps(
+            {
+                "measurements_archive_folder": str(archive),
+                "measurements_folder": str(tmp_path / "missing"),
+                "daily_report_state_path": str(state_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = reporter.run_daily_report_for_date_from_config(
+        config_path=config_path,
+        output_dir=tmp_path / "reports",
+        report_date=date(2026, 5, 20),
+        send_email=True,
+    )
+
+    assert result.email_result["skipped"] is True
+    assert "already sent" in result.email_result["message"]
+
+
+def test_run_daily_report_for_date_resends_previous_empty_image_report(monkeypatch, tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()
     container = _create_dated_container(archive / "session_previous.nxs.h5", "2026-05-20")
@@ -553,6 +664,21 @@ def test_run_daily_report_for_date_skips_when_already_sent(monkeypatch, tmp_path
         ),
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **_kwargs: {
+            "sent": True,
+            "skipped": False,
+            "message": "daily report email sent",
+        },
+    )
+    monkeypatch.setattr(
+        reporter,
+        "integrate_detector_signal",
+        lambda data, poni_text, *, npt=400: (np.linspace(0.5, 24.0, 400), np.ones(400)),
+    )
+    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
 
     result = reporter.run_daily_report_for_date_from_config(
         config_path=config_path,
@@ -561,8 +687,8 @@ def test_run_daily_report_for_date_skips_when_already_sent(monkeypatch, tmp_path
         send_email=True,
     )
 
-    assert result.email_result["skipped"] is True
-    assert "already sent" in result.email_result["message"]
+    assert result.email_result["sent"] is True
+    assert len(result.images) == 2
 
 
 def test_gui_email_password_setup_skips_when_password_exists(monkeypatch):

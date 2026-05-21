@@ -940,6 +940,75 @@ def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str
     return ""
 
 
+def _poni_value(lines: Dict[str, str], key: str, default: float = 0.0) -> float:
+    try:
+        return float(lines.get(key, default))
+    except Exception:
+        return default
+
+
+def _manual_integrate_q_nm(
+    data: np.ndarray,
+    poni_text: str,
+    *,
+    npt: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    arr = np.asarray(data, dtype=float)
+    if arr.ndim != 2 or not str(poni_text or "").strip():
+        return np.asarray([]), np.asarray([])
+
+    lines: Dict[str, str] = {}
+    for raw_line in str(poni_text or "").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        lines[key.strip()] = value.strip()
+
+    detector_config: Dict[str, Any] = {}
+    try:
+        detector_config = json.loads(lines.get("Detector_config", "") or "{}")
+    except Exception:
+        detector_config = {}
+
+    pixel1 = _poni_value(lines, "PixelSize1", float(detector_config.get("pixel1", 0.0) or 0.0))
+    pixel2 = _poni_value(lines, "PixelSize2", float(detector_config.get("pixel2", 0.0) or 0.0))
+    distance = _poni_value(lines, "Distance")
+    poni1 = _poni_value(lines, "Poni1")
+    poni2 = _poni_value(lines, "Poni2")
+    wavelength_m = _poni_value(lines, "Wavelength")
+    if min(pixel1, pixel2, distance, wavelength_m) <= 0:
+        return np.asarray([]), np.asarray([])
+
+    yy, xx = np.indices(arr.shape)
+    y_m = (yy + 0.5) * pixel1
+    x_m = (xx + 0.5) * pixel2
+    radius_m = np.sqrt((y_m - poni1) ** 2 + (x_m - poni2) ** 2)
+    two_theta = np.arctan2(radius_m, distance)
+    q_nm = (4.0 * np.pi * np.sin(two_theta / 2.0)) / (wavelength_m * 1e9)
+    finite = np.isfinite(q_nm) & np.isfinite(arr)
+    q_flat = q_nm[finite].reshape(-1)
+    i_flat = arr[finite].reshape(-1)
+    if q_flat.size < 2:
+        return np.asarray([]), np.asarray([])
+
+    q_min = float(np.nanmin(q_flat))
+    q_max = float(np.nanmax(q_flat))
+    if not np.isfinite(q_min) or not np.isfinite(q_max) or q_max <= q_min:
+        return np.asarray([]), np.asarray([])
+
+    bins = np.linspace(q_min, q_max, max(int(npt), 2) + 1)
+    which = np.digitize(q_flat, bins) - 1
+    q_values: List[float] = []
+    i_values: List[float] = []
+    for idx in range(len(bins) - 1):
+        mask = which == idx
+        if not np.any(mask):
+            continue
+        q_values.append((bins[idx] + bins[idx + 1]) / 2.0)
+        i_values.append(float(np.nanmean(i_flat[mask])))
+    return np.asarray(q_values), np.asarray(i_values)
+
+
 def integrate_detector_signal(
     data: np.ndarray,
     poni_text: str,
@@ -966,7 +1035,7 @@ def integrate_detector_signal(
         finite = np.isfinite(q) & np.isfinite(intensity)
         return q[finite], intensity[finite]
     except Exception:
-        return np.asarray([]), np.asarray([])
+        return _manual_integrate_q_nm(arr, poni_text, npt=npt)
 
 
 def _resample_range(
@@ -1630,7 +1699,13 @@ def run_daily_report_for_date_from_config(
         ).encode("utf-8")
     ).hexdigest()
 
-    if send_email and skip_if_sent and date_state.get("sent") is True:
+    previous_image_count = _as_int(date_state.get("imageCount"), 0)
+    if (
+        send_email
+        and skip_if_sent
+        and date_state.get("sent") is True
+        and previous_image_count > 0
+    ):
         if not resend_if_changed or date_state.get("fingerprint") == fingerprint:
             result = DailyReportResult(scanned=len(containers))
             result.period_start = datetime.combine(report_date, time.min).isoformat(timespec="seconds")
@@ -1696,6 +1771,7 @@ def run_daily_report_for_date_from_config(
                 "message": _as_text(result.email_result.get("message"), ""),
                 "zipPath": str(result.zip_path or ""),
                 "validContainers": int(result.valid_containers),
+                "imageCount": len(result.images),
             }
         )
         if sent:
