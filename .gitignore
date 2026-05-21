@@ -9,3 +9,9 @@ build/
 .DS_Store
 src/difra/resources/config/operators.json
 src/difra/resources/config/matador_cache.json
+*.log
+scratch_*.py
+_run_*.py
+_test_*.py
+smoke_test_*.py
+auto_poni_*.py
