@@ -8,3 +8,4 @@ build/
 *.egg-info/
 .DS_Store
 src/difra/resources/config/operators.json
+src/difra/resources/config/matador_cache.json
