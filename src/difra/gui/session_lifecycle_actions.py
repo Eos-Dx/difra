@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import time
@@ -16,7 +17,6 @@ import zipfile
 import h5py
 
 from difra.gui.matador_upload_api import (
-    MatadorCreateSessionRequest,
     MatadorFindOrCreateSessionRequest,
     MatadorRegisterFileRequest,
     MatadorUploadContainerRequest,
@@ -86,6 +86,8 @@ class UploadStubResult:
     h5_upload_status: str = ""
     h5_processing_status: str = ""
     verification_pending: bool = False
+    resolved_matador_specimen_id: Optional[int] = None
+    specimen_resolution_message: str = ""
 
 
 class SessionLifecycleActions:
@@ -931,18 +933,23 @@ class SessionLifecycleActions:
 
         try:
             with h5py.File(session_path, "r") as h5f:
+                raw_specimen = h5f.attrs.get("specimenId", h5f.attrs.get("sample_id"))
                 specimen = h5f.attrs.get(
                     "matadorSpecimenId",
                     h5f.attrs.get(
                         "matador_specimen_id",
-                        h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                        raw_specimen,
                     ),
                 )
+                metadata["raw_specimen_text"] = cls._decode_attr(raw_specimen).strip()
                 metadata["specimen_text"] = cls._decode_attr(specimen).strip()
                 metadata["specimen_id"] = cls._coerce_optional_int(specimen)
 
                 study = h5f.attrs.get("matadorStudyId", metadata["study_id"])
+                project = h5f.attrs.get("matadorProjectId")
                 machine = h5f.attrs.get("matadorMachineId", metadata["machine_id"])
+                if project not in (None, ""):
+                    metadata["project_id"] = int(project)
                 if study not in (None, ""):
                     metadata["study_id"] = int(study)
                 if machine not in (None, ""):
@@ -1009,6 +1016,119 @@ class SessionLifecycleActions:
     @staticmethod
     def _requires_strict_matador_contract(upload_api: Any) -> bool:
         return upload_api.__class__.__name__ == "RealMatadorUploadApi"
+
+    @classmethod
+    def _matador_specimen_candidate_ids(cls, *values: Any) -> List[int]:
+        candidates: List[int] = []
+        for value in values:
+            text = cls._decode_attr(value).strip()
+            if not text:
+                continue
+            tokens = [text]
+            if "__" in text:
+                left, right = text.split("__", 1)
+                tokens = [left.strip(), right.strip()]
+            for token in tokens:
+                match = re.match(r"^\s*([+-]?\d+)", token)
+                if not match:
+                    continue
+                candidate = cls._coerce_optional_int(match.group(1))
+                if candidate is not None and candidate not in candidates:
+                    candidates.append(int(candidate))
+        return candidates
+
+    @classmethod
+    def _lookup_matador_specimen(cls, upload_api: Any, specimen_id: int) -> Dict[str, Any]:
+        getter = getattr(upload_api, "get_specimen", None)
+        if callable(getter):
+            return dict(getter(int(specimen_id)) or {})
+        request_json = getattr(upload_api, "_request_json", None)
+        if callable(request_json):
+            return dict(
+                request_json(
+                    method="GET",
+                    path=f"/api/specimen/{int(specimen_id)}",
+                )
+                or {}
+            )
+        raise RuntimeError("Matador specimen lookup is not available")
+
+    @classmethod
+    def _resolve_matador_specimen_id_for_upload(
+        cls,
+        *,
+        upload_api: Any,
+        session_metadata: Dict[str, Any],
+    ) -> tuple[Optional[int], str]:
+        target_study_id = cls._coerce_optional_int(session_metadata.get("study_id"))
+        target_project_id = cls._coerce_optional_int(session_metadata.get("project_id"))
+        candidates = cls._matador_specimen_candidate_ids(
+            session_metadata.get("specimen_text"),
+            session_metadata.get("raw_specimen_text"),
+        )
+        if not candidates:
+            return None, "No numeric specimen ID candidates found in container metadata."
+
+        valid: List[tuple[int, str]] = []
+        existing_wrong: List[str] = []
+        missing: List[int] = []
+        for candidate in candidates:
+            try:
+                payload = cls._lookup_matador_specimen(upload_api, candidate)
+            except Exception:
+                missing.append(candidate)
+                continue
+
+            study = payload.get("study") if isinstance(payload.get("study"), dict) else {}
+            payload_study_id = cls._coerce_optional_int(
+                payload.get("studyId") or study.get("id")
+            )
+            project = (
+                payload.get("project") if isinstance(payload.get("project"), dict) else {}
+            )
+            payload_project_id = cls._coerce_optional_int(
+                payload.get("projectId") or project.get("id")
+            )
+            study_ok = target_study_id is None or payload_study_id == target_study_id
+            project_ok = (
+                target_project_id is None
+                or payload_project_id is None
+                or payload_project_id == target_project_id
+            )
+            detail = (
+                f"{candidate}: study={payload_study_id or 'unknown'}, "
+                f"project={payload_project_id or 'unknown'}"
+            )
+            if study_ok and project_ok:
+                valid.append((candidate, detail))
+            else:
+                existing_wrong.append(detail)
+
+        if len(valid) == 1:
+            resolved = int(valid[0][0])
+            return (
+                resolved,
+                f"Resolved Matador specimen ID {resolved} by /api/specimen pre-check.",
+            )
+        if len(valid) > 1:
+            return (
+                None,
+                "Ambiguous Matador specimen ID: multiple candidates match "
+                f"study={target_study_id or 'unknown'} / project={target_project_id or 'unknown'}: "
+                + ", ".join(str(item[0]) for item in valid),
+            )
+        if existing_wrong:
+            return (
+                None,
+                "Specimen candidate(s) exist in Matador but not in this study/project "
+                f"(expected study={target_study_id or 'unknown'}, project={target_project_id or 'unknown'}): "
+                + "; ".join(existing_wrong),
+            )
+        return (
+            None,
+            "No specimen ID candidate exists in Matador for this container: "
+            + ", ".join(str(item) for item in missing),
+        )
 
     @staticmethod
     def _poll_until_hash_verified(
@@ -1314,16 +1434,26 @@ class SessionLifecycleActions:
             )
 
         specimen_text = str(session_metadata.get("specimen_text") or "").strip()
-        if strict_matador_contract and session_metadata.get("specimen_id") is None:
-            if specimen_text:
+        if strict_matador_contract:
+            resolved_specimen_id, specimen_resolution_message = (
+                cls._resolve_matador_specimen_id_for_upload(
+                    upload_api=upload_backend,
+                    session_metadata=session_metadata,
+                )
+            )
+            if resolved_specimen_id is None:
+                if specimen_text:
+                    return _blocked_result(
+                        "Matador specimen ID is required for measurement uploads, "
+                        f"but container stores '{specimen_text}'. "
+                        f"{specimen_resolution_message}"
+                    )
                 return _blocked_result(
                     "Matador specimen ID is required for measurement uploads, "
-                    f"but container stores '{specimen_text}'."
+                    f"but none is stored in the container. {specimen_resolution_message}"
                 )
-            return _blocked_result(
-                "Matador specimen ID is required for measurement uploads, "
-                "but none is stored in the container."
-            )
+            session_metadata["specimen_id"] = int(resolved_specimen_id)
+            session_metadata["specimen_resolution_message"] = specimen_resolution_message
 
         ingest_session = None
         if batch_group_key and batch_session_cache is not None:
@@ -1799,6 +1929,14 @@ class SessionLifecycleActions:
             h5_upload_status="" if h5_status is None else str(h5_status.upload_status),
             h5_processing_status="" if h5_status is None else str(h5_status.processing_status),
             verification_pending=verification_pending,
+            resolved_matador_specimen_id=(
+                int(session_metadata["specimen_id"])
+                if session_metadata.get("specimen_id") is not None
+                else None
+            ),
+            specimen_resolution_message=str(
+                session_metadata.get("specimen_resolution_message") or ""
+            ),
         )
 
     @classmethod
@@ -1895,6 +2033,10 @@ class SessionLifecycleActions:
             send_reason = "" if upload_result.success else str(upload_result.message)
         resolved_specimen_id = specimen_id
         if resolved_specimen_id is None:
+            result_specimen_id = getattr(upload_result, "resolved_matador_specimen_id", None)
+            if result_specimen_id is not None:
+                resolved_specimen_id = int(result_specimen_id)
+        if resolved_specimen_id is None:
             try:
                 metadata = cls._read_matador_session_metadata(Path(container_path))
                 if metadata.get("specimen_id") is not None:
@@ -1934,6 +2076,11 @@ class SessionLifecycleActions:
         }
         if resolved_specimen_id is not None:
             attrs["matadorSpecimenId"] = int(resolved_specimen_id)
+        resolution_message = str(
+            getattr(upload_result, "specimen_resolution_message", "") or ""
+        ).strip()
+        if resolution_message:
+            attrs["matador_specimen_resolution"] = resolution_message
         return cls._write_container_attrs(container_path, attrs)
 
     @classmethod

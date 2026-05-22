@@ -15,6 +15,8 @@ from difra.gui.qt_compat import Qt
 from difra.gui.qt_compat import (
     QAbstractItemView,
     QApplication,
+    QBrush,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -30,14 +32,18 @@ from difra.gui.qt_compat import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
-    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from difra.gui.archive_project_statistics import (
+    build_archive_project_statistics,
+    collect_matador_project_sets,
+)
 from difra.gui.container_api import get_container_manager, get_schema
 from difra.gui.daily_valid_container_reporter import build_daily_report_for_containers
 from difra.gui.main_window_ext.archive_session_edit_dialog import (
@@ -50,6 +56,7 @@ from difra.gui.matador_runtime_context import (
 from difra.gui.matador_upload_error_reporter import (
     send_matador_upload_error_report,
 )
+from difra.gui.matador_upload_api import build_matador_upload_api
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService
@@ -520,6 +527,12 @@ class SessionTabMixin:
         )
         self.send_archived_window_btn.setEnabled(False)
         actions.addWidget(self.send_archived_window_btn)
+
+        self.archive_project_statistics_btn = QPushButton("Statistics by project")
+        self.archive_project_statistics_btn.clicked.connect(
+            self._show_archive_project_statistics
+        )
+        actions.addWidget(self.archive_project_statistics_btn)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -539,6 +552,7 @@ class SessionTabMixin:
         self.archive_window_search_edit = None
         self.archive_window_sort_combo = None
         self.send_archived_window_btn = None
+        self.archive_project_statistics_btn = None
 
     def _populate_archive_window_table(self):
         table = getattr(self, "archive_window_table", None)
@@ -590,6 +604,227 @@ class SessionTabMixin:
         if label is not None:
             label.setText(f"Archive folder: {self._get_session_archive_folder()}")
         self._update_archive_action_buttons()
+
+    @staticmethod
+    def _stats_item(value, *, color: Optional[QColor] = None) -> QTableWidgetItem:
+        item = QTableWidgetItem(str(value))
+        item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        if color is not None:
+            item.setBackground(QBrush(color))
+        return item
+
+    @staticmethod
+    def _stats_count(value) -> str:
+        return "Unknown" if value is None else str(value)
+
+    @classmethod
+    def _stats_status_color(cls, value: str) -> QColor:
+        text = str(value or "").strip().lower()
+        if text in {"sent", "ok", "in", "yes"}:
+            return QColor("#d8f5d0")
+        if text in {"unsent", "out", "no", "unmeasured"}:
+            return QColor("#ffd6d6")
+        if text in {"partial", "unknown"}:
+            return QColor("#fff4bf")
+        return QColor("#eeeeee")
+
+    def _archive_project_keys_from_rows(self, rows: List[dict]) -> List[str]:
+        keys = []
+        for row in rows:
+            raw = str(row.get("matadorProjectId") or "").strip()
+            if raw and raw not in keys:
+                keys.append(raw)
+        return keys
+
+    def _load_matador_archive_project_sets(self, rows: List[dict]):
+        context = get_runtime_matador_context(self)
+        token = str(context.get("token") or "").strip()
+        matador_url = str(context.get("matador_url") or "").strip()
+        if not token or not matador_url:
+            return {}, {}, "Matador: token not configured"
+
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        runtime_config.update(
+            {
+                "matador_url": matador_url,
+                "matador_token": token,
+                "matador_force_stub": False,
+            }
+        )
+        try:
+            api = build_matador_upload_api(runtime_config)
+            studies = api.list_studies()
+            specimen_sets, uploaded_sets, errors = collect_matador_project_sets(
+                api=api,
+                project_keys=self._archive_project_keys_from_rows(rows),
+                studies=studies,
+            )
+        except Exception as exc:
+            return {}, {}, f"Matador: unavailable ({exc})"
+
+        if errors:
+            return specimen_sets, uploaded_sets, "Matador: partial data; " + "; ".join(errors[:3])
+        return specimen_sets, uploaded_sets, "Matador: loaded"
+
+    def _populate_project_statistics_tables(
+        self,
+        *,
+        project_table: QTableWidget,
+        specimen_table: QTableWidget,
+        status_label: QLabel,
+        stats,
+        matador_status: str,
+    ) -> None:
+        project_table.setRowCount(0)
+        for row_index, row in enumerate(stats.projects):
+            project_table.insertRow(row_index)
+            values = [
+                row.get("label", ""),
+                self._stats_count(row.get("matadorSpecimens")),
+                row.get("archiveMeasured", 0),
+                self._stats_count(row.get("matadorSpecimens")),
+                self._stats_count(row.get("matadorUploaded")),
+                self._stats_count(row.get("missingInArchive")),
+                self._stats_count(row.get("notUploaded")),
+                self._stats_count(row.get("archiveOnly")),
+            ]
+            for col, value in enumerate(values):
+                color = None
+                if col in {2, 4} and str(value) != "Unknown" and int(value or 0):
+                    color = QColor("#d8f5d0")
+                if col in {5, 6, 7} and str(value) != "Unknown" and int(value or 0):
+                    color = QColor("#ffd6d6")
+                item = self._stats_item(value, color=color)
+                if col == 0:
+                    item.setData(Qt.UserRole, str(row.get("key") or ""))
+                project_table.setItem(row_index, col, item)
+
+        def _select_project():
+            selected_rows = sorted(
+                {index.row() for index in project_table.selectedIndexes()}
+            )
+            if not selected_rows and project_table.rowCount():
+                selected_rows = [0]
+            if not selected_rows:
+                return
+            key_item = project_table.item(selected_rows[0], 0)
+            project_key = str(key_item.data(Qt.UserRole) or "") if key_item else ""
+            detail_rows = list(stats.specimens_by_project.get(project_key, []) or [])
+            specimen_table.setRowCount(0)
+            for detail_index, detail in enumerate(detail_rows):
+                specimen_table.insertRow(detail_index)
+                values = [
+                    detail.get("displaySpecimenId") or detail.get("specimenId", ""),
+                    detail.get("matadorSpecimen", "Unknown"),
+                    "Yes" if detail.get("localMeasured") else "No",
+                    detail.get("matadorMeasurement", "Unknown"),
+                    detail.get("localStatus", ""),
+                ]
+                for col, value in enumerate(values):
+                    color = None
+                    if col in {1, 2, 3, 4}:
+                        color = self._stats_status_color(str(value))
+                    specimen_table.setItem(
+                        detail_index,
+                        col,
+                        self._stats_item(value, color=color),
+                    )
+            specimen_table.resizeColumnsToContents()
+
+        project_table.itemSelectionChanged.connect(_select_project)
+        project_table.resizeColumnsToContents()
+        status_label.setText(matador_status)
+        if project_table.rowCount():
+            project_table.selectRow(0)
+            _select_project()
+
+    def _show_archive_project_statistics(self):
+        self._refresh_session_container_lists()
+        rows = list(getattr(self, "_archived_rows_all", []) or [])
+        if not rows:
+            QMessageBox.information(
+                self,
+                "No Archive Data",
+                "No archived session containers found.",
+            )
+            return
+
+        matador_specimens, matador_uploaded, matador_status = (
+            self._load_matador_archive_project_sets(rows)
+        )
+        stats = build_archive_project_statistics(
+            rows,
+            matador_specimens_by_project=matador_specimens,
+            matador_uploaded_by_project=matador_uploaded,
+        )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Statistics by project")
+        dialog.setModal(False)
+        dialog.resize(1250, 760)
+        layout = QVBoxLayout(dialog)
+
+        status_label = QLabel("")
+        status_label.setStyleSheet("color: #555; padding: 4px;")
+        layout.addWidget(status_label)
+
+        project_box = QGroupBox("Projects")
+        project_layout = QVBoxLayout(project_box)
+        project_table = QTableWidget(0, 8, project_box)
+        project_table.setHorizontalHeaderLabels(
+            [
+                "Project",
+                "DB specimens",
+                "Archive measured",
+                "Matador specimens",
+                "Matador In",
+                "Not measured",
+                "Archive not uploaded",
+                "Archive only",
+            ]
+        )
+        project_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        project_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        project_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        project_layout.addWidget(project_table)
+        layout.addWidget(project_box, 1)
+
+        specimen_box = QGroupBox("Specimens")
+        specimen_layout = QVBoxLayout(specimen_box)
+        specimen_table = QTableWidget(0, 5, specimen_box)
+        specimen_table.setHorizontalHeaderLabels(
+            [
+                "Specimen ID",
+                "Matador specimen",
+                "Measured archive",
+                "Matador In",
+                "Archive status",
+            ]
+        )
+        specimen_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        specimen_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        specimen_layout.addWidget(specimen_table)
+        layout.addWidget(specimen_box, 2)
+
+        buttons = QHBoxLayout()
+        close_button = QPushButton("Close", dialog)
+        close_button.clicked.connect(dialog.close)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        self._populate_project_statistics_tables(
+            project_table=project_table,
+            specimen_table=specimen_table,
+            status_label=status_label,
+            stats=stats,
+            matador_status=matador_status,
+        )
+        self._archive_project_statistics_dialog = dialog
+        dialog.finished.connect(
+            lambda *_args: setattr(self, "_archive_project_statistics_dialog", None)
+        )
+        dialog.show()
 
     def _get_measurements_folder_for_queue(self) -> Path:
         if hasattr(self, "config") and self.config:

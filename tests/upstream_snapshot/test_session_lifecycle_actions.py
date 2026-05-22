@@ -93,6 +93,16 @@ class _PendingMeasurementMatadorUploadApi(_CountingMatadorUploadApi):
             payload["processing_status"] = "HASH_VERIFIED_PENDING_ACCEPT"
 
 
+class _SpecimenLookupApi:
+    def __init__(self, specimens):
+        self.specimens = dict(specimens)
+
+    def get_specimen(self, specimen_id):
+        if int(specimen_id) not in self.specimens:
+            raise RuntimeError("404 NOT_FOUND")
+        return self.specimens[int(specimen_id)]
+
+
 def test_matador_batch_group_key_uses_session_bucket_and_hash_is_stable(tmp_path):
     _sid, session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A")
     with h5py.File(session_path, "a") as h5f:
@@ -169,6 +179,68 @@ def test_read_matador_metadata_uses_leading_specimen_id_from_container(tmp_path)
 
     assert metadata["specimen_text"] == "326111__326169"
     assert metadata["specimen_id"] == 326111
+
+
+def test_resolve_matador_specimen_uses_candidate_matching_study():
+    api = _SpecimenLookupApi(
+        {
+            337552: {"id": 337552, "study": {"id": 335552}},
+        }
+    )
+
+    resolved, message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "337503",
+            "raw_specimen_text": "337503__337552_P42_S01_RL",
+            "study_id": 335552,
+            "project_id": 32405,
+        },
+    )
+
+    assert resolved == 337552
+    assert "Resolved Matador specimen ID 337552" in message
+
+
+def test_resolve_matador_specimen_keeps_leading_candidate_when_it_matches_study():
+    api = _SpecimenLookupApi(
+        {
+            378710: {"id": 378710, "study": {"id": 377501}},
+        }
+    )
+
+    resolved, _message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "378710",
+            "raw_specimen_text": "378710__377600_P50_WH_S03",
+            "study_id": 377501,
+            "project_id": 497151,
+        },
+    )
+
+    assert resolved == 378710
+
+
+def test_resolve_matador_specimen_blocks_candidate_in_wrong_study():
+    api = _SpecimenLookupApi(
+        {
+            337552: {"id": 337552, "study": {"id": 999}},
+        }
+    )
+
+    resolved, message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "337503",
+            "raw_specimen_text": "337503__337552_P42_S01_RL",
+            "study_id": 335552,
+            "project_id": 32405,
+        },
+    )
+
+    assert resolved is None
+    assert "not in this study/project" in message
 
 
 def test_read_matador_metadata_uses_acquisition_date_as_session_date(tmp_path):
