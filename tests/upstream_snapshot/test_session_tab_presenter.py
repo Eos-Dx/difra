@@ -9,8 +9,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QTableWidget
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QApplication, QTableWidget
 
 from container.v0_2 import schema, writer as session_writer
 from container.v0_2.container_manager import is_container_locked, lock_container
@@ -306,3 +306,4 @@ def test_filter_archived_rows_can_filter_unsent_today_and_sort():
     )
 
     assert [row["sample_id"] for row in filtered] == ["SPEC_C", "SPEC_B"]
+

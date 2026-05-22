@@ -36,6 +36,7 @@ from difra.gui.qt_compat import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QTimer,
     QVBoxLayout,
     QWidget,
 )
@@ -160,6 +161,7 @@ class SessionTabMixin:
         *,
         container_paths: List[Path],
         runtime_config: dict,
+        initial_delay_sec: Optional[float] = None,
     ) -> None:
         paths = [Path(path) for path in (container_paths or []) if Path(path).exists()]
         if not paths:
@@ -183,6 +185,11 @@ class SessionTabMixin:
             int(runtime_config.get("matador_async_verification_max_rounds", 40)),
             1,
         )
+        first_delay_sec = (
+            interval_sec
+            if initial_delay_sec is None
+            else max(float(initial_delay_sec), 0.0)
+        )
         container_manager = self._container_manager()
         setattr(self, "_matador_pending_verification_running", True)
 
@@ -190,7 +197,9 @@ class SessionTabMixin:
             try:
                 offset = 0
                 for round_index in range(1, max_rounds + 1):
-                    time.sleep(interval_sec)
+                    delay_sec = first_delay_sec if round_index == 1 else interval_sec
+                    if delay_sec > 0:
+                        time.sleep(delay_sec)
                     pending_paths = []
                     for path in paths:
                         try:
@@ -238,6 +247,109 @@ class SessionTabMixin:
             daemon=True,
         )
         thread.start()
+
+    def _archive_pending_verification_paths(self) -> List[Path]:
+        paths = []
+        for row in list(getattr(self, "_archived_rows_all", []) or []):
+            if str(row.get("upload_status") or "").strip() != (
+                SessionLifecycleActions.UPLOAD_STATUS_PENDING_VERIFICATION
+            ):
+                continue
+            raw_path = str(row.get("path") or "").strip()
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if path.exists():
+                paths.append(path)
+        return paths
+
+    def _runtime_config_for_archive_pending_verification(self) -> Optional[dict]:
+        runtime_config = dict(
+            self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        )
+        context = get_runtime_matador_context(self)
+        token = str(
+            context.get("token")
+            or runtime_config.get("matador_token")
+            or os.environ.get("MATADOR_TOKEN")
+            or ""
+        ).strip()
+        matador_url = str(
+            context.get("matador_url")
+            or runtime_config.get("matador_url")
+            or os.environ.get("MATADOR_URL")
+            or ""
+        ).strip()
+        if not token or not matador_url:
+            upload_context = self._request_upload_login_context(
+                fallback_operator=str(runtime_config.get("operator_id") or "unknown")
+            )
+            if upload_context is None:
+                return None
+            token = str(upload_context.get("token") or "").strip()
+            matador_url = str(upload_context.get("matador_url") or "").strip()
+            runtime_config["operator_id"] = str(
+                upload_context.get("uploader_id")
+                or runtime_config.get("operator_id")
+                or "unknown"
+            )
+        runtime_config["matador_token"] = token
+        runtime_config["matador_url"] = matador_url
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
+        runtime_config.setdefault("matador_async_verification_interval_sec", 30.0)
+        runtime_config.setdefault("matador_async_verification_max_rounds", 40)
+        runtime_config.setdefault("operator_id", "unknown")
+        return runtime_config
+
+    def _ensure_archive_pending_refresh_timer(self) -> None:
+        timer = getattr(self, "_archive_pending_refresh_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(5000)
+            timer.timeout.connect(self._archive_pending_refresh_tick)
+            setattr(self, "_archive_pending_refresh_timer", timer)
+        if not timer.isActive():
+            timer.start()
+
+    def _archive_pending_refresh_tick(self) -> None:
+        dialog = getattr(self, "_archive_window_dialog", None)
+        if dialog is None or not dialog.isVisible():
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+            return
+        self._refresh_session_container_lists()
+        if (
+            not getattr(self, "_matador_pending_verification_running", False)
+            and not self._archive_pending_verification_paths()
+        ):
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+
+    def _start_archive_pending_verification(self) -> None:
+        pending_paths = self._archive_pending_verification_paths()
+        if not pending_paths:
+            return
+        self._ensure_archive_pending_refresh_timer()
+        if getattr(self, "_matador_pending_verification_running", False):
+            return
+        runtime_config = self._runtime_config_for_archive_pending_verification()
+        if runtime_config is None:
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Matador pending verification skipped: token or URL not configured."
+                )
+            return
+        self._schedule_matador_pending_verification(
+            container_paths=pending_paths,
+            runtime_config=runtime_config,
+            initial_delay_sec=0.0,
+        )
 
     def _container_schema(self):
         return get_schema(self.config if hasattr(self, "config") else None)
@@ -439,7 +551,8 @@ class SessionTabMixin:
     def _show_archive_window(self):
         dialog = getattr(self, "_archive_window_dialog", None)
         if dialog is not None and dialog.isVisible():
-            self._populate_archive_window_table()
+            self._refresh_session_container_lists()
+            self._start_archive_pending_verification()
             dialog.raise_()
             dialog.activateWindow()
             return
@@ -538,10 +651,14 @@ class SessionTabMixin:
 
         dialog.finished.connect(self._clear_archive_window_refs)
         self._archive_window_dialog = dialog
-        self._populate_archive_window_table()
+        self._refresh_session_container_lists()
         dialog.show()
+        self._start_archive_pending_verification()
 
     def _clear_archive_window_refs(self):
+        timer = getattr(self, "_archive_pending_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
         self._archive_window_dialog = None
         self.archive_window_table = None
         self.archive_window_path_label = None
