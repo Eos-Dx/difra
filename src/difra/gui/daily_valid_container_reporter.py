@@ -51,17 +51,39 @@ DEFAULT_EMAIL_CONFIG_PATH = (
 DEFAULT_REPORT_STATE_FILENAME = "daily_report_state.json"
 SAXS_RANGE = (1.0, 3.0)
 WAXS_RANGE = (2.0, 21.0)
-
-
 @dataclass(frozen=True)
 class DetectorSeries:
     specimen_id: str
     detector_group: str
     detector_alias: str
+    detector_name: str
+    detector_side: str
+    range_name: str
+    q_range: Tuple[float, float]
+    range_label: str
+    range_assignment: str
     q: np.ndarray
     intensity: np.ndarray
+    poni_text: str
+    poni_source: str
+    poni_sha256: str
     source_container: Path
     source_dataset: str
+
+    @property
+    def detector_key(self) -> str:
+        return _safe_token(
+            "_".join(
+                item
+                for item in (
+                    self.detector_alias,
+                    self.detector_group,
+                    self.detector_name,
+                )
+                if item
+            ),
+            "detector",
+        )
 
 
 @dataclass
@@ -899,14 +921,61 @@ def _detector_group(alias: str, detector_name: str) -> str:
         return "PRIMARY"
     if any(item in token for item in ("SECONDARY", "WAXS", "DET_SECONDARY", "DET_WAXS")):
         return "SECONDARY"
+    return _safe_token(str(alias or detector_name or "DETECTOR").upper(), "DETECTOR")
+
+
+def _detector_side_label(detector_group: str, alias: str, detector_name: str) -> str:
+    token = f"{detector_group} {alias} {detector_name}".upper()
+    if any(item in token for item in ("PRIMARY", "LEFT", "SAXS", "DET_PRIMARY", "DET_SAXS")):
+        return "LEFT"
+    if any(item in token for item in ("SECONDARY", "RIGHT", "WAXS", "DET_SECONDARY", "DET_WAXS")):
+        return "RIGHT"
     return ""
 
 
-def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str:
+def _detector_range_config(
+    detector_group: str,
+    alias: str,
+    detector_name: str,
+) -> Tuple[str, Tuple[float, float], str, str]:
+    token = f"{detector_group} {alias} {detector_name}".upper()
+    if any(item in token for item in ("SECONDARY", "WAXS", "RIGHT", "DET_SECONDARY", "DET_WAXS")):
+        return "WAXS", WAXS_RANGE, "WAXS 2-21 nm^-1", "alias/name matched WAXS/SECONDARY"
+    if any(item in token for item in ("PRIMARY", "SAXS", "LEFT", "DET_PRIMARY", "DET_SAXS")):
+        return "SAXS", SAXS_RANGE, "SAXS 1-3 nm^-1", "alias/name matched SAXS/PRIMARY"
+    return "SAXS", SAXS_RANGE, "SAXS 1-3 nm^-1", "default: alias/name did not identify SAXS or WAXS"
+
+
+def _detector_sort_key(item: DetectorSeries) -> Tuple[int, str]:
+    token = f"{item.detector_group} {item.detector_alias} {item.detector_side}".upper()
+    if any(part in token for part in ("PRIMARY", "LEFT", "SAXS")):
+        return (0, f"{item.detector_alias} {item.detector_name}")
+    if any(part in token for part in ("SECONDARY", "RIGHT", "WAXS")):
+        return (1, f"{item.detector_alias} {item.detector_name}")
+    return (2, f"{item.detector_alias} {item.detector_name}")
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _candidate_poni_infos(
+    h5f: h5py.File,
+    det_group: h5py.Group,
+    alias: str,
+) -> List[Tuple[str, str]]:
     candidates = []
     role = str(det_group.name.rsplit("/", 1)[-1])
     detector_id = _as_text(det_group.attrs.get("detector_id")).strip().lower()
     detector_alias = _as_text(det_group.attrs.get("detector_alias")).strip().lower()
+    for attr_name in ("poni_ref", "poni_path"):
+        ref = _as_text(det_group.attrs.get(attr_name)).strip()
+        if not ref:
+            continue
+        candidates.append(ref)
+        if not ref.startswith("/"):
+            candidates.append(f"/entry/technical/poni/{ref}")
+            candidates.append(f"/entry/technical/poni/poni_{ref}")
     if detector_id:
         candidates.extend(
             [
@@ -920,10 +989,6 @@ def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str
                 f"/entry/technical/poni/poni_{role}",
             ]
         )
-    for attr_name in ("poni_ref", "poni_path"):
-        ref = _as_text(det_group.attrs.get(attr_name)).strip()
-        if ref:
-            candidates.append(ref)
     if role.startswith("det_"):
         candidates.append(f"/entry/technical/poni/poni_{role[4:]}")
     tokens = {
@@ -940,14 +1005,146 @@ def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str
             if any(token and token in lower_name for token in tokens):
                 candidates.append(f"/entry/technical/poni/{name}")
     seen = set()
+    found: List[Tuple[str, str]] = []
     for candidate in candidates:
         if not candidate or candidate in seen or candidate not in h5f:
             continue
         seen.add(candidate)
         text = _as_text(h5f[candidate][()]).strip()
         if text:
-            return text
-    return ""
+            found.append((text, candidate))
+    return found
+
+
+def _resolve_poni_info(h5f: h5py.File, det_group: h5py.Group, alias: str) -> Tuple[str, str]:
+    candidates = _candidate_poni_infos(h5f, det_group, alias)
+    if candidates:
+        return candidates[0]
+    return "", ""
+
+
+def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str:
+    text, _source = _resolve_poni_info(h5f, det_group, alias)
+    return text
+
+
+def _report_image_name(specimen_id: str) -> str:
+    return f"{_safe_token(specimen_id)}_detectors.png"
+
+
+def _poni_arcname(item: DetectorSeries) -> str:
+    if not item.poni_text.strip():
+        return ""
+    source_token = _safe_token(
+        str(item.source_dataset or "").replace("/entry/measurements/", ""),
+        "measurement",
+    )
+    hash_token = str(item.poni_sha256 or "")[:12] or "nohash"
+    return (
+        "poni/"
+        f"{_safe_token(item.specimen_id)}_"
+        f"{_safe_token(item.detector_group)}_"
+        f"{_safe_token(item.detector_name)}_"
+        f"{_safe_token(item.detector_side)}_"
+        f"{source_token}_{hash_token}.poni"
+    )
+
+
+def _write_report_poni_files(series: Iterable[DetectorSeries], output_dir: Path) -> Dict[str, Path]:
+    output = Path(output_dir)
+    files: Dict[str, Path] = {}
+    for item in series:
+        arcname = _poni_arcname(item)
+        if not arcname or arcname in files:
+            continue
+        path = output / arcname
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(item.poni_text, encoding="utf-8")
+        files[arcname] = path
+    return files
+
+
+def build_report_manifest_diagnostics(
+    series: Iterable[DetectorSeries],
+    *,
+    poni_files: Dict[str, Path],
+) -> Dict[str, Any]:
+    grouped: Dict[str, List[DetectorSeries]] = {}
+    for item in series:
+        grouped.setdefault(item.specimen_id, []).append(item)
+
+    image_entries = []
+    series_entries = []
+    poni_entries = {}
+    for specimen_id, items in sorted(grouped.items()):
+        image_file = _report_image_name(specimen_id)
+        detector_panels = []
+        for detector_key in sorted({item.detector_key for item in items}):
+            panel_items = [item for item in items if item.detector_key == detector_key]
+            if not panel_items:
+                continue
+            first = sorted(panel_items, key=_detector_sort_key)[0]
+            detector_panels.append(
+                {
+                    "detectorAlias": first.detector_alias,
+                    "detectorName": first.detector_name,
+                    "detectorGroup": first.detector_group,
+                    "detectorSide": first.detector_side,
+                    "rangeName": first.range_name,
+                    "qRangeNm^-1": [float(first.q_range[0]), float(first.q_range[1])],
+                    "rangeAssignment": first.range_assignment,
+                    "seriesCount": len(panel_items),
+                }
+            )
+        image_entries.append(
+            {
+                "imageFile": image_file,
+                "specimenId": specimen_id,
+                "layout": "one subplot per detector alias; PRIMARY/LEFT panels are ordered before SECONDARY/RIGHT panels",
+                "detectorPanels": detector_panels,
+                "seriesCount": len(items),
+            }
+        )
+        for detector_key in sorted({item.detector_key for item in items}):
+            panel_items = sorted(
+                [item for item in items if item.detector_key == detector_key],
+                key=lambda item: item.source_dataset,
+            )
+            for panel_index, item in enumerate(panel_items, start=1):
+                poni_arcname = _poni_arcname(item)
+                if poni_arcname:
+                    poni_entries[poni_arcname] = {
+                        "poniFile": poni_arcname,
+                        "poniSource": item.poni_source,
+                        "poniSha256": item.poni_sha256,
+                        "presentInZip": poni_arcname in poni_files,
+                    }
+                side = f" {item.detector_side}" if item.detector_side else ""
+                series_entries.append(
+                    {
+                        "imageFile": image_file,
+                        "seriesIndex": panel_index,
+                        "label": f"{item.detector_alias}{side} #{panel_index}",
+                        "specimenId": item.specimen_id,
+                        "detectorGroup": item.detector_group,
+                        "detectorSide": item.detector_side,
+                        "detectorAlias": item.detector_alias,
+                        "detectorName": item.detector_name,
+                        "rangeName": item.range_name,
+                        "rangeAssignment": item.range_assignment,
+                        "qRangeNm^-1": [float(item.q_range[0]), float(item.q_range[1])],
+                        "sourceContainer": str(item.source_container),
+                        "sourceDataset": item.source_dataset,
+                        "poniSource": item.poni_source,
+                        "poniFile": poni_arcname,
+                        "poniSha256": item.poni_sha256,
+                    }
+                )
+    return {
+        "images": image_entries,
+        "series": series_entries,
+        "poniFiles": sorted(poni_entries.values(), key=lambda item: item["poniFile"]),
+    }
 
 
 def integrate_detector_signal(
@@ -1011,6 +1208,36 @@ def _resample_range(
     return target_q, target_i
 
 
+def _integrated_range_is_complete(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    q_range: Tuple[float, float],
+    *,
+    points: int,
+) -> bool:
+    q = np.asarray(q, dtype=float).reshape(-1)
+    intensity = np.asarray(intensity, dtype=float).reshape(-1)
+    if q.size != int(points) or intensity.size != int(points):
+        return False
+    if not np.all(np.isfinite(q)) or not np.all(np.isfinite(intensity)):
+        return False
+    q_min = float(np.nanmin(q))
+    q_max = float(np.nanmax(q))
+    return q_min >= float(q_range[0]) - 1e-6 and q_max <= float(q_range[1]) + 1e-6
+
+
+def _integrated_signal_fraction(intensity: np.ndarray) -> float:
+    values = np.asarray(intensity, dtype=float).reshape(-1)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0
+    scale = float(np.nanmax(np.abs(finite)))
+    if scale <= 0.0:
+        return 0.0
+    threshold = max(scale * 1e-6, 1e-12)
+    return float(np.count_nonzero(np.abs(finite) > threshold) / finite.size)
+
+
 def collect_report_series(
     container_paths: Iterable[Path],
     *,
@@ -1059,35 +1286,62 @@ def collect_report_series(
                                 )
                             ).upper()
                             group_name = _detector_group(alias, str(det_name))
-                            if group_name not in {"PRIMARY", "SECONDARY"}:
-                                continue
-                            q_range = SAXS_RANGE if group_name == "PRIMARY" else WAXS_RANGE
-                            poni_text = _resolve_poni_text(h5f, det_group, alias)
-                            q, intensity = integrate_detector_signal(
-                                det_group["processed_signal"][()],
-                                poni_text,
-                                npt=points,
-                                q_range=q_range,
+                            side = _detector_side_label(group_name, alias, str(det_name))
+                            range_name, q_range, range_label, range_reason = (
+                                _detector_range_config(group_name, alias, str(det_name))
                             )
-                            q_min = float(np.nanmin(q)) if q.size else float("nan")
-                            q_max = float(np.nanmax(q)) if q.size else float("nan")
-                            if (
-                                q.size != points
-                                or intensity.size != points
-                                or q_min < float(q_range[0]) - 1e-6
-                                or q_max > float(q_range[1]) + 1e-6
+                            signal = det_group["processed_signal"][()]
+                            best: Optional[Tuple[str, str, np.ndarray, np.ndarray, float]] = None
+                            for candidate_poni_text, candidate_poni_source in (
+                                _candidate_poni_infos(h5f, det_group, alias) or [("", "")]
                             ):
+                                q, intensity = integrate_detector_signal(
+                                    signal,
+                                    candidate_poni_text,
+                                    npt=points,
+                                    q_range=q_range,
+                                )
+                                if not _integrated_range_is_complete(
+                                    q,
+                                    intensity,
+                                    q_range,
+                                    points=points,
+                                ):
+                                    continue
+                                signal_fraction = _integrated_signal_fraction(intensity)
+                                candidate = (
+                                    candidate_poni_text,
+                                    candidate_poni_source,
+                                    q,
+                                    intensity,
+                                    signal_fraction,
+                                )
+                                if best is None or signal_fraction > best[4]:
+                                    best = candidate
+                                if signal_fraction >= 0.5:
+                                    break
+                            if best is None:
                                 skipped.append(
                                     f"{path.name}:{det_group.name}: no q data in {q_range[0]}-{q_range[1]} nm^-1"
                                 )
                                 continue
+                            poni_text, poni_source, q, intensity, _signal_fraction = best
                             series.append(
                                 DetectorSeries(
                                     specimen_id=specimen_id,
                                     detector_group=group_name,
                                     detector_alias=alias,
+                                    detector_name=str(det_name),
+                                    detector_side=side,
+                                    range_name=range_name,
+                                    q_range=q_range,
+                                    range_label=range_label,
+                                    range_assignment=range_reason,
                                     q=q,
                                     intensity=intensity,
+                                    poni_text=poni_text,
+                                    poni_source=poni_source,
+                                    poni_sha256=_sha256_text(poni_text) if poni_text else "",
                                     source_container=path,
                                     source_dataset=det_group["processed_signal"].name,
                                 )
@@ -1144,29 +1398,51 @@ def render_report_images(
 ) -> List[Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    grouped: Dict[Tuple[str, str], List[DetectorSeries]] = {}
+    grouped: Dict[str, List[DetectorSeries]] = {}
     for item in series:
-        grouped.setdefault((item.specimen_id, item.detector_group), []).append(item)
+        grouped.setdefault(item.specimen_id, []).append(item)
 
     images: List[Path] = []
-    for (specimen_id, group_name), items in sorted(grouped.items()):
-        q_range = SAXS_RANGE if group_name == "PRIMARY" else WAXS_RANGE
-        range_label = "SAXS 1-3 nm^-1" if group_name == "PRIMARY" else "WAXS 2-21 nm^-1"
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=dpi)
-        for index, item in enumerate(items, start=1):
-            label = f"{item.detector_alias} #{index}"
-            ax.plot(item.q, item.intensity, linewidth=1.1, alpha=0.85, label=label)
-        ax.set_title(f"{specimen_id} | {group_name} | {range_label}")
-        ax.set_xlabel("q (nm^-1)")
-        ax.set_ylabel("I(q)")
-        ax.set_xlim(q_range)
-        ax.grid(True, alpha=0.25)
-        if len(items) <= 12:
-            ax.legend(fontsize=7)
-        fig.tight_layout()
-        image_path = output / (
-            f"{_safe_token(specimen_id)}_{group_name}_{range_label.replace(' ', '_').replace('^-', '-')}.png"
+    for specimen_id, items in sorted(grouped.items()):
+        detector_keys = []
+        for item in sorted(items, key=_detector_sort_key):
+            if item.detector_key not in detector_keys:
+                detector_keys.append(item.detector_key)
+        panel_count = max(len(detector_keys), 1)
+        ncols = min(panel_count, 3)
+        nrows = int(np.ceil(panel_count / ncols))
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(6.2 * ncols, 4.6 * nrows),
+            dpi=dpi,
+            squeeze=False,
         )
+        for axis in axes.reshape(-1):
+            axis.set_visible(False)
+        for panel_index, detector_key in enumerate(detector_keys):
+            ax = axes.reshape(-1)[panel_index]
+            ax.set_visible(True)
+            panel_items = [item for item in items if item.detector_key == detector_key]
+            panel_items = sorted(panel_items, key=lambda item: item.source_dataset)
+            if not panel_items:
+                continue
+            first = panel_items[0]
+            q_range = tuple(first.q_range)
+            for index, item in enumerate(panel_items, start=1):
+                label = f"{item.detector_alias} #{index}"
+                ax.plot(item.q, item.intensity, linewidth=1.1, alpha=0.85, label=label)
+            side = f" ({first.detector_side})" if first.detector_side else ""
+            ax.set_title(f"{first.detector_alias}{side} | {first.range_label}")
+            ax.set_xlabel("q (nm^-1)")
+            ax.set_ylabel("I(q)")
+            ax.set_xlim(q_range)
+            ax.grid(True, alpha=0.25)
+            if len(panel_items) <= 12:
+                ax.legend(fontsize=7)
+        fig.suptitle(str(specimen_id), fontsize=12)
+        fig.tight_layout()
+        image_path = output / _report_image_name(specimen_id)
         fig.savefig(image_path, dpi=dpi)
         plt.close(fig)
         images.append(image_path)
@@ -1181,7 +1457,13 @@ def _no_report_images_email_result() -> Dict[str, Any]:
     }
 
 
-def create_zip(zip_path: Path, image_paths: Iterable[Path], *, manifest: Dict[str, Any]) -> Path:
+def create_zip(
+    zip_path: Path,
+    image_paths: Iterable[Path],
+    *,
+    manifest: Dict[str, Any],
+    extra_files: Optional[Dict[str, Path]] = None,
+) -> Path:
     target = Path(zip_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -1189,6 +1471,10 @@ def create_zip(zip_path: Path, image_paths: Iterable[Path], *, manifest: Dict[st
         for image_path in image_paths:
             path = Path(image_path)
             archive.write(path, arcname=path.name)
+        for arcname, source_path in sorted((extra_files or {}).items()):
+            path = Path(source_path)
+            if path.exists():
+                archive.write(path, arcname=str(arcname))
     return target
 
 
@@ -1458,6 +1744,7 @@ def build_daily_report(
     out = Path(output_dir)
     image_dir = out / "images"
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
+    poni_files = _write_report_poni_files(series, out)
     manifest = {
         "generatedAt": generated_at.isoformat(timespec="seconds"),
         "reportDate": generated_at.strftime("%Y-%m-%d"),
@@ -1472,11 +1759,13 @@ def build_daily_report(
         "imageCount": len(result.images),
         "skipped": result.skipped[:200],
     }
+    manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     result.manifest = manifest
     result.zip_path = create_zip(
         out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
         result.images,
         manifest=manifest,
+        extra_files=poni_files,
     )
     if send_email:
         if not result.images:
@@ -1522,6 +1811,7 @@ def build_daily_report_for_containers(
     out = Path(output_dir)
     image_dir = out / "images"
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
+    poni_files = _write_report_poni_files(series, out)
     report_day = report_date or generated_at.date()
     manifest = {
         "generatedAt": generated_at.isoformat(timespec="seconds"),
@@ -1538,11 +1828,13 @@ def build_daily_report_for_containers(
         "selectedContainers": [str(path) for path in paths],
         "skipped": result.skipped[:200],
     }
+    manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     result.manifest = manifest
     result.zip_path = create_zip(
         out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
         result.images,
         manifest=manifest,
+        extra_files=poni_files,
     )
     if send_email:
         if not result.images:

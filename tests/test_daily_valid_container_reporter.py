@@ -85,7 +85,7 @@ def test_create_simple_test_image_zip_contains_two_pngs(tmp_path):
     assert len([name for name in names if name.endswith(".png")]) == 2
 
 
-def test_build_daily_report_renders_two_images_for_primary_secondary(
+def test_build_daily_report_renders_one_combined_image_per_specimen(
     tmp_path, monkeypatch
 ):
     container = _create_container(tmp_path / "session_test.nxs.h5")
@@ -95,7 +95,7 @@ def test_build_daily_report_renders_two_images_for_primary_secondary(
         return q, np.full_like(q, float(np.asarray(data).mean()))
 
     monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
-    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+    monkeypatch.setattr(reporter, "_candidate_poni_infos", lambda *_args, **_kwargs: [("poni", "test")])
 
     result = reporter.build_daily_report(
         config={
@@ -109,18 +109,23 @@ def test_build_daily_report_renders_two_images_for_primary_secondary(
 
     assert result.scanned == 1
     assert result.valid_containers == 1
-    assert len(result.images) == 2
+    assert len(result.images) == 1
     assert result.zip_path and result.zip_path.exists()
     with zipfile.ZipFile(result.zip_path, "r") as archive:
         names = archive.namelist()
         manifest = reporter.json.loads(archive.read("manifest.json").decode("utf-8"))
-    assert len([name for name in names if name.endswith(".png")]) == 2
+    png_names = [name for name in names if name.endswith(".png")]
+    assert png_names == ["SPEC_001_detectors.png"]
+    assert any(name.startswith("poni/") and name.endswith(".poni") for name in names)
     assert manifest["projectIds"] == ["6701"]
     assert manifest["matadorUploaded"] == 1
+    assert manifest["images"][0]["imageFile"] == "SPEC_001_detectors.png"
+    assert len(manifest["images"][0]["detectorPanels"]) == 2
+    assert len(manifest["poniFiles"]) == 2
     assert container.name in str(container)
 
 
-def test_resolve_poni_text_prefers_detector_specific_over_legacy_attr(tmp_path):
+def test_resolve_poni_text_prefers_explicit_detector_poni_path(tmp_path):
     path = tmp_path / "session_poni_priority.nxs.h5"
     legacy_text = "Distance: 0.024\n# legacy"
     detector_text = "Distance: 0.172\n# detector-specific"
@@ -136,8 +141,40 @@ def test_resolve_poni_text_prefers_detector_specific_over_legacy_attr(tmp_path):
 
         text = reporter._resolve_poni_text(h5f, det, "PRIMARY")
 
-    assert "detector-specific" in text
-    assert "legacy" not in text
+    assert "legacy" in text
+    assert "detector-specific" not in text
+
+
+def test_collect_report_series_uses_next_poni_when_explicit_integration_is_empty(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "session_poni_fallback.nxs.h5"
+    with h5py.File(path, "w") as h5f:
+        h5f.attrs["specimenId"] = "SPEC_FALLBACK"
+        h5f.attrs["session_state"] = "measuring"
+        poni_group = h5f.require_group("/entry/technical/poni")
+        poni_group.create_dataset("poni_primary", data="explicit-poni")
+        poni_group.create_dataset("poni_det_minipix g08-w0299", data="detector-poni")
+        det = h5f.require_group("/entry/measurements/pt_001/meas_0001/det_primary")
+        det.attrs["detector_alias"] = "PRIMARY"
+        det.attrs["detector_id"] = "MiniPIX G08-W0299"
+        det.attrs["poni_path"] = "/entry/technical/poni/poni_primary"
+        det.create_dataset("processed_signal", data=np.ones((8, 8)))
+
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (1.0, 3.0)), int(npt))
+        if "explicit" in poni_text:
+            return q, np.zeros(int(npt))
+        return q, np.ones(int(npt))
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+
+    series, skipped, valid_count = reporter.collect_report_series([path], points=100)
+
+    assert valid_count == 1
+    assert skipped == []
+    assert len(series) == 1
+    assert series[0].poni_source == "/entry/technical/poni/poni_det_minipix g08-w0299"
 
 
 def test_build_daily_report_does_not_fallback_when_backend_q_range_is_empty(tmp_path, monkeypatch):
@@ -538,7 +575,7 @@ def test_daily_report_state_advances_only_after_success(monkeypatch, tmp_path):
         "integrate_detector_signal",
         lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
-    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+    monkeypatch.setattr(reporter, "_candidate_poni_infos", lambda *_args, **_kwargs: [("poni", "test")])
 
     result = reporter.run_daily_report_from_config(
         config_path=config_path,
@@ -595,7 +632,7 @@ def test_daily_report_state_keeps_watermark_after_failed_send(monkeypatch, tmp_p
         "integrate_detector_signal",
         lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
-    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+    monkeypatch.setattr(reporter, "_candidate_poni_infos", lambda *_args, **_kwargs: [("poni", "test")])
 
     result = reporter.run_daily_report_from_config(
         config_path=config_path,
@@ -638,7 +675,7 @@ def test_run_daily_report_for_date_sends_missed_previous_day(monkeypatch, tmp_pa
         },
     )
     monkeypatch.setattr(reporter, "integrate_detector_signal", lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))))
-    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+    monkeypatch.setattr(reporter, "_candidate_poni_infos", lambda *_args, **_kwargs: [("poni", "test")])
 
     result = reporter.run_daily_report_for_date_from_config(
         config_path=config_path,
@@ -652,7 +689,7 @@ def test_run_daily_report_for_date_sends_missed_previous_day(monkeypatch, tmp_pa
     assert result.valid_containers == 1
     assert result.email_result["sent"] is True
     assert state["byDate"]["2026-05-20"]["sent"] is True
-    assert state["byDate"]["2026-05-20"]["imageCount"] == 2
+    assert state["byDate"]["2026-05-20"]["imageCount"] == 1
 
 
 def test_run_daily_report_for_date_skips_when_already_sent(monkeypatch, tmp_path):
@@ -746,7 +783,7 @@ def test_run_daily_report_for_date_resends_previous_empty_image_report(monkeypat
         "integrate_detector_signal",
         lambda data, poni_text, *, npt=400, q_range=None: (np.linspace(*(q_range or (0.5, 24.0)), int(npt)), np.ones(int(npt))),
     )
-    monkeypatch.setattr(reporter, "_resolve_poni_text", lambda *_args, **_kwargs: "poni")
+    monkeypatch.setattr(reporter, "_candidate_poni_infos", lambda *_args, **_kwargs: [("poni", "test")])
 
     result = reporter.run_daily_report_for_date_from_config(
         config_path=config_path,
@@ -756,7 +793,7 @@ def test_run_daily_report_for_date_resends_previous_empty_image_report(monkeypat
     )
 
     assert result.email_result["sent"] is True
-    assert len(result.images) == 2
+    assert len(result.images) == 1
 
 
 def test_gui_email_password_setup_skips_when_password_exists(monkeypatch):
