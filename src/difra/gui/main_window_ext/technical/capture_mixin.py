@@ -835,6 +835,28 @@ class TechnicalCaptureMixin:
         }
 
     @staticmethod
+    def _auto_poni_agbh_q_range_text(first_visible_ring, rings_to_search) -> str:
+        try:
+            from difra.gui.technical.pyfai_calibration import AGBH_D_SPACING_A
+            import math
+
+            first = max(1, int(first_visible_ring or 1))
+            count = max(1, int(rings_to_search or 1))
+            last = min(len(AGBH_D_SPACING_A), first + count - 1)
+            if first > len(AGBH_D_SPACING_A):
+                return f"I(q): rings {first}-{first + count - 1}"
+            q_min = 20.0 * math.pi / float(AGBH_D_SPACING_A[first - 1])
+            q_max = 20.0 * math.pi / float(AGBH_D_SPACING_A[last - 1])
+            return f"I(q): {q_min:.2f}-{q_max:.2f} nm^-1 | rings {first}-{last}"
+        except Exception:
+            try:
+                first = max(1, int(first_visible_ring or 1))
+                count = max(1, int(rings_to_search or 1))
+            except (TypeError, ValueError):
+                first, count = 1, 1
+            return f"I(q): rings {first}-{first + count - 1}"
+
+    @staticmethod
     def _auto_poni_float_or_none(value):
         try:
             if value is None or value == "":
@@ -1069,6 +1091,15 @@ class TechnicalCaptureMixin:
                 )
                 form.addRow("Rings to search", rings_spin)
 
+                q_hint = tm.QLabel(
+                    self._auto_poni_agbh_q_range_text(
+                        ring_spin.value(),
+                        rings_spin.value(),
+                    ),
+                    group,
+                )
+                form.addRow("Hint", q_hint)
+
                 center_row = tm.QHBoxLayout()
                 center_r = tm.QDoubleSpinBox(dialog)
                 center_r.setRange(-100000.0, 100000.0)
@@ -1120,6 +1151,7 @@ class TechnicalCaptureMixin:
                     "distance": distance_spin,
                     "ring": ring_spin,
                     "rings": rings_spin,
+                    "q_hint": q_hint,
                     "center_r": center_r,
                     "center_c": center_c,
                     "width": width_spin,
@@ -1164,8 +1196,29 @@ class TechnicalCaptureMixin:
                             auto_cfg=auto_cfg,
                         )
                     )
+                    controls[key]["q_hint"].setText(
+                        self._auto_poni_agbh_q_range_text(
+                            ring_control.value(),
+                            rings_control.value(),
+                        )
+                    )
 
                 distance_spin.valueChanged.connect(_sync_defaults)
+
+                def _sync_q_hint(
+                    _value,
+                    *,
+                    key=alias_key,
+                ):
+                    controls[key]["q_hint"].setText(
+                        self._auto_poni_agbh_q_range_text(
+                            controls[key]["ring"].value(),
+                            controls[key]["rings"].value(),
+                        )
+                    )
+
+                ring_spin.valueChanged.connect(_sync_q_hint)
+                rings_spin.valueChanged.connect(_sync_q_hint)
 
             buttons = QDialogButtonBox(
                 QDialogButtonBox.Ok | QDialogButtonBox.Cancel,

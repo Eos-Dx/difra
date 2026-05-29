@@ -405,6 +405,10 @@ def auto_poni_default_config() -> dict:
                 "PRIMARY": 1,
                 "SECONDARY": 1,
             },
+            "18": {
+                "PRIMARY": 1,
+                "SECONDARY": 1,
+            },
         },
         "rings_to_search_by_alias": {
             "PRIMARY": 3,
@@ -416,6 +420,10 @@ def auto_poni_default_config() -> dict:
                 "SECONDARY": 4,
             },
             "17": {
+                "PRIMARY": 3,
+                "SECONDARY": 3,
+            },
+            "18": {
                 "PRIMARY": 3,
                 "SECONDARY": 3,
             },

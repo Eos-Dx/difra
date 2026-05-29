@@ -319,6 +319,39 @@ def test_auto_poni_defaults_use_first_ring_for_seventeen_cm(tmp_path):
     }
 
 
+def test_auto_poni_defaults_use_long_distance_profile_for_eighteen_cm(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_abc_18cm_20260506.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        h5f.attrs["distance_cm"] = 18.0
+    harness._active_technical_container_path = str(container_path)
+
+    settings = harness._auto_poni_default_settings(
+        normalized_auto_poni_config({}),
+        ["PRIMARY", "SECONDARY"],
+    )
+
+    assert settings["first_visible_ring_by_alias"] == {
+        "PRIMARY": 1,
+        "SECONDARY": 1,
+    }
+    assert settings["rings_to_search_by_alias"] == {
+        "PRIMARY": 3,
+        "SECONDARY": 3,
+    }
+
+
+def test_auto_poni_agbh_q_range_hint_is_concise():
+    assert (
+        TechnicalCaptureMixin._auto_poni_agbh_q_range_text(1, 3)
+        == "I(q): 1.08-3.23 nm^-1 | rings 1-3"
+    )
+    assert (
+        TechnicalCaptureMixin._auto_poni_agbh_q_range_text(5, 4)
+        == "I(q): 5.38-8.61 nm^-1 | rings 5-8"
+    )
+
+
 def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
     harness = _Harness()
     harness._current_technical_output_folder = lambda: str(tmp_path)
