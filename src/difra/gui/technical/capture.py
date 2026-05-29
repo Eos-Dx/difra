@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QSpinBox,
     QVBoxLayout,
 )
 
@@ -2144,6 +2145,32 @@ def show_auto_poni_review_window(
             return
         _delete_point(target_alias)
 
+    def _set_selected_ring(alias: str, ring_index: int):
+        target_alias = str(alias)
+        first_ring_by_alias[target_alias] = max(1, int(ring_index or 1))
+        status["last_alias"] = target_alias
+        try:
+            if manual_points_by_alias.get(target_alias):
+                npt_path, refit = _save_clicked_points(target_alias)
+            else:
+                review = review_state_by_alias.get(target_alias)
+                npt_path = (
+                    _finalize_review_geometry(target_alias, review)
+                    if review is not None
+                    else None
+                )
+                refit = False
+        except Exception as exc:
+            _set_status(f"{target_alias}: ring change failed: {exc}")
+            canvas.draw_idle()
+            return
+        _set_status(
+            f"{target_alias}: selected ring {first_ring_by_alias.get(target_alias, 1)}"
+            + ("; refit" if refit else "; points recomputed")
+            + (f"; saved {npt_path}" if npt_path else "")
+        )
+        canvas.draw_idle()
+
     def _on_click(event):
         if _start_profile_drag(event):
             canvas.draw_idle()
@@ -2387,6 +2414,21 @@ def show_auto_poni_review_window(
 
     fixed_rotations_check.toggled.connect(_set_rotation_constraint)
     layout.addWidget(fixed_rotations_check)
+
+    ring_row = QHBoxLayout()
+    ring_row.addWidget(QLabel("Selected ring", dialog))
+    for alias in aliases:
+        alias_key = str(alias)
+        ring_row.addWidget(QLabel(alias_key, dialog))
+        ring_spin = QSpinBox(dialog)
+        ring_spin.setRange(1, len(AGBH_D_SPACING_A))
+        ring_spin.setValue(int(first_ring_by_alias.get(alias_key, 1) or 1))
+        ring_spin.setToolTip("Ring index used for newly clicked AgBh points.")
+        ring_spin.valueChanged.connect(
+            lambda value, a=alias_key: _set_selected_ring(a, int(value))
+        )
+        ring_row.addWidget(ring_spin)
+    layout.addLayout(ring_row)
 
     buttons = QDialogButtonBox(dialog)
     delete_btn = buttons.addButton("Delete last point", QDialogButtonBox.ActionRole)
