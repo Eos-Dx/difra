@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from PyQt5.QtWidgets import QMessageBox
+from difra.gui.qt_compat import QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_technical_container
 logger = logging.getLogger(__name__)
@@ -358,6 +358,10 @@ def create_new_active_technical_container(owner, *, clear_table: bool = False):
     )
 
     owner._set_active_technical_container(file_path)
+    if hasattr(owner, "ponis"):
+        owner.ponis = {}
+    if hasattr(owner, "poni_files"):
+        owner.poni_files = {}
     set_state = getattr(owner, "_set_container_state", None)
     if callable(set_state):
         if refreshed_distances:

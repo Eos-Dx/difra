@@ -7,6 +7,7 @@ from .poni_center_validation import (
     resolve_poni_rule_alias,
     validate_poni_centers,
 )
+from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 os = _module.os
 logger = _module.logger
@@ -19,8 +20,6 @@ time = _module.time
 get_container_manager = _module.get_container_manager
 get_technical_validator = _module.get_technical_validator
 get_schema = _module.get_schema
-
-from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 
 class H5ManagementLockingMixin:
@@ -710,6 +709,119 @@ class H5ManagementLockingMixin:
 
         return poni_by_alias
 
+    @staticmethod
+    def _parse_poni_distance_cm(poni_text: str):
+        for line in str(poni_text or "").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("Distance:"):
+                continue
+            try:
+                return float(stripped.split(":", 1)[1].strip()) * 100.0
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _embedded_poni_distance_validation_errors(
+        self,
+        container_path: Path,
+        *,
+        tolerance_percent: float = 5.0,
+    ):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        errors = []
+
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                root_distance = self._to_float_or_none(
+                    h5f.attrs.get(schema.ATTR_DISTANCE_CM)
+                )
+                distances_by_alias = {}
+
+                technical_group = h5f.get(schema.GROUP_TECHNICAL)
+                if technical_group is not None:
+                    for event_name in sorted(technical_group.keys()):
+                        event_group = technical_group[event_name]
+                        if not hasattr(event_group, "keys"):
+                            continue
+                        for detector_name in sorted(event_group.keys()):
+                            detector_group = event_group[detector_name]
+                            if not hasattr(detector_group, "attrs"):
+                                continue
+                            distance_cm = self._to_float_or_none(
+                                detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
+                            )
+                            if distance_cm is None:
+                                continue
+                            alias, detector_id, alias_candidates = (
+                                self._resolve_configured_technical_alias(
+                                    detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, ""),
+                                    detector_group.attrs.get(
+                                        getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                                        "",
+                                    ),
+                                    detector_name,
+                                )
+                            )
+                            for candidate in [alias, detector_id, *sorted(alias_candidates)]:
+                                key = str(candidate or "").strip().upper()
+                                if key:
+                                    distances_by_alias[key] = distance_cm
+
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is None:
+                    return errors
+
+                for ds_name in sorted(poni_group.keys()):
+                    ds = poni_group[ds_name]
+                    value = ds[()]
+                    if isinstance(value, bytes):
+                        poni_text = value.decode("utf-8", errors="replace")
+                    else:
+                        poni_text = str(value)
+                    poni_distance_cm = self._parse_poni_distance_cm(poni_text)
+
+                    alias, detector_id, alias_candidates = (
+                        self._resolve_configured_technical_alias(
+                            ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, ""),
+                            ds.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id"), ""),
+                            ds_name,
+                        )
+                    )
+                    expected_cm = None
+                    for candidate in [alias, detector_id, *sorted(alias_candidates)]:
+                        key = str(candidate or "").strip().upper()
+                        if key in distances_by_alias:
+                            expected_cm = distances_by_alias[key]
+                            break
+                    if expected_cm is None:
+                        expected_cm = root_distance
+
+                    label = str(alias or ds_name).strip() or str(ds_name)
+                    if expected_cm is None:
+                        continue
+                    if poni_distance_cm is None:
+                        errors.append(f"{label}: cannot read Distance from embedded PONI")
+                        continue
+                    if expected_cm <= 0:
+                        errors.append(f"{label}: invalid detector distance {expected_cm:g} cm")
+                        continue
+
+                    deviation_percent = (
+                        abs(poni_distance_cm - expected_cm) / expected_cm * 100.0
+                    )
+                    if deviation_percent > float(tolerance_percent):
+                        errors.append(
+                            f"{label}: embedded PONI distance {poni_distance_cm:.3f} cm "
+                            f"does not match technical distance {expected_cm:.3f} cm "
+                            f"({deviation_percent:.1f}% > {float(tolerance_percent):.1f}%)"
+                        )
+        except Exception as exc:
+            errors.append(f"Failed to validate embedded PONI distances: {exc}")
+
+        return errors
+
     def _detector_sizes_by_alias(self):
         sizes = {}
         for detector_cfg in self.config.get("detectors", []) if hasattr(self, "config") else []:
@@ -795,7 +907,7 @@ class H5ManagementLockingMixin:
 
     def _prompt_poni_override_password(self, *, container_id: str) -> bool:
         try:
-            from PyQt5.QtWidgets import QLineEdit
+            from difra.gui.qt_compat import QLineEdit
 
             echo_mode = QLineEdit.Password
         except Exception:
@@ -1439,6 +1551,13 @@ class H5ManagementLockingMixin:
         if center_warnings:
             warnings.extend(center_warnings)
 
+        distance_errors = self._embedded_poni_distance_validation_errors(
+            Path(container_path)
+        )
+        if distance_errors:
+            errors.extend(distance_errors)
+            is_valid = False
+
         if not is_valid:
             details = []
             for i, err in enumerate(errors[:8], 1):
@@ -1582,6 +1701,13 @@ class H5ManagementLockingMixin:
             is_valid = False
         if center_warnings:
             warnings.extend(center_warnings)
+
+        distance_errors = self._embedded_poni_distance_validation_errors(
+            Path(container_path)
+        )
+        if distance_errors:
+            errors.extend(distance_errors)
+            is_valid = False
         
         # Build validation summary
         status_icon = "✅" if is_valid else ("⚠️" if errors else "✅")

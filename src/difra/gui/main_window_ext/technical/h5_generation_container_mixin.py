@@ -1,5 +1,7 @@
 """Technical HDF5 container generation responsibilities."""
 
+from pathlib import Path
+
 from . import h5_generation_mixin as _module
 
 json = _module.json
@@ -252,7 +254,7 @@ class H5GenerationContainerMixin:
                         entry["thickness"] = float(default_thickness_mm)
                     type_map[alias] = entry
 
-        # Collect PONI data (prefer file selection, fallback to in-memory PONI)
+        # Collect PONI data from selected files only.
         poni_data = {}
         missing_poni = []
         selected_poni_files = {}
@@ -271,15 +273,7 @@ class H5GenerationContainerMixin:
             if poni_dialog.exec_() == QDialog.Accepted:
                 selected_poni_files = poni_dialog.get_poni_files() or {}
             else:
-                res = QMessageBox.question(
-                    self,
-                    "PONI Files",
-                    "Use currently loaded PONI values instead of selecting files?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-                if res != QMessageBox.Yes:
-                    return
+                return
 
         for alias in aliases_to_check:
             poni_content = None
@@ -291,21 +285,19 @@ class H5GenerationContainerMixin:
                     with open(file_path, "r", encoding="utf-8") as f:
                         poni_content = f.read()
                     poni_filename = os.path.basename(file_path)
+                    if not isinstance(getattr(self, "poni_files", None), dict):
+                        self.poni_files = {}
+                    self.poni_files[alias] = {
+                        "path": str(file_path),
+                        "name": poni_filename,
+                    }
                 except Exception as e:
                     QMessageBox.warning(
                         self,
                         "PONI File Read Error",
                         f"Failed to read PONI file for {alias}:\n{file_path}\n\nError: {e}\n\n"
-                        "Falling back to current PONI values if available.",
+                        "Select a readable PONI file and try again.",
                     )
-
-            if not poni_content:
-                try:
-                    poni_content = (getattr(self, "ponis", {}) or {}).get(alias)
-                    poni_meta = (getattr(self, "poni_files", {}) or {}).get(alias, {})
-                    poni_filename = poni_meta.get("name") or f"{alias}.poni"
-                except Exception:
-                    poni_content = None
 
             if poni_content:
                 poni_data[alias] = (poni_content, poni_filename or f"{alias}.poni")
@@ -320,17 +312,14 @@ class H5GenerationContainerMixin:
         )
 
         if missing_poni:
-            res = QMessageBox.question(
+            QMessageBox.warning(
                 self,
                 "Missing PONI Data",
-                "No PONI data found for:\n"
+                "PONI files are required and must be read from disk.\n\nMissing for:\n"
                 + ", ".join(missing_poni)
-                + "\n\nContinue without these PONI datasets?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                + "\n\nSelect PONI files and try again.",
             )
-            if res != QMessageBox.Yes:
-                return
+            return
 
         # Check if per-detector distances have been configured
         if hasattr(self, '_detector_distances') and self._detector_distances:
@@ -493,6 +482,33 @@ class H5GenerationContainerMixin:
                 container_id,
                 str(temp_file_path),
                 str(e),
+            )
+
+        copied_poni = 0
+        final_folder = Path(final_path).parent
+        for alias, source_path in (selected_poni_files or {}).items():
+            source = Path(str(source_path or "").strip())
+            if not source.exists() or not source.is_file():
+                continue
+            dest = final_folder / source.name
+            try:
+                if source.resolve() != dest.resolve():
+                    shutil.copy2(source, dest)
+                    copied_poni += 1
+                if not isinstance(getattr(self, "poni_files", None), dict):
+                    self.poni_files = {}
+                self.poni_files[alias] = {
+                    "path": str(dest),
+                    "name": dest.name,
+                }
+            except Exception as e:
+                logger.warning("Failed to copy PONI file to technical folder: %s", e)
+                self._log_technical_event(
+                    f"Warning: Could not copy PONI file to technical folder: {source.name}"
+                )
+        if copied_poni:
+            self._log_technical_event(
+                f"Copied {copied_poni} PONI file(s) next to technical container"
             )
         
         # Auto-validate container if configured
