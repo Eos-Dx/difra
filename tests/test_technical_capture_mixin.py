@@ -380,7 +380,7 @@ def test_auto_poni_saxs_uses_physical_primary_detector_config():
             "id": "MiniPIX G08-W0299",
             "alias": "PRIMARY",
             "size": {"width": 256, "height": 256},
-            "pixel_size_um": [50, 50],
+            "pixel_size_um": [55, 55],
         },
         {
             "id": "DUMMY-0001",
@@ -396,7 +396,7 @@ def test_auto_poni_saxs_uses_physical_primary_detector_config():
 
     assert cfg["alias"] == "SAXS"
     assert cfg["id"] == "DUMMY-0001"
-    assert cfg["pixel_size_um"] == [50, 50]
+    assert cfg["pixel_size_um"] == [55, 55]
 
 
 def test_auto_poni_correct_uses_legacy_sidecar_env(monkeypatch):

@@ -204,24 +204,24 @@ def test_build_pyfai_calib2_command_can_unlock_rotations():
     assert "--no-tilt" not in command
 
 
-def test_build_pyfai_calib2_command_uses_custom_difra_detector_for_50um():
+def test_build_pyfai_calib2_command_uses_maxipix_for_55um():
     detector_config = {
         "size": {"width": 256, "height": 256},
-        "pixel_size_um": [50, 50],
+        "pixel_size_um": [55, 55],
     }
 
-    assert pyfai_detector_name(detector_config) == "DIFRA-256-50UM"
+    assert pyfai_detector_name(detector_config) == "Maxipix"
 
 
 def test_write_pyfai_launcher_registers_custom_detector(tmp_path):
     launcher = write_pyfai_calib2_launcher(
         output_dir=tmp_path,
-        command=["pyfai-calib2", "-D", "DIFRA-256-50UM", "image.tif"],
+        command=["pyfai-calib2", "-D", "DIFRA-256-55UM", "image.tif"],
         launcher_stem="run_primary",
     )
 
     text = launcher.read_text(encoding="utf-8")
-    assert "DIFRA-256-50UM" in text
+    assert "DIFRA-256-55UM" in text
     assert "max_shape=(256, 256)" in text
 
 
@@ -236,7 +236,7 @@ def test_write_agbh_control_points_npt_uses_zero_based_ring_ids(tmp_path):
     )
     detector_config = {
         "size": {"width": 256, "height": 256},
-        "pixel_size_um": [50, 50],
+        "pixel_size_um": [55, 55],
     }
 
     npt = write_agbh_control_points_npt(
@@ -281,7 +281,7 @@ def test_headless_fit_plausibility_rejects_sparse_bad_geometry(tmp_path):
         seed_poni_text=seed,
         detector_config={
             "size": {"width": 256, "height": 256},
-            "pixel_size_um": [50, 50],
+            "pixel_size_um": [55, 55],
         },
     )
 
@@ -289,7 +289,7 @@ def test_headless_fit_plausibility_rejects_sparse_bad_geometry(tmp_path):
 def test_clicked_ring_points_write_npt_and_refine_poni(tmp_path):
     detector_config = {
         "size": {"width": 256, "height": 256},
-        "pixel_size_um": [50, 50],
+        "pixel_size_um": [55, 55],
     }
     poni = build_seed_poni_text(
         detector_config=detector_config,
@@ -319,8 +319,8 @@ def test_clicked_ring_points_write_npt_and_refine_poni(tmp_path):
     text = npt.read_text(encoding="utf-8")
     assert "ring: 1" in text
     assert "point: x=10 y=64" in text
-    assert abs(parsed["Poni1"] - 0.0064) < 1e-9
-    assert abs(parsed["Poni2"] - 0.0005) < 1e-9
+    assert abs(parsed["Poni1"] - 0.00704) < 1e-9
+    assert abs(parsed["Poni2"] - 0.00055) < 1e-9
     assert parsed["Distance"] > 0.0
 
 

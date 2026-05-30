@@ -121,10 +121,6 @@ def pyfai_detector_name(detector_config: Mapping | None) -> str:
 
     width, height = detector_size_px(cfg)
     pixel1, pixel2 = pixel_size_m(cfg)
-    if (width, height) == (256, 256) and abs(pixel1 - 50e-6) < 1e-12 and abs(
-        pixel2 - 50e-6
-    ) < 1e-12:
-        return "DIFRA-256-50UM"
     if (width, height) == (256, 256) and abs(pixel1 - 55e-6) < 1e-12 and abs(
         pixel2 - 55e-6
     ) < 1e-12:
@@ -367,17 +363,17 @@ def write_pyfai_calib2_launcher(
                 "from pyFAI.detectors import ALL_DETECTORS",
                 "",
                 "",
-                "class Difra256x256Detector50um(Detector):",
-                "    aliases = ['DIFRA-256-50UM', 'difra-256-50um']",
+                "class Difra256x256Detector55um(Detector):",
+                "    aliases = ['DIFRA-256-55UM', 'difra-256-55um']",
                 "    MAX_SHAPE = (256, 256)",
                 "    force_pixel = True",
                 "",
                 "    def __init__(self):",
-                "        super().__init__(pixel1=50e-6, pixel2=50e-6, max_shape=(256, 256))",
+                "        super().__init__(pixel1=55e-6, pixel2=55e-6, max_shape=(256, 256))",
                 "",
                 "",
-                "ALL_DETECTORS['difra-256-50um'] = Difra256x256Detector50um",
-                "ALL_DETECTORS['DIFRA-256-50UM'] = Difra256x256Detector50um",
+                "ALL_DETECTORS['difra-256-55um'] = Difra256x256Detector55um",
+                "ALL_DETECTORS['DIFRA-256-55UM'] = Difra256x256Detector55um",
                 f"sys.argv = {json.dumps(list(command))}",
                 "raise SystemExit(main())",
                 "",

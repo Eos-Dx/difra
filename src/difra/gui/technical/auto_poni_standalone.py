@@ -75,7 +75,7 @@ def detector_config_for_alias(config: dict, alias: str) -> dict:
         "alias": alias_key,
         "id": alias_key,
         "size": {"width": 256, "height": 256},
-        "pixel_size_um": [50, 50],
+        "pixel_size_um": [55, 55],
     }
 
 
@@ -192,7 +192,7 @@ def launch_pyfai_calib2(reviews: dict, env: str):
     folder = None
     for alias, review in reviews.items():
         command = list(review.command)
-        if "DIFRA-256-50UM" in command:
+        if "DIFRA-256-55UM" in command:
             launcher = write_pyfai_calib2_launcher(
                 output_dir=Path(review.image_path).parent,
                 command=command,
@@ -270,10 +270,10 @@ def show_settings_dialog(
     controls = {}
 
     def _pixel_pair(detector_config):
-        value = detector_config.get("pixel_size_um", [50, 50])
+        value = detector_config.get("pixel_size_um", [55, 55])
         if not isinstance(value, (list, tuple)):
             value = [value, value]
-        first = value[0] if len(value) >= 1 else 50
+        first = value[0] if len(value) >= 1 else 55
         second = value[1] if len(value) >= 2 else first
         return float(first), float(second)
 

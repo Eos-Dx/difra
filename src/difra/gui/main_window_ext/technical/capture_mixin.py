@@ -1082,10 +1082,10 @@ class TechnicalCaptureMixin:
             layout.addLayout(energy_row)
 
             def _pixel_pair(detector_config):
-                pixel_cfg = detector_config.get("pixel_size_um", [50, 50])
+                pixel_cfg = detector_config.get("pixel_size_um", [55, 55])
                 if not isinstance(pixel_cfg, (list, tuple)):
                     pixel_cfg = [pixel_cfg, pixel_cfg]
-                first = pixel_cfg[0] if len(pixel_cfg) >= 1 else 50
+                first = pixel_cfg[0] if len(pixel_cfg) >= 1 else 55
                 second = pixel_cfg[1] if len(pixel_cfg) >= 2 else first
                 return float(first), float(second)
 
@@ -1682,7 +1682,7 @@ class TechnicalCaptureMixin:
         for alias, review in reviews.items():
             command = list(review.command)
             if (
-                "DIFRA-256-50UM" in command
+                "DIFRA-256-55UM" in command
                 and callable(write_pyfai_calib2_launcher)
             ):
                 launcher = write_pyfai_calib2_launcher(
