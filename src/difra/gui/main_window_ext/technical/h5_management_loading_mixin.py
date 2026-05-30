@@ -7,7 +7,8 @@ import json
 import numpy as np
 
 from . import h5_management_mixin as _module
-from .poni_center_validation import resolve_poni_rule_alias
+from .poni_center_validation import resolve_poni_rule_alias, validate_poni_metadata
+from .poni_distance_validation import parse_poni_distance_cm, validate_poni_distances
 from . import technical_startup_reconcile
 from difra.gui.technical.analysis_compat import detect_faulty_pixel_masks
 
@@ -168,8 +169,44 @@ class H5ManagementLoadingMixin:
     def _collect_poni_data_by_alias(self):
         poni_data = {}
         poni_files = getattr(self, "poni_files", {}) or {}
+        active_aliases = set()
+        get_active_aliases = getattr(self, "_get_active_detector_aliases", None)
+        if callable(get_active_aliases):
+            try:
+                active_aliases = {
+                    str(alias).strip().upper()
+                    for alias in (get_active_aliases() or [])
+                    if str(alias).strip()
+                }
+            except Exception:
+                active_aliases = set()
+
+        def _canonical_alias(alias):
+            raw = str(alias or "").strip()
+            if not raw:
+                return ""
+            alias_key = raw.upper()
+            if not active_aliases:
+                return alias_key
+            if alias_key in active_aliases:
+                return alias_key
+            resolver = getattr(self, "_resolve_configured_technical_alias", None)
+            if callable(resolver):
+                try:
+                    resolved, _detector_id, candidates = resolver(alias_key)
+                    for candidate in [resolved, *sorted(candidates or [])]:
+                        candidate_key = str(candidate or "").strip().upper()
+                        if candidate_key in active_aliases:
+                            return candidate_key
+                except Exception:
+                    logger.debug("Failed to canonicalize PONI alias %s", alias, exc_info=True)
+            return ""
+
         for alias, info in poni_files.items():
             if not isinstance(info, dict):
+                continue
+            alias_key = _canonical_alias(alias)
+            if not alias_key:
                 continue
             path = str(info.get("path") or "").strip()
             if not path or not os.path.exists(path):
@@ -179,8 +216,9 @@ class H5ManagementLoadingMixin:
             except (OSError, UnicodeError):
                 logger.warning("Failed to read PONI file from path: %s", path, exc_info=True)
                 continue
-            poni_name = str(info.get("name") or Path(path).name or f"{alias}.poni")
-            poni_data[str(alias)] = (poni_text, poni_name)
+            poni_name = str(info.get("name") or Path(path).name or f"{alias_key}.poni")
+            if alias_key not in poni_data or str(alias).strip().upper() == alias_key:
+                poni_data[alias_key] = (poni_text, poni_name)
         return poni_data
 
     def _copy_poni_files_to_container_folder(self, active_path):
@@ -216,15 +254,16 @@ class H5ManagementLoadingMixin:
 
     @staticmethod
     def _parse_poni_distance_cm(poni_text: str):
-        for line in str(poni_text or "").splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("Distance:"):
-                continue
-            try:
-                return float(stripped.split(":", 1)[1].strip()) * 100.0
-            except (TypeError, ValueError):
-                return None
-        return None
+        return parse_poni_distance_cm(poni_text)
+
+    def _poni_distance_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_distance_validation", {})
+        if not isinstance(validation_cfg, dict):
+            validation_cfg = {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
 
     @classmethod
     def _poni_distance_validation_errors(
@@ -233,39 +272,53 @@ class H5ManagementLoadingMixin:
         distances_by_alias,
         *,
         tolerance_percent: float = 5.0,
+        validation_config=None,
     ):
-        errors = []
         if not poni_data or not distances_by_alias:
-            return errors
-        normalized_distances = {
-            str(alias).strip().upper(): float(distance)
-            for alias, distance in dict(distances_by_alias).items()
-            if str(alias).strip()
-        }
+            return []
+        poni_text_by_alias = {}
+        poni_name_by_alias = {}
         for alias, payload in dict(poni_data).items():
-            alias_key = str(alias).strip().upper()
-            if alias_key not in normalized_distances:
-                continue
             try:
                 poni_text, poni_name = payload
             except Exception:
                 poni_text, poni_name = payload, f"{alias}.poni"
-            poni_distance_cm = cls._parse_poni_distance_cm(str(poni_text or ""))
-            if poni_distance_cm is None:
-                errors.append(f"{alias}: cannot read Distance from {poni_name}")
-                continue
-            expected_cm = normalized_distances[alias_key]
-            if expected_cm <= 0:
-                errors.append(f"{alias}: invalid detector distance {expected_cm:g} cm")
-                continue
-            deviation_percent = abs(poni_distance_cm - expected_cm) / expected_cm * 100.0
-            if deviation_percent > float(tolerance_percent):
-                errors.append(
-                    f"{alias}: PONI distance {poni_distance_cm:.3f} cm does not match "
-                    f"container distance {expected_cm:.3f} cm "
-                    f"({deviation_percent:.1f}% > {float(tolerance_percent):.1f}%)"
-                )
-        return errors
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+            poni_name_by_alias[str(alias)] = str(poni_name or f"{alias}.poni")
+        cfg = dict(validation_config or {})
+        if "tolerance_percent" not in cfg and "default_tolerance_percent" not in cfg:
+            cfg["tolerance_percent"] = float(tolerance_percent)
+        return validate_poni_distances(
+            poni_text_by_alias=poni_text_by_alias,
+            distances_by_alias=distances_by_alias,
+            poni_name_by_alias=poni_name_by_alias,
+            validation_config=cfg,
+        )
+
+    def _poni_metadata_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_metadata_validation", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _poni_metadata_validation_errors(self, poni_data):
+        validation_cfg = self._poni_metadata_validation_config()
+        if not validation_cfg:
+            return []
+        poni_text_by_alias = {}
+        for alias, payload in dict(poni_data or {}).items():
+            try:
+                poni_text, _poni_name = payload
+            except Exception:
+                poni_text = payload
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+        return validate_poni_metadata(
+            poni_text_by_alias=poni_text_by_alias,
+            validation_config=validation_cfg,
+        )
 
     def _canonical_faulty_pixel_alias(self, *values) -> str:
         normalize = getattr(self, "_normalize_technical_alias_candidates", None)
@@ -1141,6 +1194,7 @@ class H5ManagementLoadingMixin:
         distance_errors = self._poni_distance_validation_errors(
             poni_data,
             distances_for_write,
+            validation_config=self._poni_distance_validation_config(),
         )
         if distance_errors:
             set_state = getattr(self, "_set_container_state", None)
@@ -1164,6 +1218,32 @@ class H5ManagementLoadingMixin:
             self._log_technical_event(
                 "Technical container sync blocked: PONI distance mismatch: "
                 + "; ".join(distance_errors[:4])
+            )
+            return False
+
+        metadata_errors = self._poni_metadata_validation_errors(poni_data)
+        if metadata_errors:
+            set_state = getattr(self, "_set_container_state", None)
+            if callable(set_state):
+                set_state(
+                    Path(active_path),
+                    state=getattr(self, "STATE_PENDING_PONI", "pending_poni"),
+                    reason="poni_metadata_mismatch",
+                )
+            details = "\n".join(f"- {msg}" for msg in metadata_errors[:8])
+            if len(metadata_errors) > 8:
+                details += f"\n- ... and {len(metadata_errors) - 8} more"
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "PONI Metadata Mismatch",
+                    "PONI files do not match the required detector metadata.\n\n"
+                    + details
+                    + "\n\nSelect or generate PONI files for this detector setup.",
+                )
+            self._log_technical_event(
+                "Technical container sync blocked: PONI metadata mismatch: "
+                + "; ".join(metadata_errors[:4])
             )
             return False
 
@@ -2170,7 +2250,28 @@ class H5ManagementLoadingMixin:
                         if isinstance(poni_filename, bytes):
                             poni_filename = poni_filename.decode("utf-8", errors="replace")
 
-                        for candidate in [alias_key, *sorted(alias_candidates)]:
+                        store_candidates = []
+                        active_aliases = set()
+                        get_active_aliases = getattr(self, "_get_active_detector_aliases", None)
+                        if callable(get_active_aliases):
+                            try:
+                                active_aliases = {
+                                    str(item).strip().upper()
+                                    for item in (get_active_aliases() or [])
+                                    if str(item).strip()
+                                }
+                            except Exception:
+                                active_aliases = set()
+                        if active_aliases:
+                            for candidate in [alias_key, *sorted(alias_candidates)]:
+                                candidate_key = str(candidate or "").strip().upper()
+                                if candidate_key in active_aliases:
+                                    store_candidates = [candidate_key]
+                                    break
+                        else:
+                            store_candidates = [alias_key] if alias_key else []
+
+                        for candidate in store_candidates:
                             store_key = str(candidate or "").strip().upper()
                             if not store_key:
                                 continue

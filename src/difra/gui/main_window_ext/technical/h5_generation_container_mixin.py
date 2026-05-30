@@ -392,6 +392,44 @@ class H5GenerationContainerMixin:
                 if alias in single_poni:
                     fake_poni_data[alias] = single_poni[alias]
             poni_data = fake_poni_data
+            poni_distances_cm = {}
+            for alias in aliases_to_check:
+                if alias in poni_data:
+                    poni_content, _fname = poni_data[alias]
+                    d = self._parse_poni_distance_m(poni_content)
+                    if d is not None:
+                        poni_distances_cm[alias] = d * 100.0
+
+        distance_errors = self._poni_distance_validation_errors_for_data(
+            poni_data,
+            user_distances_cm,
+        )
+        if distance_errors:
+            details = "\n".join(f"- {msg}" for msg in distance_errors[:8])
+            if len(distance_errors) > 8:
+                details += f"\n- ... and {len(distance_errors) - 8} more"
+            QMessageBox.warning(
+                self,
+                "PONI Distance Validation Failed",
+                "PONI files do not match the detector distance configuration.\n\n"
+                + details
+                + "\n\nSelect or generate PONI files for this technical container.",
+            )
+            return
+
+        metadata_errors = self._poni_metadata_validation_errors(poni_data)
+        if metadata_errors:
+            details = "\n".join(f"- {msg}" for msg in metadata_errors[:8])
+            if len(metadata_errors) > 8:
+                details += f"\n- ... and {len(metadata_errors) - 8} more"
+            QMessageBox.warning(
+                self,
+                "PONI Metadata Validation Failed",
+                "PONI files do not match required detector metadata.\n\n"
+                + details
+                + "\n\nSelect or generate PONI files for this detector setup.",
+            )
+            return
 
         center_errors, center_warnings = self._validate_poni_center_rules_for_data(
             poni_data
@@ -412,6 +450,26 @@ class H5GenerationContainerMixin:
             self._log_technical_event(
                 f"PONI center validation warnings: {len(center_warnings)}"
             )
+
+        agbh_peak_warnings = self._agbh_peak_qc_warnings_for_aux_measurements(
+            aux_measurements,
+            poni_data,
+        )
+        if agbh_peak_warnings:
+            self._log_technical_event(
+                f"AgBH peak QC warnings before H5 generation: {len(agbh_peak_warnings)}"
+            )
+            if bool(self._agbh_peak_qc_config().get("show_dialog", True)):
+                details = "\n".join(f"- {msg}" for msg in agbh_peak_warnings[:6])
+                if len(agbh_peak_warnings) > 6:
+                    details += f"\n- ... and {len(agbh_peak_warnings) - 6} more"
+                QMessageBox.warning(
+                    self,
+                    "AgBH Peak QC Warning",
+                    "AgBH peak positions do not fully match theoretical lines.\n\n"
+                    + details
+                    + "\n\nThis is a warning only; H5 generation can continue.",
+                )
 
         # Get technical temp folder for HDF5 generation
         tech_temp_folder = _get_technical_temp_folder(self.config if hasattr(self, "config") else None)
