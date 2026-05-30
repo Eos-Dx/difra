@@ -40,13 +40,23 @@
             "PRIMARY": 2,
             "SECONDARY": 5
         },
+        "first_visible_ring_by_distance_cm": {
+            "2": {
+                "PRIMARY": 3,
+                "SECONDARY": 5
+            },
+            "17": {
+                "PRIMARY": 1,
+                "SECONDARY": 1
+            }
+        },
         "rings_to_search_by_alias": {
             "PRIMARY": 3,
             "SECONDARY": 3
         },
         "rings_to_search_by_distance_cm": {
             "2": {
-                "PRIMARY": 5,
+                "PRIMARY": 3,
                 "SECONDARY": 4
             },
             "17": {
@@ -54,7 +64,27 @@
                 "SECONDARY": 3
             }
         },
-        "rings_to_show": 3
+        "rings_to_show": 3,
+        "seed_distance_cm_by_distance_cm": {
+            "2": {
+                "PRIMARY": 2.3,
+                "SECONDARY": 2.48
+            },
+            "17": {
+                "PRIMARY": 17.0,
+                "SECONDARY": 17.0
+            }
+        },
+        "seed_center_px_by_alias": {
+            "PRIMARY": [
+                128.0,
+                10.0
+            ],
+            "SECONDARY": [
+                130.0,
+                306.0
+            ]
+        }
     },
     "poni_center_validation": {
         "enabled": true,

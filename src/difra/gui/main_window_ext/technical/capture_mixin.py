@@ -676,13 +676,18 @@ class TechnicalCaptureMixin:
     @staticmethod
     def _auto_poni_distance_key(distance_cm) -> str:
         try:
-            value = float(distance_cm)
-        except (TypeError, ValueError):
-            return ""
-        rounded = round(value)
-        if abs(value - rounded) <= 0.25:
-            return str(int(rounded))
-        return f"{value:.3f}".rstrip("0").rstrip(".")
+            from difra.gui.technical.pyfai_calibration import auto_poni_distance_key
+
+            return auto_poni_distance_key(distance_cm)
+        except Exception:
+            try:
+                value = float(distance_cm)
+            except (TypeError, ValueError):
+                return ""
+            rounded = round(value)
+            if abs(value - rounded) <= 0.55:
+                return str(int(rounded))
+            return f"{value:.3f}".rstrip("0").rstrip(".")
 
     def _active_technical_container_distance_cm_for_auto_poni(self):
         active_path = None
@@ -724,11 +729,39 @@ class TechnicalCaptureMixin:
             logger.debug("Failed to read Auto PONI root distance", exc_info=True)
             return None
 
-    def _auto_poni_default_distance_cm_by_alias(self, aliases) -> dict:
+    def _auto_poni_seed_distance_cm(self, *, alias: str, nominal_distance_cm, auto_cfg: dict):
+        try:
+            from difra.gui.technical.pyfai_calibration import auto_poni_seed_distance_cm
+
+            return auto_poni_seed_distance_cm(
+                auto_cfg,
+                alias=alias,
+                nominal_distance_cm=nominal_distance_cm,
+            )
+        except Exception:
+            return nominal_distance_cm
+
+    def _auto_poni_seed_center_px_from_config(self, alias: str, auto_cfg: dict | None = None):
+        try:
+            from difra.gui.technical.pyfai_calibration import auto_poni_seed_center_px
+
+            cfg = auto_cfg if isinstance(auto_cfg, dict) else self._auto_poni_config()
+            return auto_poni_seed_center_px(cfg, alias=alias)
+        except Exception:
+            return None
+
+    def _auto_poni_default_distance_cm_by_alias(self, aliases, auto_cfg: dict | None = None) -> dict:
         distance_cm = self._active_technical_container_distance_cm_for_auto_poni()
         if distance_cm is not None:
             return {
-                str(alias).strip().upper(): float(distance_cm)
+                str(alias).strip().upper(): float(
+                    self._auto_poni_seed_distance_cm(
+                        alias=str(alias).strip().upper(),
+                        nominal_distance_cm=distance_cm,
+                        auto_cfg=auto_cfg or {},
+                    )
+                    or distance_cm
+                )
                 for alias in aliases
             }
 
@@ -811,7 +844,10 @@ class TechnicalCaptureMixin:
             return 3
 
     def _auto_poni_default_settings(self, auto_cfg: dict, aliases) -> dict:
-        distance_by_alias = self._auto_poni_default_distance_cm_by_alias(aliases)
+        distance_by_alias = self._auto_poni_default_distance_cm_by_alias(
+            aliases,
+            auto_cfg=auto_cfg,
+        )
         first_visible = {}
         rings_to_search = {}
         for alias in aliases:
@@ -948,6 +984,34 @@ class TechnicalCaptureMixin:
 
         return float(row), float(col)
 
+    def _auto_poni_center_px_for_alias(self, alias: str, detector_config: dict):
+        configured_center = self._auto_poni_center_px_from_validation_config(
+            alias,
+            detector_config,
+        )
+        if configured_center is not None:
+            return configured_center
+
+        existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
+        if existing_poni:
+            return None
+        if str(detector_config.get("default_poni") or "").strip():
+            return None
+
+        resolver = getattr(self, "_resolve_fake_demo_center_px", None)
+        if not callable(resolver):
+            return None
+        size_cfg = detector_config.get("size", {})
+        if isinstance(size_cfg, dict):
+            size = (size_cfg.get("width", 256), size_cfg.get("height", 256))
+        else:
+            size = (256, 256)
+        try:
+            return resolver(alias, size)
+        except Exception:
+            logger.debug("Failed to resolve auto PONI center for %s", alias, exc_info=True)
+            return None
+
     def _confirm_auto_poni_config(self, auto_cfg: dict) -> bool:
         tm = _tm()
         first_visible = auto_cfg.get("first_visible_ring_by_alias", {})
@@ -1028,10 +1092,7 @@ class TechnicalCaptureMixin:
             for alias in aliases:
                 alias_key = str(alias or "").strip().upper()
                 detector_config = self._auto_poni_detector_config_for_alias(alias)
-                center_px = self._auto_poni_center_px_from_validation_config(
-                    alias,
-                    detector_config,
-                )
+                center_px = self._auto_poni_seed_center_px_from_config(alias, auto_cfg)
                 if center_px is None:
                     center_px = self._auto_poni_center_px_for_alias(alias, detector_config)
                 if center_px is None:
@@ -1273,34 +1334,6 @@ class TechnicalCaptureMixin:
                 return defaults
             return None
 
-    def _auto_poni_center_px_for_alias(self, alias: str, detector_config: dict):
-        configured_center = self._auto_poni_center_px_from_validation_config(
-            alias,
-            detector_config,
-        )
-        if configured_center is not None:
-            return configured_center
-
-        existing_poni = str((getattr(self, "ponis", {}) or {}).get(alias) or "")
-        if existing_poni:
-            return None
-        if str(detector_config.get("default_poni") or "").strip():
-            return None
-
-        resolver = getattr(self, "_resolve_fake_demo_center_px", None)
-        if not callable(resolver):
-            return None
-        size_cfg = detector_config.get("size", {})
-        if isinstance(size_cfg, dict):
-            size = (size_cfg.get("width", 256), size_cfg.get("height", 256))
-        else:
-            size = (256, 256)
-        try:
-            return resolver(alias, size)
-        except Exception:
-            logger.debug("Failed to resolve auto PONI center for %s", alias, exc_info=True)
-            return None
-
     def _collect_auto_poni_agbh_sources(self) -> dict:
         tm = _tm()
         sources = {}
@@ -1499,6 +1532,8 @@ class TechnicalCaptureMixin:
                     center_px = (float(center_px[0]), float(center_px[1]))
                 else:
                     center_px = None
+            if center_px is None:
+                center_px = self._auto_poni_seed_center_px_from_config(alias, auto_cfg)
             if center_px is None:
                 center_px = self._auto_poni_center_px_for_alias(alias, detector_config)
 

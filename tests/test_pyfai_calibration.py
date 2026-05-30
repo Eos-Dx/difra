@@ -1,8 +1,14 @@
 from pathlib import Path
 
+import h5py
 import numpy as np
+import pytest
 
+from difra.gui.technical.auto_poni_standalone import detector_config_for_alias, ring_defaults
 from difra.gui.technical.pyfai_calibration import (
+    auto_poni_distance_key,
+    auto_poni_seed_center_px,
+    auto_poni_seed_distance_cm,
     build_agbh_ring_overlays,
     build_pyfai_calib2_command,
     build_seed_poni_text,
@@ -15,6 +21,7 @@ from difra.gui.technical.pyfai_calibration import (
     prepare_agbh_calib2_review,
     pyfai_detector_name,
     refine_poni_from_clicked_ring_points,
+    run_headless_agbh_fit,
     write_agbh_control_points_npt,
     write_agbh_clicked_points_npt,
     write_agbh_points_by_ring_npt,
@@ -351,13 +358,39 @@ def test_normalized_auto_poni_config_defaults_visible_rings():
     assert cfg["rings_to_show"] == 3
     assert cfg["first_visible_ring_by_alias"]["PRIMARY"] == 2
     assert cfg["first_visible_ring_by_alias"]["SECONDARY"] == 5
-    assert cfg["first_visible_ring_by_distance_cm"]["2"]["PRIMARY"] == 2
+    assert cfg["first_visible_ring_by_distance_cm"]["2"]["PRIMARY"] == 3
     assert cfg["first_visible_ring_by_distance_cm"]["2"]["SECONDARY"] == 5
     assert cfg["first_visible_ring_by_distance_cm"]["17"]["PRIMARY"] == 1
-    assert cfg["rings_to_search_by_distance_cm"]["2"]["PRIMARY"] == 5
+    assert cfg["rings_to_search_by_distance_cm"]["2"]["PRIMARY"] == 3
     assert cfg["rings_to_search_by_distance_cm"]["2"]["SECONDARY"] == 4
     assert cfg["rings_to_search_by_distance_cm"]["17"]["PRIMARY"] == 3
     assert cfg["rings_to_search_by_distance_cm"]["17"]["SECONDARY"] == 3
+    assert cfg["seed_distance_cm_by_distance_cm"]["2"]["PRIMARY"] == 2.3
+    assert cfg["seed_distance_cm_by_distance_cm"]["2"]["SECONDARY"] == 2.48
+    assert cfg["seed_center_px_by_alias"]["SECONDARY"] == [130.0, 306.0]
+
+
+def test_auto_poni_seed_distance_and_center_defaults():
+    cfg = normalized_auto_poni_config({})
+
+    assert auto_poni_distance_key(2.48) == "2"
+    assert auto_poni_distance_key(17.3) == "17"
+    assert auto_poni_seed_distance_cm(
+        cfg,
+        alias="PRIMARY",
+        nominal_distance_cm=2.0,
+    ) == 2.3
+    assert auto_poni_seed_distance_cm(
+        cfg,
+        alias="SECONDARY",
+        nominal_distance_cm=2.0,
+    ) == 2.48
+    assert auto_poni_seed_distance_cm(
+        cfg,
+        alias="PRIMARY",
+        nominal_distance_cm=17.0,
+    ) == 17.0
+    assert auto_poni_seed_center_px(cfg, alias="SECONDARY") == (130.0, 306.0)
 
 
 def test_normalized_auto_poni_config_accepts_distance_ring_overrides():
@@ -410,3 +443,99 @@ def test_build_agbh_ring_overlays_starts_at_first_visible_ring():
     assert overlays[0]["center_row_px"] > 250
     assert overlays[0]["center_col_px"] > 38
     assert overlays[0]["radius_px"] > 100
+
+
+REAL_TECHNICAL_CONTAINERS = [
+    (
+        "2cm",
+        Path(
+            "/Users/sad/dev/Data/difra/archive/technical/"
+            "technical_fe2c66f4975b42d1_2cm_20260514_nxs_jennifer_nicell_20260514_144718/"
+            "technical_fe2c66f4975b42d1_2cm_20260514.nxs.h5"
+        ),
+    ),
+    (
+        "17cm",
+        Path(
+            "/Users/sad/dev/Data/difra/archive/technical/"
+            "technical_d4ac6be5aa0b4e23_17cm_20260528_nxs_jennifer_nicell_20260528_104130/"
+            "technical_d4ac6be5aa0b4e23_17cm_20260528.nxs.h5"
+        ),
+    ),
+]
+
+
+@pytest.mark.skipif(
+    not all(path.exists() for _label, path in REAL_TECHNICAL_CONTAINERS),
+    reason="real technical archive containers not available",
+)
+def test_auto_poni_reproduces_real_technical_container_ponis(tmp_path: Path):
+    cfg = {
+        "detectors": [
+            {
+                "alias": "PRIMARY",
+                "id": "MiniPIX G08-W0299",
+                "size": {"width": 256, "height": 256},
+                "pixel_size_um": [55, 55],
+            },
+            {
+                "alias": "SECONDARY",
+                "id": "MiniPIX G05-W0339",
+                "size": {"width": 256, "height": 256},
+                "pixel_size_um": [55, 55],
+            },
+        ],
+    }
+    auto_cfg = normalized_auto_poni_config({})
+    wavelength_m = energy_kev_to_wavelength_m(auto_cfg["energy_kev"])
+    detector_paths = {
+        "PRIMARY": ("entry/technical/tech_evt_000004/det_primary", "poni_primary"),
+        "SECONDARY": ("entry/technical/tech_evt_000004/det_secondary", "poni_secondary"),
+    }
+    nominal_by_label = {"2cm": 2.0, "17cm": 17.0}
+    pixel_m = 55e-6
+
+    for label, container_path in REAL_TECHNICAL_CONTAINERS:
+        nominal_cm = nominal_by_label[label]
+        with h5py.File(container_path, "r") as h5f:
+            for alias, (dataset_path, poni_name) in detector_paths.items():
+                detector_config = detector_config_for_alias(cfg, alias)
+                seed_distance_cm = auto_poni_seed_distance_cm(
+                    auto_cfg,
+                    alias=alias,
+                    nominal_distance_cm=nominal_cm,
+                )
+                first, count = ring_defaults(auto_cfg, [alias], seed_distance_cm)
+                fit = run_headless_agbh_fit(
+                    source_image=f"h5ref://{container_path}#{dataset_path}",
+                    detector_config=detector_config,
+                    distance_m=float(seed_distance_cm) / 100.0,
+                    output_dir=tmp_path / label,
+                    alias=alias,
+                    center_px=auto_poni_seed_center_px(auto_cfg, alias=alias),
+                    wavelength_m=wavelength_m,
+                    calibrant="AgBh",
+                    first_visible_ring=first[alias],
+                    rings_to_show=count[alias],
+                    output_prefix=f"{label}_{alias}",
+                )
+                reference = parse_poni_parameters(
+                    h5f[f"entry/technical/poni/{poni_name}"][()].decode()
+                )
+                fitted = parse_poni_parameters(fit.poni_text)
+                distance_error = abs(fitted["Distance"] - reference["Distance"]) / reference["Distance"]
+                row_shift_px = abs(fitted["Poni1"] - reference["Poni1"]) / pixel_m
+                col_shift_px = abs(fitted["Poni2"] - reference["Poni2"]) / pixel_m
+
+                context = {
+                    "label": label,
+                    "alias": alias,
+                    "distance_error": distance_error,
+                    "row_shift_px": row_shift_px,
+                    "col_shift_px": col_shift_px,
+                    "fit": fitted,
+                    "reference": reference,
+                }
+                assert distance_error <= 0.01, context
+                assert row_shift_px <= 1.0, context
+                assert col_shift_px <= 1.25, context

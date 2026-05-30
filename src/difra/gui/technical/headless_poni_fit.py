@@ -93,6 +93,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _run_fit(args: argparse.Namespace, config: dict) -> int:
     from difra.gui.technical.pyfai_calibration import (
         DEFAULT_ENERGY_KEV,
+        auto_poni_seed_distance_cm,
         build_seed_poni_text,
         energy_kev_to_wavelength_m,
         is_headless_agbh_fit_plausible,
@@ -106,8 +107,16 @@ def _run_fit(args: argparse.Namespace, config: dict) -> int:
 
     auto_config = normalized_auto_poni_config(config)
     alias = str(args.alias or DEFAULT_ALIAS).strip().upper()
-    distance_cm = float(args.distance_cm)
-    distance_m = distance_cm / 100.0
+    nominal_distance_cm = float(args.distance_cm)
+    distance_cm = (
+        auto_poni_seed_distance_cm(
+            auto_config,
+            alias=alias,
+            nominal_distance_cm=nominal_distance_cm,
+        )
+        or nominal_distance_cm
+    )
+    distance_m = float(distance_cm) / 100.0
     calibrant = str(auto_config.get("calibrant") or "AgBh")
     energy_kev = float(auto_config.get("energy_kev", DEFAULT_ENERGY_KEV))
     wavelength_m = energy_kev_to_wavelength_m(energy_kev)
