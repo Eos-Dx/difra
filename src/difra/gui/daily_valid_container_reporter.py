@@ -51,6 +51,7 @@ DEFAULT_EMAIL_CONFIG_PATH = (
 DEFAULT_REPORT_STATE_FILENAME = "daily_report_state.json"
 SAXS_RANGE = (1.0, 3.0)
 WAXS_RANGE = (2.0, 21.0)
+SAXS_DISTANCE_THRESHOLD_CM = 10.0
 @dataclass(frozen=True)
 class DetectorSeries:
     specimen_id: str
@@ -915,6 +916,17 @@ def _is_container_valid(h5f: h5py.File) -> Tuple[bool, str]:
     return True, ""
 
 
+def _container_distance_cm(h5f: h5py.File) -> Optional[float]:
+    for attr_name in ("distance_cm", "distanceCm", "technical_distance_cm"):
+        try:
+            value = h5f.attrs.get(attr_name)
+            if value not in (None, ""):
+                return float(value)
+        except Exception:
+            continue
+    return None
+
+
 def _detector_group(alias: str, detector_name: str) -> str:
     token = f"{alias} {detector_name}".upper()
     if any(item in token for item in ("PRIMARY", "SAXS", "DET_PRIMARY", "DET_SAXS")):
@@ -937,7 +949,18 @@ def _detector_range_config(
     detector_group: str,
     alias: str,
     detector_name: str,
+    distance_cm: Optional[float] = None,
 ) -> Tuple[str, Tuple[float, float], str, str]:
+    if distance_cm is not None:
+        try:
+            distance = float(distance_cm)
+        except Exception:
+            distance = None
+        if distance is not None and np.isfinite(distance):
+            if distance >= SAXS_DISTANCE_THRESHOLD_CM:
+                return "SAXS", SAXS_RANGE, "SAXS 1-3 nm^-1", f"distance_cm={distance:g}"
+            return "WAXS", WAXS_RANGE, "WAXS 2-21 nm^-1", f"distance_cm={distance:g}"
+
     token = f"{detector_group} {alias} {detector_name}".upper()
     if any(item in token for item in ("SECONDARY", "WAXS", "RIGHT", "DET_SECONDARY", "DET_WAXS")):
         return "WAXS", WAXS_RANGE, "WAXS 2-21 nm^-1", "alias/name matched WAXS/SECONDARY"
@@ -1259,6 +1282,7 @@ def collect_report_series(
                     h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", "unknown")),
                     "unknown",
                 )
+                distance_cm = _container_distance_cm(h5f)
                 measurements_group = h5f.get("/entry/measurements")
                 for point_name in sorted(measurements_group.keys()):
                     point_group = measurements_group[point_name]
@@ -1288,7 +1312,12 @@ def collect_report_series(
                             group_name = _detector_group(alias, str(det_name))
                             side = _detector_side_label(group_name, alias, str(det_name))
                             range_name, q_range, range_label, range_reason = (
-                                _detector_range_config(group_name, alias, str(det_name))
+                                _detector_range_config(
+                                    group_name,
+                                    alias,
+                                    str(det_name),
+                                    distance_cm=distance_cm,
+                                )
                             )
                             signal = det_group["processed_signal"][()]
                             best: Optional[Tuple[str, str, np.ndarray, np.ndarray, float]] = None

@@ -125,6 +125,43 @@ def test_build_daily_report_renders_one_combined_image_per_specimen(
     assert container.name in str(container)
 
 
+def test_collect_report_series_uses_container_distance_for_all_detector_ranges(
+    tmp_path, monkeypatch
+):
+    near_container = _create_container(tmp_path / "session_2cm.nxs.h5")
+    far_container = _create_container(tmp_path / "session_17cm.nxs.h5")
+    with h5py.File(near_container, "a") as h5f:
+        h5f.attrs["specimenId"] = "SPEC_NEAR"
+        h5f.attrs["distance_cm"] = 2.0
+    with h5py.File(far_container, "a") as h5f:
+        h5f.attrs["specimenId"] = "SPEC_FAR"
+        h5f.attrs["distance_cm"] = 17.0
+
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (1.0, 3.0)), int(npt))
+        return q, np.ones_like(q)
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+    monkeypatch.setattr(
+        reporter,
+        "_candidate_poni_infos",
+        lambda *_args, **_kwargs: [("poni", "test")],
+    )
+
+    series, skipped, valid_count = reporter.collect_report_series(
+        [near_container, far_container],
+        points=100,
+    )
+
+    assert skipped == []
+    assert valid_count == 2
+    by_specimen = {}
+    for item in series:
+        by_specimen.setdefault(item.specimen_id, set()).add(item.range_name)
+    assert by_specimen["SPEC_NEAR"] == {"WAXS"}
+    assert by_specimen["SPEC_FAR"] == {"SAXS"}
+
+
 def test_resolve_poni_text_prefers_explicit_detector_poni_path(tmp_path):
     path = tmp_path / "session_poni_priority.nxs.h5"
     legacy_text = "Distance: 0.024\n# legacy"
