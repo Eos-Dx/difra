@@ -26,6 +26,9 @@ from difra.utils.logger import get_module_logger
 logger = get_module_logger(__name__)
 
 
+DEFAULT_BEAM_ENERGY_KEV = 8.04
+
+
 class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMixin):
     """Manages HDF5 session containers for DIFRA measurements."""
 
@@ -77,6 +80,26 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             return int(value)
         except Exception:
             return None
+
+    @staticmethod
+    def _resolve_beam_energy_kev(config: Optional[Dict]) -> float:
+        config = config or {}
+        for key in ("beam_energy_keV", "beam_energy_kev", "xray_energy_kev", "energy_kev"):
+            if key not in config:
+                continue
+            try:
+                value = float(config[key])
+            except Exception as exc:
+                raise ValueError(f"Invalid {key}: {config[key]!r}") from exc
+            if value <= 0:
+                raise ValueError(f"Invalid {key}: {config[key]!r}")
+            return value
+
+        logger.warning(
+            "Beam energy missing from config; using default %.2f keV",
+            DEFAULT_BEAM_ENERGY_KEV,
+        )
+        return DEFAULT_BEAM_ENERGY_KEV
 
     @staticmethod
     def _read_specimen_id(attrs, *, fallback: str = "") -> str:
@@ -232,12 +255,12 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
             self.operator_id: str = config.get('operator_id', 'operator')
             self.site_id: str = config.get('site_id', 'DIFRA_LAB')
             self.machine_name: str = self._resolve_machine_name(config)
-            self.beam_energy_kev: float = config.get('beam_energy_kev', 17.5)
+            self.beam_energy_kev: float = self._resolve_beam_energy_kev(config)
         else:
             self.operator_id: str = "operator"
             self.site_id: str = "DIFRA_LAB"
             self.machine_name: str = "DIFRA-01"
-            self.beam_energy_kev: float = 17.5
+            self.beam_energy_kev: float = self._resolve_beam_energy_kev({})
 
     def _set_session_state(self, state: str, reason: str = "") -> bool:
         """Persist session workflow state into the active container attrs."""
