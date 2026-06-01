@@ -514,6 +514,34 @@ class TechnicalCaptureMixin:
 
         return self._resolve_pyfai_conda_env()
 
+    def _auto_poni_metadata_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_metadata_validation", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _auto_poni_metadata_validation_errors(self, reviews: dict) -> list[str]:
+        validation_cfg = self._auto_poni_metadata_validation_config()
+        if not validation_cfg:
+            return []
+        try:
+            from difra.gui.main_window_ext.technical.poni_center_validation import (
+                validate_poni_metadata,
+            )
+        except Exception as exc:
+            return [f"PONI metadata validator unavailable: {exc}"]
+
+        return validate_poni_metadata(
+            poni_text_by_alias={
+                str(alias): str(getattr(review, "poni_text", "") or "")
+                for alias, review in dict(reviews or {}).items()
+            },
+            validation_config=validation_cfg,
+        )
+
     def _selected_aux_row_for_pyfai(self):
         try:
             if not hasattr(self, "auxTable") or self.auxTable is None:
@@ -1787,6 +1815,19 @@ class TechnicalCaptureMixin:
                 return False
         except Exception:
             logger.warning("Failed to check active technical container lock state", exc_info=True)
+            return False
+
+        metadata_errors = self._auto_poni_metadata_validation_errors(reviews)
+        if metadata_errors:
+            details = "\n".join(f"- {msg}" for msg in metadata_errors[:8])
+            if len(metadata_errors) > 8:
+                details += f"\n- ... and {len(metadata_errors) - 8} more"
+            self._log_technical_event("Auto PONI validate blocked: metadata mismatch")
+            _warn(
+                "Generated PONI files do not match required detector metadata.\n\n"
+                + details
+                + "\n\nPONI was not accepted or saved."
+            )
             return False
 
         for alias, review in reviews.items():

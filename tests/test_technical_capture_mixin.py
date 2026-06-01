@@ -537,6 +537,71 @@ def test_auto_poni_validate_noops_when_active_container_locked(tmp_path, monkeyp
     ]
 
 
+def test_auto_poni_validate_rejects_wrong_pixel_size(tmp_path, monkeypatch):
+    warnings = []
+    fake_tm = SimpleNamespace(
+        QMessageBox=SimpleNamespace(
+            warning=lambda _parent, _title, message: warnings.append(str(message))
+        )
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.technical.capture_mixin._tm",
+        lambda: fake_tm,
+    )
+
+    class _SyncHarness(_Harness):
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+            self.config["poni_metadata_validation"] = {
+                "enabled": True,
+                "expected_energy_keV": 8.04,
+                "energy_tolerance_keV": 0.1,
+                "expected_pixel_size_um": [55, 55],
+                "pixel_tolerance_um": 0.25,
+                "expected_shape": [256, 256],
+            }
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+    harness = _SyncHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    bad_poni = "\n".join(
+        [
+            "poni_version: 2.1",
+            "Detector: Detector",
+            'Detector_config: {"pixel1": 5e-05, "pixel2": 5e-05, "max_shape": [256, 256]}',
+            "Distance: 0.02",
+            "Poni1: 0.0",
+            "Poni2: 0.0",
+            "Rot1: 0.0",
+            "Rot2: 0.0",
+            "Rot3: 0.0",
+            "Wavelength: 1.5420920203134363e-10",
+        ]
+    )
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text=bad_poni,
+        source_path=agbh_path,
+    )
+
+    assert not harness._validate_auto_poni_reviews({"PRIMARY": review})
+    assert harness.synced == 0
+    assert not (tmp_path / "AgBH_001_PRIMARY.poni").exists()
+    assert warnings
+    assert "PONI was not accepted or saved" in warnings[0]
+    assert "pixel" in warnings[0]
+
+
 def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
     class _SyncHarness(_Harness):
         def __init__(self):
