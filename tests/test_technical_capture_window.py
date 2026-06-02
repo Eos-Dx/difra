@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 import pytest
-from PyQt5.QtWidgets import QApplication
+from difra.gui.qt_compat import QApplication
 
 if "seaborn" not in sys.modules:
     sys.modules["seaborn"] = SimpleNamespace(

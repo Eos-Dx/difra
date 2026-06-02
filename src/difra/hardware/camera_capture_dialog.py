@@ -3,9 +3,9 @@ import platform
 import sys
 
 import cv2
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt, QTimer
+from difra.gui.qt_compat import QImage, QPixmap
+from difra.gui.qt_compat import (
     QCheckBox,
     QComboBox,
     QDialog,

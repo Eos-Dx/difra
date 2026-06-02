@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import h5py
 import pytest
-from PyQt5.QtWidgets import QApplication
+from difra.gui.qt_compat import QApplication
 
 from difra.gui.container_api import get_schema
 

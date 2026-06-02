@@ -1,9 +1,9 @@
 import logging
 import uuid
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QBrush, QColor, QPen
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QBrush, QColor, QPen
+from difra.gui.qt_compat import (
     QAbstractItemView,
     QDockWidget,
     QGraphicsEllipseItem,

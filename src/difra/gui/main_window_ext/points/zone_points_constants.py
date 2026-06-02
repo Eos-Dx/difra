@@ -1,6 +1,6 @@
 """Constants for zone points functionality."""
 
-from PyQt5.QtGui import QColor
+from difra.gui.qt_compat import QColor
 
 
 class ZonePointsConstants:

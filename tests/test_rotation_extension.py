@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication
+from difra.gui.qt_compat import QApplication
 
 from difra.gui.main_window_ext.rotation_extension import RotatorToolButton
 

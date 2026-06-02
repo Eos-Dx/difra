@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
-from PyQt5.QtCore import Qt
+from difra.gui.qt_compat import Qt
 
 
 def _pm():
@@ -928,7 +928,7 @@ class ZoneMeasurementsProcessResultsMixin:
         if current >= len(sorted_indices):
             return
 
-        from PyQt5.QtWidgets import QInputDialog
+        from difra.gui.qt_compat import QInputDialog
 
         reason, ok = QInputDialog.getText(
             self,

@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import (
     QFileDialog,
     QHBoxLayout,
     QLabel,

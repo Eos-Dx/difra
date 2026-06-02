@@ -3,9 +3,9 @@ from pathlib import Path
 
 from container import loader
 from container.registry import load_version_module
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QColor, QFont, QPainter, QPainterPath, QPen
+from difra.gui.qt_compat import (
     QDialog,
     QHeaderView,
     QHBoxLayout,
@@ -454,7 +454,7 @@ class MeasurementHistoryWidget(QWidget):
             ):
                 table = self.parent_window.pointsTable
                 try:
-                    from PyQt5.QtWidgets import QTableWidgetItem  # noqa: F401
+                    from difra.gui.qt_compat import QTableWidgetItem  # noqa: F401
 
                     rows = table.rowCount()
                     for r in range(rows):

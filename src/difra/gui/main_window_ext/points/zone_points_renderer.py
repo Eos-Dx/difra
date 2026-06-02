@@ -2,10 +2,10 @@
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5 import sip
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QPen
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QTableWidgetItem
+from difra.gui.qt_compat import sip
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QColor, QPen
+from difra.gui.qt_compat import QGraphicsEllipseItem, QTableWidgetItem
 
 from difra.gui.extra.elements import HoverableEllipseItem
 from difra.gui.extra.resizable_zone import ResizableZoneItem

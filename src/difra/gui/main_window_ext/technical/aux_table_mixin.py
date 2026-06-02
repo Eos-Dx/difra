@@ -586,7 +586,7 @@ class TechnicalAuxTableMixin:
         tm = _tm()
         cb = tm.QComboBox()
         try:
-            from PyQt5.QtWidgets import QComboBox as _QtComboBox, QWidget as _QtWidget
+            from difra.gui.qt_compat import QComboBox as _QtComboBox, QWidget as _QtWidget
 
             if not isinstance(cb, _QtWidget):
                 cb = _QtComboBox()
@@ -673,7 +673,7 @@ class TechnicalAuxTableMixin:
         tm = _tm()
         cb = tm.QComboBox()
         try:
-            from PyQt5.QtWidgets import QComboBox as _QtComboBox, QWidget as _QtWidget
+            from difra.gui.qt_compat import QComboBox as _QtComboBox, QWidget as _QtWidget
 
             if not isinstance(cb, _QtWidget):
                 cb = _QtComboBox()

@@ -4,8 +4,8 @@ from difra.gui.image_view_ext.point_editing_extension import (
 )
 from difra.gui.image_view_ext.zoom_extension import ZoomMixin
 from difra.gui.views.image_view_basic import ImageViewBasic
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QMenu
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QGraphicsEllipseItem, QMenu
 
 
 class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):

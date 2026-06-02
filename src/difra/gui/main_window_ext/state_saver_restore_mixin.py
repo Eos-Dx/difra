@@ -185,7 +185,7 @@ class StateSaverRestoreMixin:
                             return
                     elif len(candidates) > 1:
                         # Let user choose
-                        from PyQt5.QtWidgets import QFileDialog
+                        from difra.gui.qt_compat import QFileDialog
 
                         chosen, _ = QFileDialog.getOpenFileName(
                             self,
@@ -531,7 +531,7 @@ class StateSaverRestoreMixin:
         if not detector_poni:
             return  # No PONI data in state
 
-        from PyQt5.QtWidgets import QMessageBox
+        from difra.gui.qt_compat import QMessageBox
 
         # Create confirmation dialog
         msg = QMessageBox(self)
@@ -608,7 +608,7 @@ class StateSaverRestoreMixin:
                 logger.warning("PONI file missing for %s: %s", alias, path)
 
         # Show summary
-        from PyQt5.QtWidgets import QMessageBox
+        from difra.gui.qt_compat import QMessageBox
 
         summary_msg = f"PONI file restoration complete:\n\n• {restored_count} files restored successfully"
         if missing_files:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from PyQt5.QtWidgets import QApplication, QPushButton, QTableWidget, QWidget
+from difra.gui.qt_compat import QApplication, QPushButton, QTableWidget, QWidget
 
 from difra.gui.main_window_ext.technical.panel_mixin import TechnicalPanelMixin
 

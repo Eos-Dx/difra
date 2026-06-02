@@ -106,12 +106,13 @@ class _DeleteAllOwner:
         self.removed_widgets.append(point_uid)
 
 
-def test_update_points_table_safe_returns_when_points_table_is_missing(capsys):
+def test_update_points_table_safe_returns_when_points_table_is_missing(caplog):
     owner = type("NoTableOwner", (), {"pointsTable": None})()
 
+    caplog.set_level("DEBUG")
     zone_points_actions.update_points_table_safe(owner)
 
-    assert "pointsTable not available" in capsys.readouterr().out
+    assert "pointsTable not available" in caplog.text
 
 
 def test_update_points_table_uses_safe_update_when_zone_widget_not_ready():

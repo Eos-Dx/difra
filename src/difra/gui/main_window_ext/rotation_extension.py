@@ -1,5 +1,5 @@
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QAction, QLabel, QMenu, QPushButton, QToolButton
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QAction, QLabel, QMenu, QPushButton, QToolButton
 
 
 class RotatorToolButton(QToolButton):

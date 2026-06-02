@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QGraphicsEllipseItem
+from difra.gui.qt_compat import QGraphicsEllipseItem
 
 
 class HoverableEllipseItem(QGraphicsEllipseItem):

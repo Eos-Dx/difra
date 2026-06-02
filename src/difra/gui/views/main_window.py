@@ -2,8 +2,8 @@ import logging
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import (
     QApplication,
     QMainWindow,
     QTabWidget,

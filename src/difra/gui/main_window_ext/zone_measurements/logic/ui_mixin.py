@@ -1,6 +1,6 @@
 # zone_measurements/logic/ui_mixin.py
 
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import (
     QCheckBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -47,7 +47,7 @@ class ZoneMeasurementsUIMixin:
         
         # Set smaller font for all controls to fit smaller screens
         try:
-            from PyQt5.QtGui import QFont
+            from difra.gui.qt_compat import QFont
             control_font = QFont()
             control_font.setPointSize(9)  # Smaller font for controls (menu-size)
             meas_tab.setFont(control_font)
@@ -355,7 +355,7 @@ class ZoneMeasurementsUIMixin:
         meas_layout.addLayout(logLayout)
 
         # Timer for stage XY updates
-        from PyQt5.QtCore import QTimer
+        from difra.gui.qt_compat import QTimer
 
         self.xyTimer = QTimer(self)
         self.xyTimer.timeout.connect(self.update_xy_pos)

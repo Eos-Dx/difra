@@ -3,7 +3,7 @@
 import time
 
 import h5py
-from PyQt5.QtWidgets import QInputDialog
+from difra.gui.qt_compat import QInputDialog
 
 from . import session_mixin as _session_module
 

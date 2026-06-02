@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QAction, QActionGroup
+from difra.gui.qt_compat import QAction, QActionGroup
 
 
 class DrawingMixin:

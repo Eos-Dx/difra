@@ -102,6 +102,25 @@ def test_build_archived_rows_extracts_stamp_with_numeric_suffix(tmp_path):
     assert rows[0]["archived"] == "20260213_120000"
 
 
+def test_build_archived_rows_displays_req_resend_reason(tmp_path):
+    archive_root = tmp_path / "archive" / "measurements"
+    archived_dir = archive_root / "SAMPLE_Z_20260213_120000"
+    archived_dir.mkdir(parents=True, exist_ok=True)
+
+    session_path = _create_session_file(archived_dir, "SAMPLE_Z", "STUDY_Z")
+    with h5py.File(session_path, "a") as h5f:
+        h5f.attrs["transfer_status"] = "REQ_RESEND"
+
+    rows = SessionTabPresenter.build_archived_rows(
+        archive_root,
+        schema=schema,
+        container_manager=_ContainerManagerStub(),
+    )
+
+    assert rows[0]["transfer_status"] == "REQ_RESEND"
+    assert rows[0]["status"] == "UNLOCKED / REQ_RESEND (sent before; requires update)"
+
+
 def test_presenter_populates_pending_and_archive_tables(qapp):
     pending_table = QTableWidget()
     pending_table.setColumnCount(8)
@@ -292,6 +311,18 @@ def test_filter_archived_rows_can_filter_unsent_today_and_sort():
             "status": "LOCKED / NOT_COMPLETE",
             "transfer_status": "NOT_COMPLETE",
         },
+        {
+            "file_name": "session_req_resend_today.nxs.h5",
+            "sample_id": "SPEC_E",
+            "project_id": "PROJECT_B",
+            "study_name": "STUDY_E",
+            "operator_id": "bob",
+            "uploaded_by": "",
+            "created": "2026-04-06 13:00:00",
+            "archived": "20260406_130000",
+            "status": "LOCKED / REQ_RESEND",
+            "transfer_status": "REQ_RESEND",
+        },
     ]
 
     filtered = SessionTabPresenter.filter_archived_rows(
@@ -307,3 +338,43 @@ def test_filter_archived_rows_can_filter_unsent_today_and_sort():
 
     assert [row["sample_id"] for row in filtered] == ["SPEC_C", "SPEC_B"]
 
+    req_resend = SessionTabPresenter.filter_archived_rows(
+        rows,
+        date_mode="Today",
+        transfer_status_filter="REQ_RESEND",
+        project_filter="project_b",
+        operator_filter="bob",
+        search_filter="spec",
+        sort_mode="Archived: newest first",
+        now=datetime(2026, 4, 6, 18, 0, 0),
+    )
+
+    assert [row["sample_id"] for row in req_resend] == ["SPEC_E"]
+
+
+def test_populate_archive_table_displays_req_resend_reason(qapp):
+    archive_table = QTableWidget()
+    archive_table.setColumnCount(10)
+
+    SessionTabPresenter.populate_archive_table(
+        archive_table,
+        [
+            {
+                "file_name": "session_req_resend.nxs.h5",
+                "sample_id": "SPEC_E",
+                "project_id": "PROJECT_B",
+                "study_name": "STUDY_E",
+                "operator_id": "bob",
+                "uploaded_by": "",
+                "created": "2026-04-06 13:00:00",
+                "archived": "20260406_130000",
+                "status": "LOCKED / REQ_RESEND",
+                "transfer_status": "REQ_RESEND",
+                "path": "/tmp/session_req_resend.nxs.h5",
+            }
+        ],
+    )
+
+    assert archive_table.item(0, 8).text() == (
+        "LOCKED / REQ_RESEND (sent before; requires update)"
+    )

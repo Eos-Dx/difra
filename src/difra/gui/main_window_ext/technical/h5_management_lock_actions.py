@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 try:
-    from PyQt5.QtWidgets import QInputDialog, QMessageBox
+    from difra.gui.qt_compat import QInputDialog, QMessageBox
 except Exception:
     class QInputDialog:  # pragma: no cover - fallback for stubbed test environments
         @staticmethod

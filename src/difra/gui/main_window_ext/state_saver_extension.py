@@ -7,9 +7,9 @@ import string
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from PyQt5.QtCore import QRectF, QTimer
-from PyQt5.QtGui import QColor, QPen, QPixmap
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem
+from difra.gui.qt_compat import QRectF, QTimer
+from difra.gui.qt_compat import QColor, QPen, QPixmap
+from difra.gui.qt_compat import QGraphicsEllipseItem, QGraphicsRectItem
 
 from difra.gui.image_view_ext.point_editing_extension import null_dict
 from difra.gui.main_window_ext.state_saver_io_mixin import StateSaverIOMixin

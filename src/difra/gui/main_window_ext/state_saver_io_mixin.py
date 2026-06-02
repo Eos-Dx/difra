@@ -255,7 +255,7 @@ class StateSaverIOMixin:
         if not dock_geometry:
             return
         try:
-            from PyQt5.QtCore import QByteArray
+            from difra.gui.qt_compat import QByteArray
             # Restore window geometry (size and position)
             if "window_geometry" in dock_geometry:
                 geom_bytes = dock_geometry["window_geometry"].encode('ascii')

@@ -290,7 +290,7 @@ class SessionWorkspaceMixin:
 
         try:
             import numpy as np
-            from PyQt5.QtGui import QImage, QPixmap
+            from difra.gui.qt_compat import QImage, QPixmap
 
             array = np.asarray(image_array)
             if array.ndim == 2:
@@ -357,7 +357,7 @@ class SessionWorkspaceMixin:
 
         try:
             import numpy as np
-            from PyQt5.QtGui import QImage
+            from difra.gui.qt_compat import QImage
 
             image = current_pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
             width = image.width()

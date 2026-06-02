@@ -1,6 +1,6 @@
 # zone_measurements/zone_measurements_mixin.py
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QDockWidget, QTabWidget, QVBoxLayout, QWidget
+from difra.gui.qt_compat import Qt, pyqtSignal
+from difra.gui.qt_compat import QDockWidget, QTabWidget, QVBoxLayout, QWidget
 
 from .detector_param_mixin import DetectorParamMixin
 from .session_tab_mixin import SessionTabMixin

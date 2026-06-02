@@ -322,6 +322,7 @@ def test_open_archive_starts_pending_matador_verification(qapp, tmp_path, monkey
     assert calls[0]["runtime_config"]["matador_upload_max_parallel"] == 4
     assert "Pending" not in status_filters
     assert "Failed" not in status_filters
+    assert "REQ_RESEND" in status_filters
     assert "UNSENT" in str(archive_table.item(0, 8).text())
     harness._archive_window_dialog.close()
     harness.close()

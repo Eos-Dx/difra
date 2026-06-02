@@ -15,7 +15,7 @@ from difra.gui.container_api import (
 
 # Import Qt for type hints and usage
 try:
-    from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+    from difra.gui.qt_compat import QFileDialog, QInputDialog, QMessageBox
 except ImportError:
     # Test stubs
     class QFileDialog:

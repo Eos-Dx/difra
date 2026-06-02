@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from PyQt5.QtWidgets import QMessageBox
+from difra.gui.qt_compat import QMessageBox
 
 import difra.gui.main_window_ext.zone_measurements.logic.file_mixin as file_mixin_module
 from difra.gui.main_window_ext.zone_measurements.logic.file_mixin import (

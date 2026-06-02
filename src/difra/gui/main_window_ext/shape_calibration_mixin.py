@@ -1,9 +1,9 @@
 import logging
 from math import ceil, floor, sqrt
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QImage, QPen, QPixmap
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QPointF, QRectF, Qt
+from difra.gui.qt_compat import QBrush, QColor, QImage, QPen, QPixmap
+from difra.gui.qt_compat import (
     QColorDialog,
     QDialog,
     QGraphicsEllipseItem,
@@ -623,7 +623,7 @@ class ShapeCalibrationMixin:
             return None
         try:
             import numpy as np
-            from PyQt5.QtGui import QImage
+            from difra.gui.qt_compat import QImage
 
             image = current_pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
             width = image.width()

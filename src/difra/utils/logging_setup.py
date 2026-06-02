@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 try:
-    # Optional: capture Qt messages into Python logging if PyQt5 is present
-    from PyQt5.QtCore import QtMsgType, qInstallMessageHandler
+    # Optional: capture Qt messages into Python logging if Qt bindings are present
+    from difra.gui.qt_compat import QtMsgType, qInstallMessageHandler
 except ImportError:  # pragma: no cover
     qInstallMessageHandler = None
     QtMsgType = None

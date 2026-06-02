@@ -6,7 +6,7 @@ import hashlib
 import logging
 from pathlib import Path
 
-from PyQt5.QtWidgets import QInputDialog, QMessageBox
+from difra.gui.qt_compat import QInputDialog, QMessageBox
 
 from difra.gui.container_api import get_container_manager
 

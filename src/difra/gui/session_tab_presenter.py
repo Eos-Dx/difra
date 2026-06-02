@@ -26,6 +26,7 @@ class SessionTabPresenter:
 
     _ARCHIVE_STAMP_RE = re.compile(r"(\d{8}_\d{6})(?:_\d+)?$")
     _TRANSFER_STATUS_NOT_COMPLETE = "NOT_COMPLETE"
+    _TRANSFER_STATUS_REQ_RESEND = "REQ_RESEND"
 
     @staticmethod
     def decode_attr(value):
@@ -194,7 +195,10 @@ class SessionTabPresenter:
                     )
                     or ""
                 ).strip()
-                if explicit_transfer_status.upper() == cls._TRANSFER_STATUS_NOT_COMPLETE:
+                if explicit_transfer_status.upper() in {
+                    cls._TRANSFER_STATUS_NOT_COMPLETE,
+                    cls._TRANSFER_STATUS_REQ_RESEND,
+                }:
                     transfer_status = explicit_transfer_status
                 else:
                     transfer_status = ""
@@ -218,8 +222,11 @@ class SessionTabPresenter:
                         or getattr(schema, "TRANSFER_STATUS_UNSENT", "unsent")
                     )
                 info["transfer_status"] = str(transfer_status).upper()
+                display_transfer_status = cls._display_transfer_status(
+                    info["transfer_status"]
+                )
                 info["status"] = (
-                    f"{info['lock_status']} / {info['transfer_status']}"
+                    f"{info['lock_status']} / {display_transfer_status}"
                 )
         except Exception as exc:
             info["status"] = f"ERROR ({exc})"
@@ -304,6 +311,24 @@ class SessionTabPresenter:
         return str(value or "").strip().lower().replace("_", " ")
 
     @classmethod
+    def _display_transfer_status(cls, transfer_status: str) -> str:
+        status = str(transfer_status or "").strip().upper()
+        if status == cls._TRANSFER_STATUS_REQ_RESEND:
+            return "REQ_RESEND (sent before; requires update)"
+        return status
+
+    @classmethod
+    def _display_archive_status(cls, row: Dict[str, str]) -> str:
+        status = str(row.get("status") or "")
+        transfer_status = cls._row_transfer_status(row)
+        if transfer_status != cls._TRANSFER_STATUS_REQ_RESEND:
+            return status
+        display_transfer_status = cls._display_transfer_status(transfer_status)
+        if "/" in status:
+            return f"{status.split('/', 1)[0].strip()} / {display_transfer_status}"
+        return display_transfer_status
+
+    @classmethod
     def _row_transfer_status(cls, row: Dict[str, str]) -> str:
         explicit = str(row.get("transfer_status") or "").strip().upper()
         if explicit:
@@ -311,10 +336,12 @@ class SessionTabPresenter:
         status_text = str(row.get("status") or "").strip().upper()
         if "NOT_COMPLETE" in status_text:
             return "NOT_COMPLETE"
-        if "SENT" in status_text:
-            return "SENT"
+        if "REQ_RESEND" in status_text or "REQ RESEND" in status_text:
+            return "REQ_RESEND"
         if "UNSENT" in status_text:
             return "UNSENT"
+        if "SENT" in status_text:
+            return "SENT"
         return ""
 
     @classmethod
@@ -349,6 +376,8 @@ class SessionTabPresenter:
 
             transfer_status = cls._row_transfer_status(row)
             if status_filter == "unsent" and transfer_status != "UNSENT":
+                continue
+            if status_filter == "req resend" and transfer_status != "REQ_RESEND":
                 continue
             if status_filter == "sent" and transfer_status != "SENT":
                 continue
@@ -450,14 +479,19 @@ class SessionTabPresenter:
                     "status",
                 ]
             ):
-                table.setItem(row_index, col, cls._readonly_item(row_data.get(key, "")))
+                value = row_data.get(key, "")
+                if key == "status":
+                    value = cls._display_archive_status(row_data)
+                table.setItem(row_index, col, cls._readonly_item(value))
 
             table.setItem(row_index, 9, cls._readonly_item(row_data.get("path", "")))
 
-    @staticmethod
-    def format_active_session_info(info: Dict[str, Any]) -> str:
+    @classmethod
+    def format_active_session_info(cls, info: Dict[str, Any]) -> str:
         """Format active session info as HTML for QLabel."""
-        transfer_status = str(info.get("transfer_status") or "unsent").upper()
+        transfer_status = cls._display_transfer_status(
+            str(info.get("transfer_status") or "unsent").upper()
+        )
         session_state = str(info.get("session_state") or "").strip()
         state_suffix = f" ({session_state})" if session_state else ""
         return (

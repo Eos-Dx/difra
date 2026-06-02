@@ -705,7 +705,7 @@ def test_skip_current_point_skips_when_user_cancels(monkeypatch):
         sorted_indices=[5, 6],
         _skip_point_by_row=lambda row, reason: (_ for _ in ()).throw(RuntimeError("should not be called")),
     )
-    from PyQt5.QtWidgets import QInputDialog
+    from difra.gui.qt_compat import QInputDialog
 
     monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("", False))
 
@@ -724,7 +724,7 @@ def test_skip_current_point_records_skip_reason_and_log(monkeypatch):
         _skip_point_by_row=lambda row, reason: calls.append((row, reason)) or True,
         _append_capture_log=lambda message: logs.append(message),
     )
-    from PyQt5.QtWidgets import QInputDialog
+    from difra.gui.qt_compat import QInputDialog
 
     monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("because", True))
 

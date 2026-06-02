@@ -3,8 +3,8 @@
 import logging
 from pathlib import Path
 
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+from difra.gui.qt_compat import QPixmap
+from difra.gui.qt_compat import QFileDialog, QInputDialog, QMessageBox
 
 from difra.gui.container_api import get_container_manager, get_schema
 from difra.gui.session_lifecycle_service import SessionLifecycleService

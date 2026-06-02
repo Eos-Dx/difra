@@ -11,8 +11,8 @@ from difra.gui.container_api import get_schema, get_technical_container
 
 # Import Qt for type hints and usage
 try:
-    from PyQt5.QtWidgets import QComboBox, QDialog, QFileDialog, QInputDialog, QMessageBox, QCheckBox
-    from PyQt5.QtCore import Qt
+    from difra.gui.qt_compat import QComboBox, QDialog, QFileDialog, QInputDialog, QMessageBox, QCheckBox
+    from difra.gui.qt_compat import Qt
 except ImportError:
     # Test stubs
     class QComboBox:

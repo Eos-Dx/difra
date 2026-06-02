@@ -8,9 +8,9 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QPointF, QRectF, Qt
+from difra.gui.qt_compat import QImage, QPixmap
+from difra.gui.qt_compat import (
     QApplication,
     QGraphicsRectItem,
     QMainWindow,
@@ -38,7 +38,7 @@ def qapp():
 class _ShapeHarness(QMainWindow, ShapeTableMixin):
     def __init__(self):
         super().__init__()
-        from PyQt5.QtWidgets import QGraphicsScene, QDoubleSpinBox
+        from difra.gui.qt_compat import QGraphicsScene, QDoubleSpinBox
 
         scene = QGraphicsScene()
         pixmap = QPixmap(400, 300)

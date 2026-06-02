@@ -1064,6 +1064,80 @@ def test_reupload_archived_container_can_override_composite_specimen_mapping(tmp
         assert int(h5f.attrs.get("upload_attempt_count", 0)) >= 2
 
 
+def test_reupload_req_resend_stays_req_resend_until_verified_then_sent(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    _add_complete_session_payload(path_a)
+    with h5py.File(path_a, "a") as h5f:
+        h5f.attrs["specimenId"] = h5f.attrs["sample_id"]
+        h5f.attrs["distance_cm"] = 17.0
+        h5f.attrs["session_id"] = sid_a
+        h5f.require_group("/entry/technical").attrs[
+            "source_container_id"
+        ] = "tech_shared"
+
+    first_result = SessionLifecycleActions.send_and_archive_session_containers(
+        container_paths=[path_a],
+        container_manager=container_manager,
+        archive_folder=archive_folder,
+        lock_user="sad",
+        session_ids={str(path_a): sid_a},
+        config={
+            "old_format_export_folder": str(old_format_folder),
+            "enable_old_format_export": True,
+        },
+    )
+    archived = first_result.archived_paths[0]
+    SessionLifecycleActions._write_container_attrs(
+        archived,
+        {"transfer_status": "req_resend"},
+    )
+
+    api = _PendingMeasurementMatadorUploadApi()
+    config = {
+        "old_format_export_folder": str(old_format_folder),
+        "enable_old_format_export": True,
+        "matador_defer_measurement_verification": True,
+    }
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        pending = SessionLifecycleActions.reupload_archived_session_containers(
+            container_paths=[archived],
+            container_manager=container_manager,
+            lock_user="sad",
+            uploader_id="sad",
+            config=config,
+        )
+
+    assert pending.upload_pending == 1
+    assert (
+        SessionLifecycleActions._current_transfer_status(
+            archived,
+            container_manager=container_manager,
+        )
+        == "req_resend"
+    )
+
+    api.verify_measurements()
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        verified = SessionLifecycleActions.verify_pending_matador_uploads(
+            [archived],
+            container_manager=container_manager,
+            config=config,
+            operator_id="sad",
+        )
+
+    assert verified.upload_success == 1
+    assert container_manager.get_transfer_status(archived) == "sent"
+
+
 def test_send_and_archive_does_not_persist_old_format_by_default(tmp_path):
     measurements = tmp_path / "measurements"
     archive_folder = tmp_path / "archive" / "measurements"

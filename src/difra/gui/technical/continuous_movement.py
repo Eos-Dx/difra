@@ -3,7 +3,7 @@ import threading
 import time
 from typing import Callable, Optional, Tuple
 
-from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from difra.gui.qt_compat import QObject, QTimer, pyqtSignal
 
 
 class ContinuousMovementController(QObject):

@@ -1,9 +1,9 @@
 import random
 from pathlib import Path
 
-from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QSettings, Qt
+from difra.gui.qt_compat import QIcon, QPixmap
+from difra.gui.qt_compat import (
     QDialog,
     QDialogButtonBox,
     QLabel,

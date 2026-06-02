@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFileDialog, QListWidgetItem
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QFileDialog, QListWidgetItem
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class ZoneMeasurementsFileMixin:
                     locked_folder = str(self._current_measurement_output_folder())
                 except Exception:
                     locked_folder = ""
-            from PyQt5.QtWidgets import QMessageBox
+            from difra.gui.qt_compat import QMessageBox
 
             QMessageBox.information(
                 self,

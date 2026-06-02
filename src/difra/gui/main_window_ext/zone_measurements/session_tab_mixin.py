@@ -579,7 +579,7 @@ class SessionTabMixin:
 
         self.archive_window_status_filter_combo = QComboBox()
         self.archive_window_status_filter_combo.addItems(
-            ["All statuses", "Unsent", "Sent", "Not complete"]
+            ["All statuses", "Unsent", "REQ_RESEND", "Sent", "Not complete"]
         )
         self.archive_window_status_filter_combo.currentIndexChanged.connect(
             self._populate_archive_window_table

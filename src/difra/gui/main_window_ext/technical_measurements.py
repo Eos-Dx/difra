@@ -4,10 +4,10 @@ import traceback
 # Module logger
 logger = logging.getLogger(__name__)
 
-# Robust Qt imports to allow tests to run without a full PyQt5 installation
+# Robust Qt imports to allow tests to run without full Qt bindings
 try:
-    from PyQt5.QtCore import QEvent, Qt, QThread, QTimer
-    from PyQt5.QtWidgets import (
+    from difra.gui.qt_compat import QEvent, Qt, QThread, QTimer
+    from difra.gui.qt_compat import (
         QCheckBox,
         QComboBox,
         QDialog,

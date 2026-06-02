@@ -1,8 +1,8 @@
 import uuid
 
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QPainterPath, QPen
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QRectF, Qt
+from difra.gui.qt_compat import QPainterPath, QPen
+from difra.gui.qt_compat import (
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsRectItem,

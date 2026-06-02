@@ -2,8 +2,8 @@
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot  # <-- add pyqtSlot
-from PyQt5.QtWidgets import QListWidgetItem
+from difra.gui.qt_compat import QObject, pyqtSignal, pyqtSlot  # <-- add pyqtSlot
+from difra.gui.qt_compat import QListWidgetItem
 
 from difra.gui.technical.capture import (
     compute_hf_score_from_cake,

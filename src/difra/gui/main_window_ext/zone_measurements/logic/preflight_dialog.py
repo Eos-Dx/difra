@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,

@@ -32,7 +32,7 @@ class TechnicalPanelMixin:
         outer.setSpacing(6)
 
         try:
-            from PyQt5.QtGui import QFont
+            from difra.gui.qt_compat import QFont
 
             control_font = QFont()
             control_font.setPointSize(9)
@@ -145,8 +145,8 @@ class TechnicalPanelMixin:
         self.auxTable.verticalHeader().setVisible(False)
         self.auxTable.setAlternatingRowColors(True)
         try:
-            from PyQt5.QtGui import QFont
-            from PyQt5.QtWidgets import QHeaderView
+            from difra.gui.qt_compat import QFont
+            from difra.gui.qt_compat import QHeaderView
 
             header = self.auxTable.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.Fixed)

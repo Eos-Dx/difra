@@ -4,10 +4,10 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5 import sip
-from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import sip
+from difra.gui.qt_compat import QEvent, Qt
+from difra.gui.qt_compat import QColor
+from difra.gui.qt_compat import (
     QDockWidget,
     QHBoxLayout,
     QInputDialog,
@@ -62,7 +62,7 @@ class ZonePointsMixin:
         
         # Set smaller font for all controls to fit smaller screens
         try:
-            from PyQt5.QtGui import QFont
+            from difra.gui.qt_compat import QFont
             control_font = QFont()
             control_font.setPointSize(9)  # Smaller font for controls (menu-size)
             container.setFont(control_font)
@@ -81,7 +81,7 @@ class ZonePointsMixin:
             controls_layout.setSpacing(8)
         except Exception:
             pass
-        from PyQt5.QtWidgets import QSizePolicy
+        from difra.gui.qt_compat import QSizePolicy
 
         controls_bar = QWidget()
         controls_bar.setLayout(controls_layout)
@@ -450,7 +450,7 @@ class ZonePointsMixin:
         if include_shape is None:
             return False
 
-        from PyQt5.QtCore import QPointF
+        from difra.gui.qt_compat import QPointF
 
         point = QPointF(float(x_px), float(y_px))
         try:

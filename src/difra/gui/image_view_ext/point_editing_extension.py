@@ -1,9 +1,9 @@
 import copy
 import uuid
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QPen
-from PyQt5.QtWidgets import QGraphicsEllipseItem
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QColor, QPen
+from difra.gui.qt_compat import QGraphicsEllipseItem
 
 from difra.gui.extra.elements import HoverableEllipseItem
 from difra.utils.logger import get_module_logger

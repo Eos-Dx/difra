@@ -3,8 +3,8 @@
 import math
 from typing import List, Optional, Tuple
 
-from PyQt5.QtCore import QPointF, QSize, Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QPointF, QSize, Qt
+from difra.gui.qt_compat import (
     QApplication,
     QDoubleSpinBox,
     QHBoxLayout,

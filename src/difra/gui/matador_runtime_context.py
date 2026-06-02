@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict
 
 try:
-    from PyQt5.QtCore import QSettings
+    from difra.gui.qt_compat import QSettings
 except Exception:  # pragma: no cover - PyQt should exist in app runtime.
     QSettings = None
 

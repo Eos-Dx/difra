@@ -37,7 +37,7 @@ class StageManualMotionMixin:
         on_success,
         on_error,
     ) -> None:
-        from PyQt5.QtCore import QTimer
+        from difra.gui.qt_compat import QTimer
 
         if getattr(self, "_manual_motion_in_progress", False):
             return
@@ -101,7 +101,7 @@ class StageManualMotionMixin:
         Moves the stage to the user-specified X/Y coordinates.
         Updates X/Y spin boxes and calls the client.
         """
-        from PyQt5.QtWidgets import QMessageBox
+        from difra.gui.qt_compat import QMessageBox
 
         if not getattr(self, "hardware_initialized", False):
             QMessageBox.warning(
@@ -171,7 +171,7 @@ class StageManualMotionMixin:
         """
         Moves the XY stage to the configured home position.
         """
-        from PyQt5.QtWidgets import QMessageBox
+        from difra.gui.qt_compat import QMessageBox
 
         logging.info("Stage home operation started")
         if not getattr(self, "hardware_initialized", False):
@@ -234,7 +234,7 @@ class StageManualMotionMixin:
         """
         Moves the XY stage to the configured load position.
         """
-        from PyQt5.QtWidgets import QMessageBox
+        from difra.gui.qt_compat import QMessageBox
 
         logging.info("Stage load position operation started")
         if not getattr(self, "hardware_initialized", False):

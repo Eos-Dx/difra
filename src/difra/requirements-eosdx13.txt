@@ -8,7 +8,7 @@
 # - Recommended architecture for PIXet hardware: run detector in sidecar env.
 
 # GUI + imaging
-PyQt5
+PyQt6
 matplotlib
 seaborn
 Pillow

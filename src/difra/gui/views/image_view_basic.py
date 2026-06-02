@@ -1,6 +1,6 @@
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QGraphicsScene, QGraphicsView
+from difra.gui.qt_compat import QRectF, Qt
+from difra.gui.qt_compat import QPixmap
+from difra.gui.qt_compat import QGraphicsScene, QGraphicsView
 
 
 class ImageViewBasic(QGraphicsView):

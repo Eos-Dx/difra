@@ -7,8 +7,8 @@ User must configure distances for all detectors before capturing DARK, EMPTY, et
 import logging
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,

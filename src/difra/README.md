@@ -1,6 +1,6 @@
 # DiFRA - Diffraction Analysis Software
 
-DiFRA (Diffraction Analysis) is a PyQt5-based GUI application for controlling X-ray diffraction hardware and performing calibration measurements.
+DiFRA (Diffraction Analysis) is a Qt-based GUI application for controlling X-ray diffraction hardware and performing calibration measurements.
 
 ## Contact Information
 
@@ -416,7 +416,7 @@ Check logs for debugging hardware issues or crashes.
 
 ### Software
 - Python 3.8+
-- PyQt5
+- PyQt6 for modern GUI runtime; PyQt5 fallback for legacy sidecar/runtime compatibility
 - Conda (Miniconda or Anaconda)
 - PyFAI (for calibration)
 

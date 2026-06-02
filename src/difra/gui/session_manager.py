@@ -1479,7 +1479,7 @@ class SessionManager(SessionManagerRecoveryMixin, SessionManagerMeasurementOpsMi
                     h5f.attrs.get("transfer_status"),
                     "",
                 ).strip()
-                if explicit_transfer_status.lower() == "not_complete":
+                if explicit_transfer_status.lower() in {"not_complete", "req_resend"}:
                     transfer_status = explicit_transfer_status
                 else:
                     get_transfer_status = getattr(self.container_manager, "get_transfer_status", None)

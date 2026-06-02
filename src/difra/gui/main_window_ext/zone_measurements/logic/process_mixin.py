@@ -1,8 +1,8 @@
 # zone_measurements/logic/process_mixin.py
 
-from PyQt5.QtCore import QThread, QTimer
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QMessageBox
+from difra.gui.qt_compat import QThread, QTimer
+from difra.gui.qt_compat import QColor
+from difra.gui.qt_compat import QMessageBox
 
 from difra.gui.main_window_ext.zone_measurements.logic.process_capture_mixin import (
     ZoneMeasurementsProcessCaptureMixin,

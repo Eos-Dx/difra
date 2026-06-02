@@ -1,8 +1,8 @@
 """Resizable calibration shapes with drag handles for user-controlled sizing."""
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QPen
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectItem
+from difra.gui.qt_compat import QPointF, QRectF, Qt
+from difra.gui.qt_compat import QBrush, QColor, QPen
+from difra.gui.qt_compat import QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectItem
 
 
 class ResizeHandle(QGraphicsEllipseItem):

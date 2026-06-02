@@ -102,6 +102,7 @@ class SessionLifecycleActions:
     SESSION_STATE_UPDATED_ATTR = "session_state_updated_at"
     TRANSFER_STATUS_ATTR = "transfer_status"
     TRANSFER_STATUS_NOT_COMPLETE = "not_complete"
+    TRANSFER_STATUS_REQ_RESEND = "req_resend"
     TRANSFER_STATUS_UNSENT = "unsent"
     COMPLETION_STATUS_ATTR = "session_completion_status"
     COMPLETION_STATUS_COMPLETE = "complete"
@@ -2458,6 +2459,18 @@ class SessionLifecycleActions:
 
     @staticmethod
     def _current_transfer_status(container_path: Path, *, container_manager: Any) -> str:
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                root_status = str(
+                    h5f.attrs.get("transfer_status", "") or ""
+                ).strip().lower()
+            if root_status in {
+                SessionLifecycleActions.TRANSFER_STATUS_NOT_COMPLETE,
+                SessionLifecycleActions.TRANSFER_STATUS_REQ_RESEND,
+            }:
+                return root_status
+        except Exception:
+            pass
         get_transfer_status = getattr(container_manager, "get_transfer_status", None)
         if callable(get_transfer_status):
             try:
@@ -3279,6 +3292,8 @@ class SessionLifecycleActions:
                 if callable(mark_transferred):
                     if effective_upload_success or prior_transfer_status == "sent":
                         mark_transferred(candidate, sent=True)
+                    elif prior_transfer_status == cls.TRANSFER_STATUS_REQ_RESEND:
+                        pass
                     else:
                         mark_transferred(candidate, sent=False)
 

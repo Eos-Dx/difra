@@ -1,7 +1,7 @@
 # zone_measurements/logic/utils.py
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPen
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QPen
 
 
 class ZoneMeasurementsUtilsMixin:
@@ -10,7 +10,7 @@ class ZoneMeasurementsUtilsMixin:
         Adds a beam cross line to the scene at (x1, y1)-(x2, y2) using the provided pen.
         Returns the QGraphicsLineItem instance.
         """
-        from PyQt5.QtWidgets import QGraphicsLineItem
+        from difra.gui.qt_compat import QGraphicsLineItem
 
         if pen is None:
             pen = QPen(Qt.black, 5)

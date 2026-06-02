@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-from PyQt5 import QtCore
-from PyQt5.QtWidgets import QApplication
+from difra.gui.qt_compat import QtCore
+from difra.gui.qt_compat import QApplication
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

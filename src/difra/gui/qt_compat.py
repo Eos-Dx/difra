@@ -129,6 +129,110 @@ for _member in ("Ok", "Cancel", "Yes", "No", "Close", "Save", "Discard"):
     _install_legacy_attr(QtWidgets.QDialogButtonBox, "StandardButton", _member)
     _install_legacy_attr(QtWidgets.QMessageBox, "StandardButton", _member)
 
+_LEGACY_CLASS_ATTRS = (
+    (QtCore.QEvent, "Type", ("KeyPress",)),
+    (
+        QtWidgets.QDialogButtonBox,
+        "ButtonRole",
+        ("AcceptRole", "RejectRole", "ActionRole", "DestructiveRole", "HelpRole"),
+    ),
+    (
+        QtWidgets.QMessageBox,
+        "ButtonRole",
+        ("AcceptRole", "RejectRole", "ActionRole", "YesRole", "NoRole"),
+    ),
+    (QtWidgets.QMessageBox, "Icon", ("Warning", "Question", "Information", "Critical")),
+    (
+        QtWidgets.QDockWidget,
+        "DockWidgetFeature",
+        ("DockWidgetClosable", "DockWidgetMovable", "DockWidgetFloatable"),
+    ),
+    (
+        QtWidgets.QMainWindow,
+        "DockOption",
+        ("AnimatedDocks", "AllowTabbedDocks", "AllowNestedDocks"),
+    ),
+    (QtWidgets.QHeaderView, "ResizeMode", ("Stretch", "Interactive", "ResizeToContents", "Fixed")),
+    (
+        QtWidgets.QAbstractItemView,
+        "EditTrigger",
+        ("NoEditTriggers", "DoubleClicked", "SelectedClicked"),
+    ),
+    (
+        QtWidgets.QAbstractItemView,
+        "SelectionBehavior",
+        ("SelectRows", "SelectItems", "SelectColumns"),
+    ),
+    (
+        QtWidgets.QAbstractItemView,
+        "SelectionMode",
+        ("ExtendedSelection", "SingleSelection", "MultiSelection", "NoSelection"),
+    ),
+    (QtWidgets.QAbstractItemView, "ScrollMode", ("ScrollPerPixel", "ScrollPerItem")),
+    (
+        QtWidgets.QTableWidget,
+        "EditTrigger",
+        ("NoEditTriggers", "DoubleClicked", "SelectedClicked", "EditKeyPressed"),
+    ),
+    (QtWidgets.QSizePolicy, "Policy", ("Expanding", "Fixed", "Maximum", "Minimum", "Preferred")),
+    (QtWidgets.QLineEdit, "EchoMode", ("Normal", "Password", "NoEcho", "PasswordEchoOnEdit")),
+    (
+        QtWidgets.QGraphicsItem,
+        "GraphicsItemFlag",
+        (
+            "ItemIgnoresTransformations",
+            "ItemIsMovable",
+            "ItemIsSelectable",
+            "ItemSendsGeometryChanges",
+        ),
+    ),
+    (
+        QtWidgets.QGraphicsItem,
+        "GraphicsItemChange",
+        ("ItemPositionChange", "ItemSelectedChange", "ItemPositionHasChanged"),
+    ),
+    (
+        QtWidgets.QGraphicsEllipseItem,
+        "GraphicsItemFlag",
+        ("ItemIsMovable", "ItemIsSelectable"),
+    ),
+    (
+        QtWidgets.QGraphicsRectItem,
+        "GraphicsItemFlag",
+        ("ItemIsMovable", "ItemIsSelectable"),
+    ),
+    (
+        QtWidgets.QGraphicsLineItem,
+        "GraphicsItemFlag",
+        ("ItemIsMovable", "ItemIsSelectable"),
+    ),
+    (
+        QtGui.QImage,
+        "Format",
+        ("Format_Grayscale8", "Format_RGB888", "Format_RGBA8888"),
+    ),
+    (QtGui.QPainter, "RenderHint", ("Antialiasing", "SmoothPixmapTransform")),
+    (
+        QtWidgets.QStyle,
+        "ControlElement",
+        ("CE_ItemViewItem",),
+    ),
+    (
+        QtWidgets.QStyle,
+        "SubElement",
+        ("SE_ItemViewItemText",),
+    ),
+    (
+        QtWidgets.QStyle,
+        "StateFlag",
+        ("State_Selected",),
+    ),
+)
+
+for _cls, _group_name, _members in _LEGACY_CLASS_ATTRS:
+    for _member in _members:
+        _install_legacy_attr(_cls, _group_name, _member)
+
 
 def _qt_member(group_name: str, member_name: str):
     group = getattr(QtCore.Qt, group_name, QtCore.Qt)

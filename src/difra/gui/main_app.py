@@ -19,7 +19,7 @@ if sys.platform == 'win32':
                 pass
             os.environ['PATH'] = str(conda_lib_bin) + os.pathsep + os.environ.get('PATH', '')
     except Exception:
-        pass  # Will fail with detailed error message later if PyQt5 can't load
+        pass  # Will fail with detailed error message later if Qt can't load
 
 # Ensure the standalone repo `src/` root is importable.
 src_root = Path(__file__).resolve().parents[2]

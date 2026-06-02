@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt
+from difra.gui.qt_compat import Qt
 
 from difra.gui.main_window_ext.zone_measurements.logic.stage_manual_motion_mixin import (
     StageManualMotionMixin,
@@ -225,7 +225,7 @@ class StageControlMixin(StageManualMotionMixin):
         )
         if should_warn:
             try:
-                from PyQt5.QtWidgets import QMessageBox
+                from difra.gui.qt_compat import QMessageBox
 
                 QMessageBox.warning(
                     self,
@@ -472,7 +472,7 @@ class StageControlMixin(StageManualMotionMixin):
         hardware client (gRPC primary, direct fallback).
         """
         if not getattr(self, "hardware_initialized", False):
-            from PyQt5.QtWidgets import QMessageBox
+            from difra.gui.qt_compat import QMessageBox
 
             if not self.refresh_sidecar_status(show_message=True):
                 self._append_hw_log("Initialize blocked: A2K sidecar heartbeat unavailable")
@@ -620,7 +620,7 @@ class StageControlMixin(StageManualMotionMixin):
 
         if x_pix >= 0 and y_pix >= 0:
             size = 15
-            from PyQt5.QtGui import QPen
+            from difra.gui.qt_compat import QPen
 
             pen = QPen(Qt.black, 5)
             hl = self._add_beam_line(x_pix - size, y_pix, x_pix + size, y_pix, pen)

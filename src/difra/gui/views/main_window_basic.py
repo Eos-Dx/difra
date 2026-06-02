@@ -2,9 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt, QTimer
+from difra.gui.qt_compat import QIcon, QPixmap
+from difra.gui.qt_compat import (
     QAction,
     QDialog,
     QDialogButtonBox,
@@ -141,7 +141,7 @@ class MainWindowBasic(QMainWindow):
         except Exception:
             setup_name = None
 
-        from PyQt5.QtCore import QSettings
+        from difra.gui.qt_compat import QSettings
 
         settings = QSettings("EOSDx", "DiFRA")
         if not setup_name:
@@ -542,7 +542,7 @@ class MainWindowBasic(QMainWindow):
         Returns (setup_name, setup_path).
         """
         try:
-            from PyQt5.QtWidgets import (
+            from difra.gui.qt_compat import (
                 QDialog,
                 QLabel,
                 QListWidget,

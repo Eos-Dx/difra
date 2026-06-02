@@ -19,8 +19,8 @@ def update_points_table_safe(owner):
             owner.pointsTable.setRowCount(len(points))
 
             for idx, (x, y, _ptype, point_id, point_uid) in enumerate(points):
-                from PyQt5.QtCore import Qt
-                from PyQt5.QtWidgets import QTableWidgetItem
+                from difra.gui.qt_compat import Qt
+                from difra.gui.qt_compat import QTableWidgetItem
 
                 id_item = QTableWidgetItem("" if point_id is None else str(point_id))
                 if point_id is not None:

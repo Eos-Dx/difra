@@ -21,9 +21,9 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt, QTimer
+from difra.gui.qt_compat import QTest
+from difra.gui.qt_compat import (
     QApplication,
     QCheckBox,
     QComboBox,

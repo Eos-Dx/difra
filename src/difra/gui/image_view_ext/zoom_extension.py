@@ -1,5 +1,5 @@
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QGraphicsView
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QGraphicsView
 
 
 class ZoomMixin:
