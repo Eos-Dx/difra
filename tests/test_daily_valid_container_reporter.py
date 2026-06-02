@@ -122,6 +122,11 @@ def test_build_daily_report_renders_one_combined_image_per_specimen(
     assert manifest["images"][0]["imageFile"] == "SPEC_001_detectors.png"
     assert len(manifest["images"][0]["detectorPanels"]) == 2
     assert len(manifest["poniFiles"]) == 2
+    assert len(manifest["series"]) == 2
+    for item in manifest["series"]:
+        assert item["sourceDataSha256"]
+        assert item["sourceDataShape"] == [8, 8]
+        assert item["integrationBackend"]
     assert container.name in str(container)
 
 

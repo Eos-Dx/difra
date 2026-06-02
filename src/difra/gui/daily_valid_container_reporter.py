@@ -68,6 +68,12 @@ class DetectorSeries:
     poni_text: str
     poni_source: str
     poni_sha256: str
+    source_data_sha256: str
+    source_data_shape: Tuple[int, ...]
+    source_data_min: float
+    source_data_median: float
+    source_data_max: float
+    integration_backend: str
     source_container: Path
     source_dataset: str
 
@@ -982,6 +988,36 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
+def _sha256_array(value: np.ndarray) -> str:
+    arr = np.ascontiguousarray(np.asarray(value))
+    digest = hashlib.sha256()
+    digest.update(str(arr.dtype).encode("utf-8"))
+    digest.update(str(tuple(arr.shape)).encode("utf-8"))
+    digest.update(arr.tobytes())
+    return digest.hexdigest()
+
+
+def _array_stats(value: np.ndarray) -> Tuple[float, float, float]:
+    arr = np.asarray(value, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    return (
+        float(np.nanmin(finite)),
+        float(np.nanmedian(finite)),
+        float(np.nanmax(finite)),
+    )
+
+
+def _integration_backend_name() -> str:
+    try:
+        from difra.gui.technical.analysis_compat import backend_name
+
+        return str(backend_name())
+    except Exception:
+        return "unknown"
+
+
 def _candidate_poni_infos(
     h5f: h5py.File,
     det_group: h5py.Group,
@@ -1158,6 +1194,12 @@ def build_report_manifest_diagnostics(
                         "qRangeNm^-1": [float(item.q_range[0]), float(item.q_range[1])],
                         "sourceContainer": str(item.source_container),
                         "sourceDataset": item.source_dataset,
+                        "sourceDataSha256": item.source_data_sha256,
+                        "sourceDataShape": list(item.source_data_shape),
+                        "sourceDataMin": item.source_data_min,
+                        "sourceDataMedian": item.source_data_median,
+                        "sourceDataMax": item.source_data_max,
+                        "integrationBackend": item.integration_backend,
                         "poniSource": item.poni_source,
                         "poniFile": poni_arcname,
                         "poniSha256": item.poni_sha256,
@@ -1319,7 +1361,11 @@ def collect_report_series(
                                     distance_cm=distance_cm,
                                 )
                             )
-                            signal = det_group["processed_signal"][()]
+                            signal_ds = det_group["processed_signal"]
+                            signal = signal_ds[()]
+                            signal_sha256 = _sha256_array(signal)
+                            signal_min, signal_median, signal_max = _array_stats(signal)
+                            integration_backend = _integration_backend_name()
                             best: Optional[Tuple[str, str, np.ndarray, np.ndarray, float]] = None
                             for candidate_poni_text, candidate_poni_source in (
                                 _candidate_poni_infos(h5f, det_group, alias) or [("", "")]
@@ -1371,8 +1417,14 @@ def collect_report_series(
                                     poni_text=poni_text,
                                     poni_source=poni_source,
                                     poni_sha256=_sha256_text(poni_text) if poni_text else "",
+                                    source_data_sha256=signal_sha256,
+                                    source_data_shape=tuple(int(item) for item in np.asarray(signal).shape),
+                                    source_data_min=signal_min,
+                                    source_data_median=signal_median,
+                                    source_data_max=signal_max,
+                                    integration_backend=integration_backend,
                                     source_container=path,
-                                    source_dataset=det_group["processed_signal"].name,
+                                    source_dataset=signal_ds.name,
                                 )
                             )
         except Exception as exc:
