@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QEvent, QSettings, Qt
+from difra.gui.qt_compat import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -64,6 +64,7 @@ class NewSessionDialog(QDialog):
 
         self.specimen_id_edit = QLineEdit()
         self.specimen_id_edit.setPlaceholderText("e.g. 64101")
+        self.specimen_id_edit.installEventFilter(self)
         # Keep the legacy attribute name as an alias while the container contract
         # still expects sample_id internally.
         self.sample_id_edit = self.specimen_id_edit
@@ -174,6 +175,9 @@ class NewSessionDialog(QDialog):
         )
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
+        for button in buttons.buttons():
+            button.setAutoDefault(False)
+            button.setDefault(False)
         layout.addWidget(buttons)
 
         self._restore_last_session_defaults()
@@ -182,6 +186,13 @@ class NewSessionDialog(QDialog):
         self._load_cached_matador_references()
         self._update_operator_details()
         self._try_auto_refresh_when_runtime_token_exists()
+
+    def eventFilter(self, obj, event):
+        if obj is self.specimen_id_edit and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
     def _populate_operator_combo(self):
         """Populate operator combo box."""

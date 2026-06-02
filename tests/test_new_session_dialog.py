@@ -4,7 +4,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from PyQt5.QtWidgets import QApplication, QDialog
+from difra.gui.qt_compat import QApplication, QDialog, QTest, Qt
 
 from difra.gui.matador_upload_api import save_matador_reference_cache
 from difra.gui import operator_manager as operator_manager_module
@@ -174,6 +174,33 @@ def test_dialog_constructor_builds_widgets_and_applies_defaults(qapp, tmp_path):
         assert dialog.operator_details_label.text() == "Alpha User | alpha@example.com | Eos-Dx"
         assert dialog.matador_study_combo.count() == 1
         assert dialog.matador_machine_combo.count() == 1
+    finally:
+        dialog.deleteLater()
+
+
+def test_dialog_specimen_scan_enter_does_not_accept(qapp, tmp_path):
+    manager = _FakeOperatorManager(
+        {"op1": {"name": "Alpha", "surname": "User", "email": "alpha@example.com"}},
+        current_id="op1",
+    )
+
+    dialog = NewSessionDialog(
+        manager,
+        default_distance=17.0,
+        matador_cache_path=tmp_path / "missing_matador_cache.json",
+    )
+    try:
+        dialog.show()
+        qapp.processEvents()
+        dialog.specimen_id_edit.setFocus()
+
+        QTest.keyClicks(dialog.specimen_id_edit, "64146__338189_P146_S01_FL")
+        QTest.keyClick(dialog.specimen_id_edit, Qt.Key_Return)
+        qapp.processEvents()
+
+        assert dialog.result() != QDialog.Accepted
+        assert dialog.isVisible() is True
+        assert dialog.specimen_id_edit.text() == "64146__338189_P146_S01_FL"
     finally:
         dialog.deleteLater()
 

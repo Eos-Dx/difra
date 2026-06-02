@@ -169,6 +169,105 @@ def test_session_manager_create_session_with_study(temp_dir, technical_container
         assert session_file.attrs.get("matadorMachineId") == 1751
 
 
+def test_session_manager_update_container_information(
+    temp_dir, technical_container, monkeypatch
+):
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="WRONG_SPECIMEN",
+        study_name="OLD_GROUP",
+        project_id="OLD_PROJECT",
+        matadorProjectId=10,
+        matadorProjectName="OLD_PROJECT",
+        matadorStudyId=20,
+        matadorMachineId=30,
+        distance_cm=17.0,
+        operator_id="old_operator",
+    )
+    runtime_events = []
+    original_append_runtime_log = manager.writer.append_runtime_log
+
+    def _append_runtime_log_spy(**kwargs):
+        runtime_events.append(kwargs)
+        return original_append_runtime_log(**kwargs)
+
+    monkeypatch.setattr(manager.writer, "append_runtime_log", _append_runtime_log_spy)
+
+    assert manager.update_container_information(
+        specimen_id="64101",
+        study_name="Mouse_claws",
+        project_id="Ulster",
+        operator_id="new_operator",
+        matador_project_id=6701,
+        matador_project_name="Ulster",
+        matador_study_id=6751,
+        matador_machine_id=1751,
+        password_authorized=True,
+    )
+
+    assert manager.sample_id == "64101"
+    assert manager.specimen_id == "64101"
+    assert manager.study_name == "Mouse_claws"
+    assert manager.operator_id == "new_operator"
+
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get(schema.ATTR_SAMPLE_ID) == "64101"
+        assert session_file.attrs.get("specimenId") == "64101"
+        assert session_file.attrs.get(schema.ATTR_STUDY_NAME) == "Mouse_claws"
+        assert session_file.attrs.get(schema.ATTR_PROJECT_ID) == "Ulster"
+        assert session_file.attrs.get(schema.ATTR_OPERATOR_ID) == "new_operator"
+        assert session_file.attrs.get("matadorProjectId") == 6701
+        assert session_file.attrs.get("matadorProjectName") == "Ulster"
+        assert session_file.attrs.get("matadorStudyId") == 6751
+        assert session_file.attrs.get("matadorMachineId") == 1751
+        sample_group = session_file[schema.GROUP_SAMPLE]
+        assert sample_group.attrs.get(schema.ATTR_SAMPLE_ID) == "64101"
+        assert sample_group.attrs.get("specimenId") == "64101"
+        assert sample_group.attrs.get(schema.ATTR_STUDY_NAME) == "Mouse_claws"
+
+    update_event = runtime_events[-1]
+    assert update_event["event_type"] == "container_information_updated"
+    assert update_event["message"] == (
+        "Specimen ID changed under password: WRONG_SPECIMEN -> 64101"
+    )
+    assert update_event["details"]["password_authorized"] is True
+    assert update_event["details"]["previous_specimenId"] == "WRONG_SPECIMEN"
+    assert update_event["details"]["new_specimenId"] == "64101"
+
+
+def test_session_manager_update_container_information_rejects_locked_container(
+    temp_dir, technical_container
+):
+    manager = SessionManager(config={"technical_folder": str(temp_dir)})
+    _session_id, session_path = manager.create_session(
+        folder=temp_dir,
+        sample_id="LOCKED_SPECIMEN",
+        study_name="LOCKED_GROUP",
+        project_id="LOCKED_PROJECT",
+        matadorProjectId=10,
+        matadorStudyId=20,
+        matadorMachineId=30,
+        distance_cm=17.0,
+        operator_id="operator",
+    )
+    manager.container_manager.lock_container(session_path)
+
+    assert not manager.update_container_information(
+        specimen_id="64101",
+        study_name="Mouse_claws",
+        project_id="Ulster",
+        operator_id="new_operator",
+        matador_project_id=6701,
+        matador_study_id=6751,
+        matador_machine_id=1751,
+    )
+
+    with h5py.File(session_path, "r") as session_file:
+        assert session_file.attrs.get(schema.ATTR_SAMPLE_ID) == "LOCKED_SPECIMEN"
+        assert session_file.attrs.get(schema.ATTR_STUDY_NAME) == "LOCKED_GROUP"
+
+
 def test_session_manager_falls_back_to_locked_technical_container(
     temp_dir, technical_container, monkeypatch
 ):

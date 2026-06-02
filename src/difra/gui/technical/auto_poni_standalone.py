@@ -20,6 +20,9 @@ if __package__ in {None, ""}:
 
 from difra.gui.technical.pyfai_calibration import (
     DEFAULT_ENERGY_KEV,
+    auto_poni_distance_key,
+    auto_poni_seed_center_px,
+    auto_poni_seed_distance_cm,
     energy_kev_to_wavelength_m,
     load_calibration_array,
     normalized_auto_poni_config,
@@ -72,7 +75,7 @@ def detector_config_for_alias(config: dict, alias: str) -> dict:
         "alias": alias_key,
         "id": alias_key,
         "size": {"width": 256, "height": 256},
-        "pixel_size_um": [50, 50],
+        "pixel_size_um": [55, 55],
     }
 
 
@@ -137,10 +140,7 @@ def center_px_from_validation(config: dict, alias: str, detector_config: dict):
 
 
 def distance_key(distance_cm: float) -> str:
-    rounded = round(float(distance_cm))
-    if abs(float(distance_cm) - rounded) <= 0.25:
-        return str(int(rounded))
-    return f"{float(distance_cm):.3f}".rstrip("0").rstrip(".")
+    return auto_poni_distance_key(distance_cm)
 
 
 def ring_defaults(auto_config: dict, aliases: list[str], distance_cm: float):
@@ -192,7 +192,7 @@ def launch_pyfai_calib2(reviews: dict, env: str):
     folder = None
     for alias, review in reviews.items():
         command = list(review.command)
-        if "DIFRA-256-50UM" in command:
+        if "DIFRA-256-55UM" in command:
             launcher = write_pyfai_calib2_launcher(
                 output_dir=Path(review.image_path).parent,
                 command=command,
@@ -270,10 +270,10 @@ def show_settings_dialog(
     controls = {}
 
     def _pixel_pair(detector_config):
-        value = detector_config.get("pixel_size_um", [50, 50])
+        value = detector_config.get("pixel_size_um", [55, 55])
         if not isinstance(value, (list, tuple)):
             value = [value, value]
-        first = value[0] if len(value) >= 1 else 50
+        first = value[0] if len(value) >= 1 else 55
         second = value[1] if len(value) >= 2 else first
         return float(first), float(second)
 
@@ -285,7 +285,21 @@ def show_settings_dialog(
 
     for alias in aliases:
         detector_config = detector_config_for_alias(config, alias)
-        center_px = center_px_from_validation(config, alias, detector_config)
+        fit_distance_cm = auto_poni_seed_distance_cm(
+            auto_config,
+            alias=alias,
+            nominal_distance_cm=distance_cm,
+        )
+        if fit_distance_cm is None:
+            fit_distance_cm = float(distance_cm)
+        first_visible_for_alias, rings_to_show_for_alias = ring_defaults(
+            auto_config,
+            [alias],
+            fit_distance_cm,
+        )
+        center_px = auto_poni_seed_center_px(auto_config, alias=alias)
+        if center_px is None:
+            center_px = center_px_from_validation(config, alias, detector_config)
         if center_px is None:
             center_px = (128.0, 128.0)
         size = detector_config.get("size", {})
@@ -307,17 +321,17 @@ def show_settings_dialog(
         distance_spin.setRange(0.01, 100000.0)
         distance_spin.setDecimals(3)
         distance_spin.setSuffix(" cm")
-        distance_spin.setValue(float(distance_cm))
+        distance_spin.setValue(float(fit_distance_cm))
         form.addRow("Distance", distance_spin)
 
         ring_spin = QSpinBox(group)
         ring_spin.setRange(1, 99)
-        ring_spin.setValue(int(first_visible.get(alias, 1)))
+        ring_spin.setValue(int(first_visible_for_alias.get(alias, first_visible.get(alias, 1))))
         form.addRow("First visible ring", ring_spin)
 
         rings_spin = QSpinBox(group)
         rings_spin.setRange(1, 99)
-        rings_spin.setValue(int(rings_to_show.get(alias, 3)))
+        rings_spin.setValue(int(rings_to_show_for_alias.get(alias, rings_to_show.get(alias, 3))))
         form.addRow("Rings to search", rings_spin)
 
         center_row = QHBoxLayout()
@@ -530,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             center_px=center_px,
             first_visible_ring=first_visible.get(alias, 1),
             rings_to_show=rings_to_show.get(alias, 3),
+            output_prefix=alias,
         )
         images[alias] = np.asarray(load_calibration_array(source), dtype=float)
 

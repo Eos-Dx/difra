@@ -7,7 +7,7 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 from container.v0_2 import container_manager, writer as session_writer
-from difra.gui.matador_upload_api import RealMatadorUploadApi, StubMatadorUploadApi
+from difra.gui.matador_upload_api import RealMatadorUploadApi, StubMatadorUploadApi, sha256_file
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
@@ -72,6 +72,35 @@ class _CountingMatadorUploadApi(StubMatadorUploadApi):
     def register_file(self, request):
         self.register_requests.append(request)
         return super().register_file(request)
+
+
+class _PendingMeasurementMatadorUploadApi(_CountingMatadorUploadApi):
+    def upload_file_bytes(self, presigned_url: str, file_path: Path) -> None:
+        file_id = int(str(presigned_url).rsplit("/", 1)[-1])
+        payload = self._files[file_id]
+        if str(payload.get("ingest_kind", "")).upper() == "MEASUREMENT":
+            payload["actual_sha256"] = sha256_file(Path(file_path))
+            payload["upload_status"] = "UPLOADED"
+            payload["processing_status"] = "NOT_STARTED"
+            return
+        super().upload_file_bytes(presigned_url, file_path)
+
+    def verify_measurements(self):
+        for payload in self._files.values():
+            if str(payload.get("ingest_kind", "")).upper() != "MEASUREMENT":
+                continue
+            payload["upload_status"] = "HASH_VERIFIED"
+            payload["processing_status"] = "HASH_VERIFIED_PENDING_ACCEPT"
+
+
+class _SpecimenLookupApi:
+    def __init__(self, specimens):
+        self.specimens = dict(specimens)
+
+    def get_specimen(self, specimen_id):
+        if int(specimen_id) not in self.specimens:
+            raise RuntimeError("404 NOT_FOUND")
+        return self.specimens[int(specimen_id)]
 
 
 def test_matador_batch_group_key_uses_session_bucket_and_hash_is_stable(tmp_path):
@@ -152,6 +181,68 @@ def test_read_matador_metadata_uses_leading_specimen_id_from_container(tmp_path)
     assert metadata["specimen_id"] == 326111
 
 
+def test_resolve_matador_specimen_uses_candidate_matching_study():
+    api = _SpecimenLookupApi(
+        {
+            337552: {"id": 337552, "study": {"id": 335552}},
+        }
+    )
+
+    resolved, message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "337503",
+            "raw_specimen_text": "337503__337552_P42_S01_RL",
+            "study_id": 335552,
+            "project_id": 32405,
+        },
+    )
+
+    assert resolved == 337552
+    assert "Resolved Matador specimen ID 337552" in message
+
+
+def test_resolve_matador_specimen_keeps_leading_candidate_when_it_matches_study():
+    api = _SpecimenLookupApi(
+        {
+            378710: {"id": 378710, "study": {"id": 377501}},
+        }
+    )
+
+    resolved, _message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "378710",
+            "raw_specimen_text": "378710__377600_P50_WH_S03",
+            "study_id": 377501,
+            "project_id": 497151,
+        },
+    )
+
+    assert resolved == 378710
+
+
+def test_resolve_matador_specimen_blocks_candidate_in_wrong_study():
+    api = _SpecimenLookupApi(
+        {
+            337552: {"id": 337552, "study": {"id": 999}},
+        }
+    )
+
+    resolved, message = SessionLifecycleActions._resolve_matador_specimen_id_for_upload(
+        upload_api=api,
+        session_metadata={
+            "specimen_text": "337503",
+            "raw_specimen_text": "337503__337552_P42_S01_RL",
+            "study_id": 335552,
+            "project_id": 32405,
+        },
+    )
+
+    assert resolved is None
+    assert "not in this study/project" in message
+
+
 def test_read_matador_metadata_uses_acquisition_date_as_session_date(tmp_path):
     _sid, session_path = _create_session_file(tmp_path / "measurements", "326111__326169")
 
@@ -179,6 +270,7 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
 
     result = SessionLifecycleActions.edit_archived_session_matador_metadata(
         container_path=session_path,
+        specimen_id="64146__338189_P146_S01_FL",
         project_id=6701,
         project_name="NewProject",
         study_id=6751,
@@ -189,18 +281,29 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
 
     assert result["success"] is True
     with h5py.File(session_path, "r") as h5f:
+        assert h5f.attrs["sample_id"] == "64146__338189_P146_S01_FL"
+        assert h5f.attrs["specimenId"] == "64146__338189_P146_S01_FL"
+        assert int(h5f.attrs["matadorSpecimenId"]) == 64146
         assert h5f.attrs["project_id"] == "NewProject"
         assert int(h5f.attrs["matadorProjectId"]) == 6701
         assert h5f.attrs["matadorProjectName"] == "NewProject"
         assert h5f.attrs["study_name"] == "NewStudy"
         assert int(h5f.attrs["matadorStudyId"]) == 6751
+        assert h5f["/entry/sample"].attrs["sample_id"] == "64146__338189_P146_S01_FL"
+        assert h5f["/entry/sample"].attrs["specimenId"] == "64146__338189_P146_S01_FL"
         assert h5f["/entry/sample"].attrs["project_id"] == "NewProject"
         state_payload = json.loads(h5f.attrs["meta_json"])
+        assert state_payload["sample_id"] == "64146__338189_P146_S01_FL"
+        assert state_payload["specimenId"] == "64146__338189_P146_S01_FL"
+        assert int(state_payload["matadorSpecimenId"]) == 64146
         assert state_payload["project_id"] == "NewProject"
         assert state_payload["study_name"] == "NewStudy"
         assert int(state_payload["matadorProjectId"]) == 6701
         assert int(state_payload["matadorStudyId"]) == 6751
         assert "operator=sad" in str(h5f.attrs.get("archive_metadata_edit_log", ""))
+        assert "specimen='SAMPLE_EDIT' -> '64146__338189_P146_S01_FL'" in str(
+            h5f.attrs.get("archive_metadata_edit_log", "")
+        )
         assert h5f.attrs["archive_metadata_edit_last_auth"] == "password"
 
     summary = SessionOldFormatExporter.export_from_session_container(
@@ -208,6 +311,7 @@ def test_edit_archived_session_metadata_updates_root_state_and_old_format(tmp_pa
         target_root=tmp_path / "old_format",
     )
     exported_state = json.loads(summary.state_path.read_text(encoding="utf-8"))
+    assert exported_state["sample_id"] == "64146__338189_P146_S01_FL"
     assert exported_state["project_id"] == "NewProject"
     assert exported_state["study_name"] == "NewStudy"
 
@@ -410,6 +514,76 @@ def test_batch_send_uploads_one_calibration_for_shared_technical_container(tmp_p
     calibration_key = next(iter(distance_bucket["calibrations"]))
     assert calibration_key.endswith(":tech_shared")
     assert distance_bucket["calibrations"][calibration_key]["uploadStatus"] == "HASH_VERIFIED"
+
+
+def test_deferred_measurement_verification_marks_pending_then_success(tmp_path):
+    measurements = tmp_path / "measurements"
+    archive_folder = tmp_path / "archive" / "measurements"
+    old_format_folder = tmp_path / "Data" / "difra" / "Old_format"
+    sid_a, path_a = _create_session_file(measurements, "326111__326169")
+    _add_complete_session_payload(path_a)
+    with h5py.File(path_a, "a") as h5f:
+        h5f.attrs["specimenId"] = h5f.attrs["sample_id"]
+        h5f.attrs["distance_cm"] = 17.0
+        h5f.attrs["session_id"] = sid_a
+        h5f.require_group("/entry/technical").attrs[
+            "source_container_id"
+        ] = "tech_shared"
+
+    api = _PendingMeasurementMatadorUploadApi()
+    config = {
+        "old_format_export_folder": str(old_format_folder),
+        "enable_old_format_export": True,
+        "matador_defer_measurement_verification": True,
+    }
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        result = SessionLifecycleActions.send_and_archive_session_containers(
+            container_paths=[path_a],
+            container_manager=container_manager,
+            archive_folder=archive_folder,
+            lock_user="sad",
+            session_ids={str(path_a): sid_a},
+            config=config,
+        )
+
+    assert result.upload_success == 0
+    assert result.upload_pending == 1
+    assert result.upload_failed == 0
+    archived_path = result.archived_paths[0]
+    assert container_manager.get_transfer_status(archived_path) == "unsent"
+    with h5py.File(archived_path, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "pending_verification"
+        assert h5f.attrs.get("matador_send_status") == "pending_verification"
+        assert str(h5f.attrs.get("matador_zip_file_id", "")).strip()
+        assert str(h5f.attrs.get("matador_h5_file_id", "")).strip()
+        assert "status=pending_verification" in str(
+            h5f.attrs.get("upload_attempts_log", "")
+        )
+
+    api.verify_measurements()
+    with patch(
+        "difra.gui.session_lifecycle_actions.build_matador_upload_api",
+        return_value=api,
+    ):
+        verified = SessionLifecycleActions.verify_pending_matador_uploads(
+            [archived_path],
+            container_manager=container_manager,
+            config=config,
+            operator_id="sad",
+        )
+
+    assert verified.upload_success == 1
+    assert verified.upload_pending == 0
+    assert verified.upload_failed == 0
+    assert container_manager.get_transfer_status(archived_path) == "sent"
+    with h5py.File(archived_path, "r") as h5f:
+        assert h5f.attrs.get("upload_status") == "success"
+        assert h5f.attrs.get("matador_send_status") == "successful"
+        assert h5f.attrs.get("matador_verification_pending") == np.False_
+        assert "status=success" in str(h5f.attrs.get("upload_attempts_log", ""))
 
 
 def test_batch_send_opens_one_matador_session_per_technical_group(tmp_path):

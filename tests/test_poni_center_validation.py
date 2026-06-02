@@ -1,10 +1,14 @@
 import json
 
+import pytest
+
 from difra.gui.main_window_ext.technical.poni_center_validation import (
     normalize_alias_mapping_to_rule_aliases,
     parse_poni_center_px,
+    parse_poni_metadata,
     resolve_poni_rule_alias,
     validate_poni_centers,
+    validate_poni_metadata,
 )
 
 
@@ -26,6 +30,7 @@ def _poni_text(*, poni1: float, poni2: float, width: int = 512, height: int = 25
             f"Poni1: {poni1}",
             f"Poni2: {poni2}",
             "Distance: 0.17",
+            "Wavelength: 1.5406e-10",
         ]
     )
 
@@ -125,3 +130,33 @@ def test_normalize_alias_mapping_to_rule_aliases_rekeys_demo_aliases():
     )
 
     assert normalized == {"PRIMARY": "left", "SECONDARY": "right"}
+
+
+def test_parse_poni_metadata_extracts_energy_pixels_and_shape():
+    metadata = parse_poni_metadata(
+        _poni_text(poni1=0.006765, poni2=0.00055, width=256, height=256)
+    )
+
+    assert metadata["pixel_size_um"] == (55.0, 55.0)
+    assert metadata["shape"] == (256, 256)
+    assert metadata["energy_keV"] == pytest.approx(8.047, abs=0.01)
+
+
+def test_validate_poni_metadata_blocks_wrong_xena_pixel_size():
+    bad_poni = _poni_text(poni1=0.006765, poni2=0.00055, width=256, height=256).replace(
+        '"pixel1": 5.5e-05, "pixel2": 5.5e-05',
+        '"pixel1": 5e-05, "pixel2": 5e-05',
+    )
+
+    errors = validate_poni_metadata(
+        poni_text_by_alias={"PRIMARY": bad_poni},
+        validation_config={
+            "enabled": True,
+            "expected_energy_keV": 8.04,
+            "expected_pixel_size_um": [55, 55],
+            "expected_shape": [256, 256],
+        },
+    )
+
+    assert errors
+    assert "pixel size" in errors[0]

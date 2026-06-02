@@ -154,6 +154,12 @@
     "measurements_folder": "D:\\Data\\measurements",
     "measurements_archive_folder": "D:\\Data\\Archive\\measurements",
     "matador_url": "https://portal.matur.co.uk",
+    "upload_error_email_enabled": true,
+    "upload_error_email_recipient": "sdenisov@matur.co",
+    "upload_error_email_sender": "difra-upload@company.co.uk",
+    "upload_error_smtp_host": "",
+    "upload_error_smtp_port": 587,
+    "upload_error_smtp_tls": true,
     "measurements_archive_mirror_folder": "C:\\Users\\Ulster_matur\\OneDrive - Matur\\General - Ulster\\Measurements_Grant_1_2_and_4",
     "poni_center_validation": {
         "enabled": true,
@@ -174,6 +180,58 @@
                 "row_tolerance_px": 13,
                 "col_gt_px": 256
             }
+        }
+    },
+    "poni_metadata_validation": {
+        "enabled": true,
+        "apply_in_dev_mode": false,
+        "expected_energy_keV": 8.04,
+        "energy_tolerance_keV": 0.1,
+        "expected_pixel_size_um": [
+            55,
+            55
+        ],
+        "pixel_tolerance_um": 0.25,
+        "expected_shape": [
+            256,
+            256
+        ]
+    },
+    "poni_distance_validation": {
+        "default_tolerance_percent": 5.0,
+        "nominal_ranges_cm": [
+            {
+                "nominal_cm": 2.0,
+                "min_cm": 1.8,
+                "max_cm": 3.0,
+                "match_tolerance_cm": 0.35
+            },
+            {
+                "nominal_cm": 17.0,
+                "min_cm": 16.5,
+                "max_cm": 18.0,
+                "match_tolerance_cm": 0.85
+            }
+        ]
+    },
+    "agbh_peak_qc": {
+        "enabled": true,
+        "apply_in_dev_mode": false,
+        "show_dialog": true,
+        "calibrant": "AgBh",
+        "npt": 600,
+        "peak_window_nm_inv": 0.2,
+        "peak_shift_warning_nm_inv": 0.25,
+        "min_checked_peaks": 4,
+        "q_ranges_by_alias": {
+            "PRIMARY": [
+                1.0,
+                18.0
+            ],
+            "SECONDARY": [
+                4.5,
+                23.0
+            ]
         }
     },
     "standard_distances": {

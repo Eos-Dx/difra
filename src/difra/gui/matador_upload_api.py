@@ -22,6 +22,7 @@ from urllib import request as urllib_request
 _DEFAULT_MATADOR_CACHE_PATH = (
     Path(__file__).resolve().parent.parent / "resources" / "config" / "matador_cache.json"
 )
+DEFAULT_REAL_MATADOR_TIMEOUT_SEC = 90.0
 
 
 def sha256_file(path: Path) -> str:
@@ -279,6 +280,7 @@ class MatadorFileStatusResponse:
     expected_sha256: str = ""
     actual_sha256: str = ""
     error_message: str = ""
+    specimen_id: Optional[int] = None
 
 
 class MatadorUploadApi(Protocol):
@@ -317,6 +319,9 @@ class MatadorUploadApi(Protocol):
     def get_file_status(self, file_id: int) -> MatadorFileStatusResponse:
         ...
 
+    def get_specimen(self, specimen_id: int) -> Dict[str, Any]:
+        ...
+
     def list_session_files(self, ingest_session_id: int) -> List[MatadorFileStatusResponse]:
         ...
 
@@ -324,6 +329,21 @@ class MatadorUploadApi(Protocol):
         ...
 
     def list_machines(self) -> List[Dict[str, Any]]:
+        ...
+
+    def list_specimens(
+        self,
+        *,
+        project_id: Optional[int] = None,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        ...
+
+    def list_ingest_sessions(
+        self,
+        *,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         ...
 
 
@@ -539,7 +559,18 @@ class StubMatadorUploadApi:
             expected_sha256=str(payload.get("expected_sha256", "")),
             actual_sha256=str(payload.get("actual_sha256", "")),
             error_message=str(payload.get("error_message", "")),
+            specimen_id=(
+                None
+                if payload.get("specimen_id") is None
+                else int(payload.get("specimen_id"))
+            ),
         )
+
+    def get_specimen(self, specimen_id: int) -> Dict[str, Any]:
+        return {
+            "id": int(specimen_id),
+            "study": {"id": 1701},
+        }
 
     def list_session_files(self, ingest_session_id: int) -> List[MatadorFileStatusResponse]:
         files = []
@@ -570,6 +601,46 @@ class StubMatadorUploadApi:
             {"id": 1751, "name": "MOLI"},
             {"id": 1752, "name": "SILVER_1"},
         ]
+
+    def list_specimens(
+        self,
+        *,
+        project_id: Optional[int] = None,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        specimens = [
+            {"id": 326111, "specimenId": "326111", "projectId": 1, "studyId": 1701},
+            {"id": 326112, "specimenId": "326112", "projectId": 1, "studyId": 1701},
+            {"id": 326113, "specimenId": "326113", "projectId": 2, "studyId": 1702},
+        ]
+        if project_id is not None:
+            specimens = [
+                item for item in specimens if int(item.get("projectId") or 0) == int(project_id)
+            ]
+        if study_id is not None:
+            specimens = [
+                item for item in specimens if int(item.get("studyId") or 0) == int(study_id)
+            ]
+        return specimens
+
+    def list_ingest_sessions(
+        self,
+        *,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        sessions = []
+        for payload in self._sessions.values():
+            if study_id is not None and int(payload.get("study_id") or 0) != int(study_id):
+                continue
+            sessions.append(
+                {
+                    "id": int(payload.get("id") or 0),
+                    "studyId": int(payload.get("study_id") or 0),
+                    "machineId": int(payload.get("machine_id") or 0),
+                    "status": str(payload.get("status") or ""),
+                }
+            )
+        return sessions
 
 
 class RealMatadorUploadApi:
@@ -697,7 +768,30 @@ class RealMatadorUploadApi:
             expected_sha256=_as_text(data.get("expectedSha256")),
             actual_sha256=_as_text(data.get("actualSha256")),
             error_message=_as_text(data.get("errorMessage")),
+            specimen_id=None if specimen is None else int(specimen),
         )
+
+    def _request_paged_collection(
+        self,
+        *,
+        path: str,
+        query: Optional[Dict[str, Any]] = None,
+        page_size: int = 500,
+        max_pages: int = 200,
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for page in range(max(int(max_pages), 1)):
+            page_query = dict(query or {})
+            page_query.setdefault("page", page)
+            page_query.setdefault("size", int(page_size))
+            data = self._request_json(method="GET", path=path, query=page_query)
+            page_items = self._coerce_collection(data)
+            if not page_items:
+                break
+            items.extend(page_items)
+            if len(page_items) < int(page_query["size"]):
+                break
+        return items
 
     def create_session(
         self, request: MatadorCreateSessionRequest
@@ -807,31 +901,33 @@ class RealMatadorUploadApi:
         )
         return self._coerce_status(data)
 
-    def list_session_files(self, ingest_session_id: int) -> List[MatadorFileStatusResponse]:
+    def get_specimen(self, specimen_id: int) -> Dict[str, Any]:
         data = self._request_json(
             method="GET",
+            path=f"/api/specimen/{int(specimen_id)}",
+        )
+        return data if isinstance(data, dict) else {}
+
+    def list_session_files(self, ingest_session_id: int) -> List[MatadorFileStatusResponse]:
+        items = self._request_paged_collection(
             path="/api/ingest-session-files",
             query={
                 "ingestSessionId.equals": int(ingest_session_id),
-                "size": 100,
+                "sort": "id,asc",
             },
         )
-        items = self._coerce_collection(data)
         return [self._coerce_status(item) for item in items]
 
     def list_studies(self) -> List[Dict[str, Any]]:
-        data = self._request_json(
-            method="GET",
+        items = self._request_paged_collection(
             path="/api/studies",
             query={
-                "page": 0,
-                "size": 500,
                 "sort": "id,asc",
                 "eagerload": "true",
             },
         )
         studies = []
-        for item in self._coerce_collection(data):
+        for item in items:
             project = item.get("project") if isinstance(item.get("project"), dict) else {}
             studies.append(
                 {
@@ -848,17 +944,14 @@ class RealMatadorUploadApi:
         return studies
 
     def list_machines(self) -> List[Dict[str, Any]]:
-        data = self._request_json(
-            method="GET",
+        items = self._request_paged_collection(
             path="/api/machines",
             query={
-                "page": 0,
-                "size": 200,
                 "sort": "id,asc",
             },
         )
         machines = []
-        for item in self._coerce_collection(data):
+        for item in items:
             machines.append(
                 {
                     "id": int(item.get("id") or 0),
@@ -866,6 +959,85 @@ class RealMatadorUploadApi:
                 }
             )
         return machines
+
+    def list_specimens(
+        self,
+        *,
+        project_id: Optional[int] = None,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {
+            "sort": "id,asc",
+            "eagerload": "true",
+        }
+        items = self._request_paged_collection(path="/api/specimen", query=query)
+        study_project_map: Dict[int, int] = {}
+        if project_id is not None:
+            for study in self.list_studies():
+                candidate_project_id = study.get("projectId")
+                candidate_study_id = study.get("id")
+                if candidate_project_id is None or candidate_study_id is None:
+                    continue
+                study_project_map[int(candidate_study_id)] = int(candidate_project_id)
+        specimens = []
+        for item in items:
+            project = item.get("project") if isinstance(item.get("project"), dict) else {}
+            study = item.get("study") if isinstance(item.get("study"), dict) else {}
+            item_project_id = item.get("projectId", project.get("id"))
+            item_study_id = item.get("studyId", study.get("id"))
+            if item_project_id is None and item_study_id is not None:
+                item_project_id = study_project_map.get(int(item_study_id))
+            if project_id is not None and int(item_project_id or 0) != int(project_id):
+                continue
+            if study_id is not None and int(item_study_id or 0) != int(study_id):
+                continue
+            specimens.append(
+                {
+                    "id": int(item.get("id") or 0),
+                    "specimenId": _as_text(
+                        item.get("id")
+                        or item.get("specimenId")
+                        or item.get("specimenCode")
+                        or item.get("externalId")
+                    ),
+                    "externalId": _as_text(item.get("externalId")),
+                    "projectId": (
+                        None if item_project_id is None else int(item_project_id)
+                    ),
+                    "projectName": _as_text(
+                        item.get("projectName") or project.get("name")
+                    ),
+                    "studyId": None if item_study_id is None else int(item_study_id),
+                    "studyName": _as_text(item.get("studyName") or study.get("name")),
+                }
+            )
+        return specimens
+
+    def list_ingest_sessions(
+        self,
+        *,
+        study_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {
+            "sort": "id,asc",
+            "eagerload": "true",
+        }
+        if study_id is not None:
+            query["studyId.equals"] = int(study_id)
+        items = self._request_paged_collection(path="/api/ingest-sessions", query=query)
+        sessions = []
+        for item in items:
+            study = item.get("study") if isinstance(item.get("study"), dict) else {}
+            item_study_id = item.get("studyId", study.get("id"))
+            sessions.append(
+                {
+                    "id": int(item.get("id") or 0),
+                    "studyId": None if item_study_id is None else int(item_study_id),
+                    "machineId": int(item.get("machineId") or 0),
+                    "status": _as_text(item.get("status")),
+                }
+            )
+        return sessions
 
 
 def build_matador_upload_api(config: Optional[dict] = None) -> MatadorUploadApi:
@@ -887,7 +1059,7 @@ def build_matador_upload_api(config: Optional[dict] = None) -> MatadorUploadApi:
     if base_url and token and not bool(cfg.get("matador_force_stub", False)):
         timeout_sec = cfg.get("matador_timeout_sec")
         if timeout_sec is None:
-            timeout_sec = 30.0
+            timeout_sec = DEFAULT_REAL_MATADOR_TIMEOUT_SEC
         return RealMatadorUploadApi(
             base_url=base_url,
             token=token,

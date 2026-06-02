@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import (
     QApplication,
     QDialog,
     QGroupBox,
@@ -228,6 +229,160 @@ def test_session_queue_multiple_pending_containers_disables_actions(qapp, tmp_pa
     assert harness.close_session_btn.isEnabled() is False
     assert harness.send_session_btn.isEnabled() is False
     assert harness.preview_session_data_btn.isEnabled() is False
+
+
+def test_session_data_preview_enabled_for_loaded_locked_archived_container(qapp, tmp_path):
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements" / "20260430_120000"
+    archive_folder.mkdir(parents=True, exist_ok=True)
+    archived_path = _create_session_file(
+        archive_folder,
+        "378993__377656_P103_H_S03",
+        "Mouse Skin - Grant 4",
+    )
+    with h5py.File(archived_path, "a") as h5f:
+        h5f.attrs["locked"] = True
+        h5f.attrs["transfer_status"] = "sent"
+        h5f.attrs["session_state"] = "archived"
+
+    session_manager = _FakeSessionManager()
+    session_manager.session_path = archived_path
+    session_manager.sample_id = "378993__377656_P103_H_S03"
+    session_manager.study_name = "Mouse Skin - Grant 4"
+    session_manager.session_id = "loaded_archived"
+
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(tmp_path / "archive" / "measurements"),
+        },
+        session_manager=session_manager,
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._update_session_tab_info()
+
+    assert harness._selected_pending_container() is None
+    assert harness._preview_session_container_path() == archived_path
+    assert harness.preview_session_data_btn.isEnabled() is True
+
+
+def test_open_archive_starts_pending_matador_verification(qapp, tmp_path, monkeypatch):
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements" / "20260522_120000"
+    archive_folder.mkdir(parents=True, exist_ok=True)
+    archived_path = _create_session_file(
+        archive_folder,
+        "337503__337552_P42_S01_RL",
+        "Mouse Claw - Grant 1",
+    )
+    with h5py.File(archived_path, "a") as h5f:
+        h5f.attrs["locked"] = True
+        h5f.attrs["transfer_status"] = "unsent"
+        h5f.attrs["upload_status"] = "pending_verification"
+        h5f.attrs["matador_send_status"] = "pending_verification"
+        h5f.attrs["matador_zip_file_id"] = "640001"
+        h5f.attrs["matador_h5_file_id"] = "640002"
+
+    calls = []
+
+    def _fake_schedule(self, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        SessionTabMixin,
+        "_schedule_matador_pending_verification",
+        _fake_schedule,
+    )
+
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(tmp_path / "archive" / "measurements"),
+            "matador_url": "https://matador.example",
+            "matador_token": "jwt-for-test",
+        },
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+
+    archive_table = _open_archive_table(harness, qapp)
+    status_filters = [
+        harness.archive_window_status_filter_combo.itemText(index)
+        for index in range(harness.archive_window_status_filter_combo.count())
+    ]
+
+    assert calls
+    assert calls[0]["container_paths"] == [archived_path]
+    assert calls[0]["initial_delay_sec"] == 0.0
+    assert calls[0]["runtime_config"]["matador_upload_max_parallel"] == 4
+    assert "Pending" not in status_filters
+    assert "Failed" not in status_filters
+    assert "UNSENT" in str(archive_table.item(0, 8).text())
+    harness._archive_window_dialog.close()
+    harness.close()
+
+
+def test_send_selected_archived_report_to_analysts(qapp, tmp_path, monkeypatch):
+    info_messages = []
+    warning_messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda _parent, title, text: info_messages.append((title, text))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda _parent, title, text: warning_messages.append((title, text))),
+    )
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+    archive_folder.mkdir(parents=True, exist_ok=True)
+    archived_path = _create_session_file(archive_folder, "SAMPLE_A", "STUDY_A")
+    calls = []
+
+    def _build_report_stub(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            valid_containers=1,
+            images=[tmp_path / "image.png"],
+            zip_path=tmp_path / "report.zip",
+            email_result={
+                "sent": True,
+                "skipped": False,
+                "message": "daily report email sent",
+            },
+            skipped=[],
+        )
+
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.build_daily_report_for_containers",
+        _build_report_stub,
+    )
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+            "difra_base_folder": str(tmp_path / "difra"),
+        },
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._send_selected_archived_report_to_analysts([archived_path])
+
+    assert calls
+    assert calls[0]["container_paths"] == [archived_path]
+    assert calls[0]["send_email"] is True
+    assert info_messages[-1][0] == "Report Sent to Analysts"
+    assert warning_messages == []
 
 
 def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):

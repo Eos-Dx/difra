@@ -31,6 +31,158 @@ def _normalize_alias(alias: str) -> str:
     return str(alias or "").strip().upper()
 
 
+def _as_sequence(value):
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if value is None or value == "":
+        return []
+    return [value]
+
+
+def parse_poni_metadata(poni_text: str) -> Dict[str, object]:
+    text = str(poni_text or "")
+    metadata: Dict[str, object] = {
+        "pixel_size_um": None,
+        "shape": None,
+        "wavelength_m": None,
+        "energy_keV": None,
+    }
+    if not text.strip():
+        return metadata
+
+    pixel1 = None
+    pixel2 = None
+    shape = None
+    for line in text.splitlines():
+        stripped = str(line).strip()
+        if stripped.startswith("Detector_config:"):
+            payload = stripped.split(":", 1)[1].strip()
+            try:
+                cfg = json.loads(payload)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                cfg = None
+            if isinstance(cfg, dict):
+                pixel1 = _to_float(cfg.get("pixel1"))
+                pixel2 = _to_float(cfg.get("pixel2"))
+                max_shape = cfg.get("max_shape")
+                if isinstance(max_shape, (list, tuple)) and len(max_shape) >= 2:
+                    height = _to_float(max_shape[0])
+                    width = _to_float(max_shape[1])
+                    if height is not None and width is not None:
+                        shape = (int(round(width)), int(round(height)))
+
+    if pixel1 is None:
+        m = re.search(r"^PixelSize1:\s*([0-9.eE+\-]+)", text, flags=re.MULTILINE)
+        pixel1 = _to_float(m.group(1)) if m else None
+    if pixel2 is None:
+        m = re.search(r"^PixelSize2:\s*([0-9.eE+\-]+)", text, flags=re.MULTILINE)
+        pixel2 = _to_float(m.group(1)) if m else None
+    if pixel1 is not None and pixel2 is not None:
+        metadata["pixel_size_um"] = (float(pixel1) * 1_000_000.0, float(pixel2) * 1_000_000.0)
+    if shape is not None:
+        metadata["shape"] = shape
+
+    m = re.search(r"^Wavelength:\s*([0-9.eE+\-]+)", text, flags=re.MULTILINE)
+    wavelength_m = _to_float(m.group(1)) if m else None
+    if wavelength_m is not None and wavelength_m > 0:
+        metadata["wavelength_m"] = float(wavelength_m)
+        metadata["energy_keV"] = 12.398419843320026 / (float(wavelength_m) * 1.0e10)
+
+    return metadata
+
+
+def validate_poni_metadata(
+    *,
+    poni_text_by_alias: Mapping[str, str],
+    validation_config: Mapping,
+) -> list[str]:
+    cfg = validation_config if isinstance(validation_config, Mapping) else {}
+    if not bool(cfg.get("enabled", False)):
+        return []
+
+    expected_energy = _to_float(
+        cfg.get("expected_energy_keV")
+        if "expected_energy_keV" in cfg
+        else cfg.get("energy_keV")
+    )
+    energy_tolerance = _to_float(cfg.get("energy_tolerance_keV"))
+    if energy_tolerance is None:
+        energy_tolerance = 0.1
+
+    pixel_values = _as_sequence(
+        cfg.get("expected_pixel_size_um")
+        if "expected_pixel_size_um" in cfg
+        else cfg.get("pixel_size_um")
+    )
+    expected_pixel = None
+    if len(pixel_values) == 1:
+        pixel = _to_float(pixel_values[0])
+        if pixel is not None:
+            expected_pixel = (pixel, pixel)
+    elif len(pixel_values) >= 2:
+        pixel1 = _to_float(pixel_values[0])
+        pixel2 = _to_float(pixel_values[1])
+        if pixel1 is not None and pixel2 is not None:
+            expected_pixel = (pixel1, pixel2)
+    pixel_tolerance = _to_float(cfg.get("pixel_tolerance_um"))
+    if pixel_tolerance is None:
+        pixel_tolerance = 0.25
+
+    shape_values = _as_sequence(
+        cfg.get("expected_shape") if "expected_shape" in cfg else cfg.get("shape")
+    )
+    expected_shape = None
+    if len(shape_values) >= 2:
+        width = _to_float(shape_values[0])
+        height = _to_float(shape_values[1])
+        if width is not None and height is not None:
+            expected_shape = (int(round(width)), int(round(height)))
+
+    errors = []
+    for alias, text in (poni_text_by_alias or {}).items():
+        alias_label = str(alias or "PONI").strip() or "PONI"
+        metadata = parse_poni_metadata(str(text or ""))
+        pixel_size = metadata.get("pixel_size_um")
+        shape = metadata.get("shape")
+        energy = _to_float(metadata.get("energy_keV"))
+
+        if expected_energy is not None:
+            if energy is None:
+                errors.append(f"{alias_label}: cannot read Wavelength/energy from PONI")
+            elif abs(float(energy) - float(expected_energy)) > float(energy_tolerance):
+                errors.append(
+                    f"{alias_label}: PONI energy {float(energy):.3f} keV does not match "
+                    f"expected {float(expected_energy):.3f} keV "
+                    f"(tolerance {float(energy_tolerance):.3f} keV)"
+                )
+
+        if expected_pixel is not None:
+            if not isinstance(pixel_size, tuple) or len(pixel_size) < 2:
+                errors.append(f"{alias_label}: cannot read pixel size from PONI")
+            else:
+                pix1, pix2 = float(pixel_size[0]), float(pixel_size[1])
+                exp1, exp2 = float(expected_pixel[0]), float(expected_pixel[1])
+                if (
+                    abs(pix1 - exp1) > float(pixel_tolerance)
+                    or abs(pix2 - exp2) > float(pixel_tolerance)
+                ):
+                    errors.append(
+                        f"{alias_label}: PONI pixel size {pix1:.3f} x {pix2:.3f} um "
+                        f"does not match expected {exp1:.3f} x {exp2:.3f} um"
+                    )
+
+        if expected_shape is not None:
+            if not isinstance(shape, tuple) or len(shape) < 2:
+                errors.append(f"{alias_label}: cannot read detector shape from PONI")
+            elif (int(shape[0]), int(shape[1])) != expected_shape:
+                errors.append(
+                    f"{alias_label}: PONI detector shape {int(shape[0])} x {int(shape[1])} "
+                    f"does not match expected {expected_shape[0]} x {expected_shape[1]}"
+                )
+
+    return errors
+
+
 def resolve_poni_rule_alias(
     alias: str,
     detector_configs: Optional[Sequence[Mapping]] = None,

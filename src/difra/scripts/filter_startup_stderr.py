@@ -54,6 +54,7 @@ def main(argv=None) -> int:
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

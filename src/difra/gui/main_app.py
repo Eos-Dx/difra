@@ -40,22 +40,33 @@ if os.path.isdir(kinesis_sdk_path):
     # ensuring its DLLs are discoverable for ctypes or similar bindings is crucial.
     sys.path.insert(0, kinesis_sdk_path)
 
-# Import PyQt5 with error handling for Application Control policies
+# Import Qt bindings with error handling for Application Control policies
 try:
-    from PyQt5.QtCore import QDate, QSettings
-    from PyQt5.QtWidgets import QApplication, QMessageBox
+    from difra.gui.qt_compat import (
+        DIALOG_ACCEPTED,
+        QT_API,
+        QtCore,
+        QtWidgets,
+        exec_app,
+        exec_dialog,
+    )
+
+    QDate = QtCore.QDate
+    QSettings = QtCore.QSettings
+    QApplication = QtWidgets.QApplication
+    QMessageBox = QtWidgets.QMessageBox
 except ImportError as e:
     error_msg = str(e)
     if "Application Control policy" in error_msg or "DLL load failed" in error_msg:
         print("\n" + "="*80)
-        print("ERROR: Windows Defender Application Control (WDAC) is blocking PyQt5")
+        print("ERROR: Windows Defender Application Control (WDAC) is blocking Qt")
         print("="*80)
         print(f"\nDetails: {error_msg}\n")
         conda_env_path = sys.executable.replace('python.exe', '').rstrip('\\\\')
-        print("This application requires PyQt5, but Windows WDAC policy is blocking the DLLs.")
+        print("This application requires Qt bindings, but Windows WDAC policy is blocking the DLLs.")
         print("\nBLOCKED FILES:")
-        print(f"  - {conda_env_path}\\Library\\bin\\Qt5*.dll")
-        print(f"  - {conda_env_path}\\Lib\\site-packages\\PyQt5\\*.pyd")
+        print(f"  - {conda_env_path}\\Library\\bin\\Qt*.dll")
+        print(f"  - {conda_env_path}\\Lib\\site-packages\\PyQt*\\*.pyd")
         print("\nRECOMMENDED SOLUTIONS (in order of preference):")
         print("\n1. Add conda environment to WDAC policy (requires Administrator):")
         print("   Run PowerShell as Administrator and execute:")
@@ -68,16 +79,20 @@ except ImportError as e:
         print("   c. Rename: X:\\EFI\\Microsoft\\Boot\\CIPolicies\\Active\\*.cip to *.cip.bak")
         print("   d. Restart computer")
         print("\n3. Contact your IT administrator with this information:")
-        print("   Request: Add Miniconda/Anaconda Qt5 DLLs to WDAC allow list")
+        print("   Request: Add Miniconda/Anaconda Qt DLLs to WDAC allow list")
         print(f"   Paths: {conda_env_path}\\Library\\bin\\*.dll")
-        print(f"          {conda_env_path}\\Lib\\site-packages\\PyQt5\\*.pyd")
+        print(f"          {conda_env_path}\\Lib\\site-packages\\PyQt*\\*.pyd")
         print("\nNOTE: Unblock-File and Set-ExecutionPolicy do NOT work with WDAC policies.")
         print("="*80 + "\n")
     else:
-        print(f"\nERROR: Failed to import PyQt5: {error_msg}\n")
+        print(f"\nERROR: Failed to import Qt bindings: {error_msg}\n")
     sys.exit(1)
 
 from difra.gui.views.main_window import MainWindow
+from difra.gui.daily_report_app_scheduler import (
+    start_previous_day_report_on_startup,
+    start_today_report_on_shutdown,
+)
 from difra.gui.views.welcome_dialog import WelcomeDialog
 from difra.utils.logging_setup import (
     configure_third_party_logging,
@@ -108,7 +123,7 @@ if __name__ == "__main__":
             logger.info("DiFRA application starting")
             logger.info("="*80)
             logger.info(f"Python version: {sys.version}")
-            logger.info(f"PyQt5 version: {QApplication.instance()}")
+            logger.info(f"Qt binding: {QT_API}")
             logger.info(f"Log file path: {log_path}")
             logger.info(f"Working directory: {Path.cwd()}")
             logger.info(f"Source root: {src_root}")
@@ -125,8 +140,8 @@ if __name__ == "__main__":
                 logger.info("Showing welcome dialog for setup selection")
                 dlg = WelcomeDialog()
                 logger.debug("Welcome dialog instance created")
-                result = dlg.exec_()
-                if result != dlg.Accepted:
+                result = exec_dialog(dlg)
+                if result != DIALOG_ACCEPTED:
                     logger.info("Welcome dialog canceled by user; exiting application")
                     sys.exit(0)
                 logger.info("Welcome dialog completed successfully")
@@ -135,7 +150,7 @@ if __name__ == "__main__":
                 error_msg = (
                     f"Failed to show welcome dialog.\n\n"
                     f"Error: {type(e).__name__}: {e}\n\n"
-                    f"This may indicate a problem with the PyQt5 installation or system configuration.\n\n"
+                    f"This may indicate a problem with the Qt installation or system configuration.\n\n"
                     f"Check the log file for details: {log_path}"
                 )
                 QMessageBox.critical(None, "Application Error", error_msg)
@@ -147,6 +162,8 @@ if __name__ == "__main__":
                 win = MainWindow()
                 logger.info("Main window created successfully")
                 win.setWindowTitle("DiFRA")
+                start_previous_day_report_on_startup(win.config)
+                app.aboutToQuit.connect(lambda: start_today_report_on_shutdown(win.config))
                 logger.info("Showing main window...")
                 win.show()
                 logger.info("Main window displayed")
@@ -167,7 +184,7 @@ if __name__ == "__main__":
             logger.info("="*80)
             
             try:
-                exit_code = app.exec_()
+                exit_code = exec_app(app)
                 logger.info("="*80)
                 logger.info(f"DiFRA application shutting down (exit code: {exit_code})")
                 logger.info("="*80)

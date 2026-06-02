@@ -16,13 +16,13 @@ def test_operator_manager_bootstraps_hash_in_config(tmp_path):
     manager = OperatorManager(config_path=config_path)
 
     assert manager.operator_modify_password_hash == DEFAULT_MODIFICATION_PASSWORD_HASH
-    assert manager.verify_modify_password("Ulster2026_REDACTED") is True
+    assert manager.verify_modify_password("Ulster2026!") is True
     assert manager.verify_modify_password("wrong-password") is False
 
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert "operator_modify_password_hash" in data
     assert data["operator_modify_password_hash"] == DEFAULT_MODIFICATION_PASSWORD_HASH
-    assert data["operator_modify_password_hash"] != "Ulster2026_REDACTED"
+    assert data["operator_modify_password_hash"] != "Ulster2026!"
 
 
 def test_operator_manager_uses_configured_hash(tmp_path):
@@ -49,4 +49,4 @@ def test_operator_manager_uses_configured_hash(tmp_path):
 
     manager = OperatorManager(config_path=config_path)
     assert manager.verify_modify_password("secret") is True
-    assert manager.verify_modify_password("Ulster2026_REDACTED") is False
+    assert manager.verify_modify_password("Ulster2026!") is False

@@ -4,8 +4,11 @@ from . import h5_generation_mixin as _module
 from .poni_center_validation import (
     normalize_alias_mapping_to_rule_aliases,
     resolve_poni_rule_alias,
+    validate_poni_metadata,
     validate_poni_centers,
 )
+from .poni_agbh_peak_qc import evaluate_agbh_peak_qc_for_aux_measurements
+from .poni_distance_validation import validate_poni_distances
 
 json = _module.json
 logger = _module.logger
@@ -38,6 +41,80 @@ class H5GenerationMetaMixin:
             return float(m.group(1)) if m else None
         except Exception:
             return None
+
+    def _poni_metadata_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_metadata_validation", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _poni_metadata_validation_errors(self, poni_data):
+        validation_cfg = self._poni_metadata_validation_config()
+        if not validation_cfg:
+            return []
+        poni_text_by_alias = {}
+        for alias, payload in dict(poni_data or {}).items():
+            try:
+                poni_text, _poni_name = payload
+            except Exception:
+                poni_text = payload
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+        return validate_poni_metadata(
+            poni_text_by_alias=poni_text_by_alias,
+            validation_config=validation_cfg,
+        )
+
+    def _poni_distance_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_distance_validation", {})
+        if not isinstance(validation_cfg, dict):
+            validation_cfg = {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _poni_distance_validation_errors_for_data(self, poni_data, distances_by_alias):
+        poni_text_by_alias = {}
+        poni_name_by_alias = {}
+        for alias, payload in dict(poni_data or {}).items():
+            try:
+                poni_text, poni_name = payload
+            except Exception:
+                poni_text, poni_name = payload, f"{alias}.poni"
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+            poni_name_by_alias[str(alias)] = str(poni_name or f"{alias}.poni")
+        return validate_poni_distances(
+            poni_text_by_alias=poni_text_by_alias,
+            distances_by_alias=distances_by_alias,
+            poni_name_by_alias=poni_name_by_alias,
+            validation_config=self._poni_distance_validation_config(),
+        )
+
+    def _agbh_peak_qc_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("agbh_peak_qc", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _agbh_peak_qc_warnings_for_aux_measurements(self, aux_measurements, poni_data):
+        validation_cfg = self._agbh_peak_qc_config()
+        if not validation_cfg:
+            return []
+        try:
+            return evaluate_agbh_peak_qc_for_aux_measurements(
+                aux_measurements,
+                poni_data,
+                validation_config=validation_cfg,
+            )
+        except Exception as exc:
+            logger.debug("AgBH peak QC failed during H5 generation: %s", exc, exc_info=True)
+            return []
 
     @staticmethod
     def _to_float_or_none(value):

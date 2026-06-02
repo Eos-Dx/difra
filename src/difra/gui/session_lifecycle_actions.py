@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import time
@@ -16,7 +17,6 @@ import zipfile
 import h5py
 
 from difra.gui.matador_upload_api import (
-    MatadorCreateSessionRequest,
     MatadorFindOrCreateSessionRequest,
     MatadorRegisterFileRequest,
     MatadorUploadContainerRequest,
@@ -59,6 +59,7 @@ class SendArchiveResult:
     cleaned_artifacts: int = 0
     upload_session_id: str = ""
     upload_success: int = 0
+    upload_pending: int = 0
     upload_failed: int = 0
     archived_complete: int = 0
     archived_not_complete: int = 0
@@ -84,10 +85,17 @@ class UploadStubResult:
     h5_file_id: str = ""
     h5_upload_status: str = ""
     h5_processing_status: str = ""
+    verification_pending: bool = False
+    resolved_matador_specimen_id: Optional[int] = None
+    specimen_resolution_message: str = ""
 
 
 class SessionLifecycleActions:
     """Shared lifecycle actions used by session-related GUI flows."""
+
+    DEFAULT_MATADOR_POLL_ATTEMPTS = 24
+    DEFAULT_MATADOR_POLL_DELAY_SEC = 5.0
+    UPLOAD_STATUS_PENDING_VERIFICATION = "pending_verification"
 
     SESSION_STATE_ATTR = "session_state"
     SESSION_STATE_REASON_ATTR = "session_state_reason"
@@ -431,6 +439,7 @@ class SessionLifecycleActions:
         project_name: Any,
         study_id: Any,
         study_name: Any,
+        specimen_id: Any = None,
         edited_by: Optional[str] = None,
         auth_mode: str = "password",
     ) -> Dict[str, Any]:
@@ -445,6 +454,7 @@ class SessionLifecycleActions:
 
         resolved_project_id = cls._coerce_optional_int(project_id)
         resolved_study_id = cls._coerce_optional_int(study_id)
+        resolved_specimen = cls._decode_attr(specimen_id).strip()
         resolved_project_name = cls._decode_attr(project_name).strip()
         resolved_study_name = cls._decode_attr(study_name).strip()
         resolved_editor = cls._decode_attr(edited_by).strip() or "unknown"
@@ -487,6 +497,9 @@ class SessionLifecycleActions:
                 original_mode = None
 
             with h5py.File(path, "a") as h5f:
+                previous_specimen = cls._decode_attr(
+                    h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", ""))
+                ).strip()
                 previous_project_name = cls._decode_attr(
                     h5f.attrs.get(
                         "matadorProjectName",
@@ -503,6 +516,17 @@ class SessionLifecycleActions:
                     h5f.attrs.get("matadorStudyId")
                 )
 
+                if resolved_specimen:
+                    h5f.attrs["sample_id"] = resolved_specimen
+                    h5f.attrs["specimenId"] = resolved_specimen
+                    matador_specimen_id = cls._coerce_optional_int(
+                        resolved_specimen.split("__", 1)[0]
+                    )
+                    if matador_specimen_id is None:
+                        if "matadorSpecimenId" in h5f.attrs:
+                            del h5f.attrs["matadorSpecimenId"]
+                    else:
+                        h5f.attrs["matadorSpecimenId"] = int(matador_specimen_id)
                 h5f.attrs["project_id"] = resolved_project_name
                 h5f.attrs["matadorProjectId"] = int(resolved_project_id)
                 h5f.attrs["matadorProjectName"] = resolved_project_name
@@ -511,6 +535,9 @@ class SessionLifecycleActions:
 
                 sample_group = h5f.get("/entry/sample")
                 if sample_group is not None:
+                    if resolved_specimen:
+                        sample_group.attrs["sample_id"] = resolved_specimen
+                        sample_group.attrs["specimenId"] = resolved_specimen
                     sample_group.attrs["project_id"] = resolved_project_name
 
                 raw_state = h5f.attrs.get("meta_json")
@@ -520,6 +547,16 @@ class SessionLifecycleActions:
                     except Exception:
                         state_payload = None
                     if isinstance(state_payload, dict):
+                        if resolved_specimen:
+                            state_payload["sample_id"] = resolved_specimen
+                            state_payload["specimenId"] = resolved_specimen
+                            matador_specimen_id = cls._coerce_optional_int(
+                                resolved_specimen.split("__", 1)[0]
+                            )
+                            if matador_specimen_id is None:
+                                state_payload.pop("matadorSpecimenId", None)
+                            else:
+                                state_payload["matadorSpecimenId"] = int(matador_specimen_id)
                         state_payload["project_id"] = resolved_project_name
                         state_payload["matadorProjectId"] = int(resolved_project_id)
                         state_payload["matadorProjectName"] = resolved_project_name
@@ -532,6 +569,8 @@ class SessionLifecycleActions:
 
                 line = (
                     f"{timestamp} | operator={resolved_editor} | auth={resolved_auth_mode} | "
+                    f"specimen='{previous_specimen or '-'}'"
+                    f" -> '{resolved_specimen or previous_specimen or '-'}' | "
                     f"project='{previous_project_name or '-'}'[{previous_project_id if previous_project_id is not None else '-'}]"
                     f" -> '{resolved_project_name}'[{resolved_project_id}] | "
                     f"study='{previous_study_name or '-'}'[{previous_study_id if previous_study_id is not None else '-'}]"
@@ -894,18 +933,23 @@ class SessionLifecycleActions:
 
         try:
             with h5py.File(session_path, "r") as h5f:
+                raw_specimen = h5f.attrs.get("specimenId", h5f.attrs.get("sample_id"))
                 specimen = h5f.attrs.get(
                     "matadorSpecimenId",
                     h5f.attrs.get(
                         "matador_specimen_id",
-                        h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                        raw_specimen,
                     ),
                 )
+                metadata["raw_specimen_text"] = cls._decode_attr(raw_specimen).strip()
                 metadata["specimen_text"] = cls._decode_attr(specimen).strip()
                 metadata["specimen_id"] = cls._coerce_optional_int(specimen)
 
                 study = h5f.attrs.get("matadorStudyId", metadata["study_id"])
+                project = h5f.attrs.get("matadorProjectId")
                 machine = h5f.attrs.get("matadorMachineId", metadata["machine_id"])
+                if project not in (None, ""):
+                    metadata["project_id"] = int(project)
                 if study not in (None, ""):
                     metadata["study_id"] = int(study)
                 if machine not in (None, ""):
@@ -972,6 +1016,119 @@ class SessionLifecycleActions:
     @staticmethod
     def _requires_strict_matador_contract(upload_api: Any) -> bool:
         return upload_api.__class__.__name__ == "RealMatadorUploadApi"
+
+    @classmethod
+    def _matador_specimen_candidate_ids(cls, *values: Any) -> List[int]:
+        candidates: List[int] = []
+        for value in values:
+            text = cls._decode_attr(value).strip()
+            if not text:
+                continue
+            tokens = [text]
+            if "__" in text:
+                left, right = text.split("__", 1)
+                tokens = [left.strip(), right.strip()]
+            for token in tokens:
+                match = re.match(r"^\s*([+-]?\d+)", token)
+                if not match:
+                    continue
+                candidate = cls._coerce_optional_int(match.group(1))
+                if candidate is not None and candidate not in candidates:
+                    candidates.append(int(candidate))
+        return candidates
+
+    @classmethod
+    def _lookup_matador_specimen(cls, upload_api: Any, specimen_id: int) -> Dict[str, Any]:
+        getter = getattr(upload_api, "get_specimen", None)
+        if callable(getter):
+            return dict(getter(int(specimen_id)) or {})
+        request_json = getattr(upload_api, "_request_json", None)
+        if callable(request_json):
+            return dict(
+                request_json(
+                    method="GET",
+                    path=f"/api/specimen/{int(specimen_id)}",
+                )
+                or {}
+            )
+        raise RuntimeError("Matador specimen lookup is not available")
+
+    @classmethod
+    def _resolve_matador_specimen_id_for_upload(
+        cls,
+        *,
+        upload_api: Any,
+        session_metadata: Dict[str, Any],
+    ) -> tuple[Optional[int], str]:
+        target_study_id = cls._coerce_optional_int(session_metadata.get("study_id"))
+        target_project_id = cls._coerce_optional_int(session_metadata.get("project_id"))
+        candidates = cls._matador_specimen_candidate_ids(
+            session_metadata.get("specimen_text"),
+            session_metadata.get("raw_specimen_text"),
+        )
+        if not candidates:
+            return None, "No numeric specimen ID candidates found in container metadata."
+
+        valid: List[tuple[int, str]] = []
+        existing_wrong: List[str] = []
+        missing: List[int] = []
+        for candidate in candidates:
+            try:
+                payload = cls._lookup_matador_specimen(upload_api, candidate)
+            except Exception:
+                missing.append(candidate)
+                continue
+
+            study = payload.get("study") if isinstance(payload.get("study"), dict) else {}
+            payload_study_id = cls._coerce_optional_int(
+                payload.get("studyId") or study.get("id")
+            )
+            project = (
+                payload.get("project") if isinstance(payload.get("project"), dict) else {}
+            )
+            payload_project_id = cls._coerce_optional_int(
+                payload.get("projectId") or project.get("id")
+            )
+            study_ok = target_study_id is None or payload_study_id == target_study_id
+            project_ok = (
+                target_project_id is None
+                or payload_project_id is None
+                or payload_project_id == target_project_id
+            )
+            detail = (
+                f"{candidate}: study={payload_study_id or 'unknown'}, "
+                f"project={payload_project_id or 'unknown'}"
+            )
+            if study_ok and project_ok:
+                valid.append((candidate, detail))
+            else:
+                existing_wrong.append(detail)
+
+        if len(valid) == 1:
+            resolved = int(valid[0][0])
+            return (
+                resolved,
+                f"Resolved Matador specimen ID {resolved} by /api/specimen pre-check.",
+            )
+        if len(valid) > 1:
+            return (
+                None,
+                "Ambiguous Matador specimen ID: multiple candidates match "
+                f"study={target_study_id or 'unknown'} / project={target_project_id or 'unknown'}: "
+                + ", ".join(str(item[0]) for item in valid),
+            )
+        if existing_wrong:
+            return (
+                None,
+                "Specimen candidate(s) exist in Matador but not in this study/project "
+                f"(expected study={target_study_id or 'unknown'}, project={target_project_id or 'unknown'}): "
+                + "; ".join(existing_wrong),
+            )
+        return (
+            None,
+            "No specimen ID candidate exists in Matador for this container: "
+            + ", ".join(str(item) for item in missing),
+        )
 
     @staticmethod
     def _poll_until_hash_verified(
@@ -1228,6 +1385,12 @@ class SessionLifecycleActions:
             uploader_id=uploader_id,
         )
         strict_matador_contract = cls._requires_strict_matador_contract(upload_backend)
+        defer_measurement_verification = bool(
+            (config or {}).get(
+                "matador_defer_measurement_verification",
+                strict_matador_contract,
+            )
+        )
         calibration_zip_paths = [
             Path(path) for path in (calibration_zip_paths or []) if Path(path).exists()
         ]
@@ -1271,16 +1434,26 @@ class SessionLifecycleActions:
             )
 
         specimen_text = str(session_metadata.get("specimen_text") or "").strip()
-        if strict_matador_contract and session_metadata.get("specimen_id") is None:
-            if specimen_text:
+        if strict_matador_contract:
+            resolved_specimen_id, specimen_resolution_message = (
+                cls._resolve_matador_specimen_id_for_upload(
+                    upload_api=upload_backend,
+                    session_metadata=session_metadata,
+                )
+            )
+            if resolved_specimen_id is None:
+                if specimen_text:
+                    return _blocked_result(
+                        "Matador specimen ID is required for measurement uploads, "
+                        f"but container stores '{specimen_text}'. "
+                        f"{specimen_resolution_message}"
+                    )
                 return _blocked_result(
                     "Matador specimen ID is required for measurement uploads, "
-                    f"but container stores '{specimen_text}'."
+                    f"but none is stored in the container. {specimen_resolution_message}"
                 )
-            return _blocked_result(
-                "Matador specimen ID is required for measurement uploads, "
-                "but none is stored in the container."
-            )
+            session_metadata["specimen_id"] = int(resolved_specimen_id)
+            session_metadata["specimen_resolution_message"] = specimen_resolution_message
 
         ingest_session = None
         if batch_group_key and batch_session_cache is not None:
@@ -1458,8 +1631,18 @@ class SessionLifecycleActions:
             calibration_status = cls._poll_until_hash_verified(
                 upload_backend,
                 file_id=int(calibration_registered.id),
-                attempts=int((config or {}).get("matador_poll_attempts", 6)),
-                delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
+                attempts=int(
+                    (config or {}).get(
+                        "matador_poll_attempts",
+                        cls.DEFAULT_MATADOR_POLL_ATTEMPTS,
+                    )
+                ),
+                delay_sec=float(
+                    (config or {}).get(
+                        "matador_poll_delay_sec",
+                        cls.DEFAULT_MATADOR_POLL_DELAY_SEC,
+                    )
+                ),
                 progress_callback=progress_callback,
                 status_label=f"{Path(archived_path).name}: CALIBRATION",
                 current=current,
@@ -1540,47 +1723,63 @@ class SessionLifecycleActions:
             container_path=Path(archived_path),
         )
         upload_backend.upload_file_bytes(zip_registered.presigned_url, Path(old_format_zip_path))
-        zip_status = cls._poll_until_hash_verified(
-            upload_backend,
-            file_id=int(zip_registered.id),
-            attempts=int((config or {}).get("matador_poll_attempts", 6)),
-            delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
-            progress_callback=progress_callback,
-            status_label=f"{Path(archived_path).name}: ZIP",
-            current=current,
-            total=total,
-            container_path=Path(archived_path),
-        )
-        if zip_status is None or str(zip_status.upload_status or "").upper() != "HASH_VERIFIED":
-            zip_state = "" if zip_status is None else str(zip_status.upload_status or "")
-            return UploadStubResult(
-                success=False,
-                upload_session_id=str(ingest_session.id),
-                message=f"Matador upload incomplete: zip={zip_state or 'unknown'}",
-                bytes_uploaded=int(Path(archived_path).stat().st_size),
-                local_checksum_sha256=sha256_file(Path(archived_path)),
-                response_checksum_sha256="",
-                remote_container_id=f"matador://ingest-session/{ingest_session.id}",
-                zip_file_id=str(zip_registered.id),
-                zip_upload_status="" if zip_status is None else str(zip_status.upload_status),
-                zip_processing_status="" if zip_status is None else str(zip_status.processing_status),
-                zip_checksum_sha256=zip_checksum,
-                zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
-                zip_path=str(old_format_zip_path),
+        if defer_measurement_verification:
+            try:
+                zip_status = upload_backend.get_file_status(int(zip_registered.id))
+            except Exception:
+                zip_status = None
+        else:
+            zip_status = cls._poll_until_hash_verified(
+                upload_backend,
+                file_id=int(zip_registered.id),
+                attempts=int(
+                    (config or {}).get(
+                        "matador_poll_attempts",
+                        cls.DEFAULT_MATADOR_POLL_ATTEMPTS,
+                    )
+                ),
+                delay_sec=float(
+                    (config or {}).get(
+                        "matador_poll_delay_sec",
+                        cls.DEFAULT_MATADOR_POLL_DELAY_SEC,
+                    )
+                ),
+                progress_callback=progress_callback,
+                status_label=f"{Path(archived_path).name}: ZIP",
+                current=current,
+                total=total,
+                container_path=Path(archived_path),
             )
-        cls._record_matador_uploaded_file(
-            manifest_path=matador_manifest_path,
-            session_metadata=session_metadata,
-            session_id=int(ingest_session.id),
-            file_path=Path(old_format_zip_path),
-            file_id=int(zip_registered.id),
-            file_type="ZIP_PAYLOAD",
-            ingest_kind="MEASUREMENT",
-            sha256=zip_checksum,
-            size_bytes=int(Path(old_format_zip_path).stat().st_size),
-            upload_status=str(zip_status.upload_status),
-            processing_status=str(zip_status.processing_status),
-        )
+            if zip_status is None or str(zip_status.upload_status or "").upper() != "HASH_VERIFIED":
+                zip_state = "" if zip_status is None else str(zip_status.upload_status or "")
+                return UploadStubResult(
+                    success=False,
+                    upload_session_id=str(ingest_session.id),
+                    message=f"Matador upload incomplete: zip={zip_state or 'unknown'}",
+                    bytes_uploaded=int(Path(archived_path).stat().st_size),
+                    local_checksum_sha256=sha256_file(Path(archived_path)),
+                    response_checksum_sha256="",
+                    remote_container_id=f"matador://ingest-session/{ingest_session.id}",
+                    zip_file_id=str(zip_registered.id),
+                    zip_upload_status="" if zip_status is None else str(zip_status.upload_status),
+                    zip_processing_status="" if zip_status is None else str(zip_status.processing_status),
+                    zip_checksum_sha256=zip_checksum,
+                    zip_size_bytes=int(Path(old_format_zip_path).stat().st_size),
+                    zip_path=str(old_format_zip_path),
+                )
+            cls._record_matador_uploaded_file(
+                manifest_path=matador_manifest_path,
+                session_metadata=session_metadata,
+                session_id=int(ingest_session.id),
+                file_path=Path(old_format_zip_path),
+                file_id=int(zip_registered.id),
+                file_type="ZIP_PAYLOAD",
+                ingest_kind="MEASUREMENT",
+                sha256=zip_checksum,
+                size_bytes=int(Path(old_format_zip_path).stat().st_size),
+                upload_status=str(zip_status.upload_status),
+                processing_status=str(zip_status.processing_status),
+            )
 
         h5_checksum = sha256_file(Path(archived_path))
         h5_register_name = f"{Path(old_format_zip_path).stem}.h5"
@@ -1616,17 +1815,33 @@ class SessionLifecycleActions:
             container_path=Path(archived_path),
         )
         upload_backend.upload_file_bytes(h5_registered.presigned_url, Path(archived_path))
-        h5_status = cls._poll_until_hash_verified(
-            upload_backend,
-            file_id=int(h5_registered.id),
-            attempts=int((config or {}).get("matador_poll_attempts", 6)),
-            delay_sec=float((config or {}).get("matador_poll_delay_sec", 2.0)),
-            progress_callback=progress_callback,
-            status_label=f"{Path(archived_path).name}: H5",
-            current=current,
-            total=total,
-            container_path=Path(archived_path),
-        )
+        if defer_measurement_verification:
+            try:
+                h5_status = upload_backend.get_file_status(int(h5_registered.id))
+            except Exception:
+                h5_status = None
+        else:
+            h5_status = cls._poll_until_hash_verified(
+                upload_backend,
+                file_id=int(h5_registered.id),
+                attempts=int(
+                    (config or {}).get(
+                        "matador_poll_attempts",
+                        cls.DEFAULT_MATADOR_POLL_ATTEMPTS,
+                    )
+                ),
+                delay_sec=float(
+                    (config or {}).get(
+                        "matador_poll_delay_sec",
+                        cls.DEFAULT_MATADOR_POLL_DELAY_SEC,
+                    )
+                ),
+                progress_callback=progress_callback,
+                status_label=f"{Path(archived_path).name}: H5",
+                current=current,
+                total=total,
+                container_path=Path(archived_path),
+            )
         if h5_status is not None and str(h5_status.upload_status or "").upper() == "HASH_VERIFIED":
             cls._record_matador_uploaded_file(
                 manifest_path=matador_manifest_path,
@@ -1651,11 +1866,26 @@ class SessionLifecycleActions:
             h5_status is not None
             and str(h5_status.upload_status or "").upper() == "HASH_VERIFIED"
         )
-        success = bool(zip_ok and h5_ok)
-        if success:
+        verification_pending = bool(
+            defer_measurement_verification
+            and not (zip_ok and h5_ok)
+            and (zip_status is None or str(zip_status.upload_status or "").upper() != "FAILED")
+            and (h5_status is None or str(h5_status.upload_status or "").upper() != "FAILED")
+        )
+        success = bool((zip_ok and h5_ok) or verification_pending)
+        if zip_ok and h5_ok:
             message = (
                 f"Matador upload complete: session={ingest_session.id} "
                 f"zip={zip_registered.id} h5={h5_registered.id}"
+            )
+        elif verification_pending:
+            zip_state = "" if zip_status is None else str(zip_status.upload_status or "")
+            h5_state = "" if h5_status is None else str(h5_status.upload_status or "")
+            message = (
+                "Matador binary upload accepted; checksum verification pending: "
+                f"session={ingest_session.id} zip={zip_registered.id}"
+                f"({zip_state or 'unknown'}) h5={h5_registered.id}"
+                f"({h5_state or 'unknown'})"
             )
         else:
             zip_state = "" if zip_status is None else str(zip_status.upload_status or "")
@@ -1668,7 +1898,7 @@ class SessionLifecycleActions:
             progress_callback,
             message=(
                 f"{Path(archived_path).name}: Final upload status: "
-                f"{'SUCCESS' if success else 'FAILED'} | {message}"
+                f"{'PENDING' if verification_pending else 'SUCCESS' if success else 'FAILED'} | {message}"
             ),
             current=current,
             total=total,
@@ -1698,6 +1928,15 @@ class SessionLifecycleActions:
             h5_file_id=str(h5_registered.id),
             h5_upload_status="" if h5_status is None else str(h5_status.upload_status),
             h5_processing_status="" if h5_status is None else str(h5_status.processing_status),
+            verification_pending=verification_pending,
+            resolved_matador_specimen_id=(
+                int(session_metadata["specimen_id"])
+                if session_metadata.get("specimen_id") is not None
+                else None
+            ),
+            specimen_resolution_message=str(
+                session_metadata.get("specimen_resolution_message") or ""
+            ),
         )
 
     @classmethod
@@ -1711,7 +1950,13 @@ class SessionLifecycleActions:
         """Append human-readable upload attempt line into container attrs."""
         path = Path(container_path)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        status = "success" if upload_result.success else "failed"
+        status = (
+            cls.UPLOAD_STATUS_PENDING_VERIFICATION
+            if bool(getattr(upload_result, "verification_pending", False))
+            else "success"
+            if upload_result.success
+            else "failed"
+        )
         line = (
             f"{timestamp} | operator={operator_id} | "
             f"upload_session={upload_result.upload_session_id} | "
@@ -1775,9 +2020,22 @@ class SessionLifecycleActions:
         specimen_id: Optional[int] = None,
     ) -> bool:
         """Persist upload session/result payload in session container metadata."""
-        send_status = "successful" if upload_result.success else "unsuccessful"
-        send_reason = "" if upload_result.success else str(upload_result.message)
+        verification_pending = bool(
+            getattr(upload_result, "verification_pending", False)
+        )
+        if verification_pending:
+            upload_status = cls.UPLOAD_STATUS_PENDING_VERIFICATION
+            send_status = cls.UPLOAD_STATUS_PENDING_VERIFICATION
+            send_reason = str(upload_result.message)
+        else:
+            upload_status = "success" if upload_result.success else "failed"
+            send_status = "successful" if upload_result.success else "unsuccessful"
+            send_reason = "" if upload_result.success else str(upload_result.message)
         resolved_specimen_id = specimen_id
+        if resolved_specimen_id is None:
+            result_specimen_id = getattr(upload_result, "resolved_matador_specimen_id", None)
+            if result_specimen_id is not None:
+                resolved_specimen_id = int(result_specimen_id)
         if resolved_specimen_id is None:
             try:
                 metadata = cls._read_matador_session_metadata(Path(container_path))
@@ -1791,11 +2049,12 @@ class SessionLifecycleActions:
 
         attrs = {
             "upload_session_id": str(upload_result.upload_session_id),
-            "upload_status": "success" if upload_result.success else "failed",
+            "upload_status": upload_status,
             "upload_result_message": str(upload_result.message),
             "matador_send_status": send_status,
             "matador_send_reason": send_reason,
             "matador_send_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "matador_verification_pending": bool(verification_pending),
             "upload_bytes": int(upload_result.bytes_uploaded),
             "upload_local_checksum_sha256": str(
                 upload_result.local_checksum_sha256
@@ -1817,7 +2076,210 @@ class SessionLifecycleActions:
         }
         if resolved_specimen_id is not None:
             attrs["matadorSpecimenId"] = int(resolved_specimen_id)
+        resolution_message = str(
+            getattr(upload_result, "specimen_resolution_message", "") or ""
+        ).strip()
+        if resolution_message:
+            attrs["matador_specimen_resolution"] = resolution_message
         return cls._write_container_attrs(container_path, attrs)
+
+    @classmethod
+    def verify_pending_matador_uploads(
+        cls,
+        container_paths: Iterable[Path],
+        *,
+        container_manager: Any = None,
+        config: Optional[Dict[str, Any]] = None,
+        operator_id: Optional[str] = None,
+        progress_callback: Optional[Any] = None,
+    ) -> SendArchiveResult:
+        """Refresh Matador status for containers awaiting asynchronous verification."""
+        result = SendArchiveResult()
+        upload_api = build_matador_upload_api(config=config)
+        resolved_operator = cls._resolve_uploader_id(
+            explicit_uploader_id=operator_id,
+            lock_user=None,
+        )
+
+        queued_paths = [Path(path) for path in container_paths]
+        total = len(queued_paths)
+        for index, container_path in enumerate(queued_paths, start=1):
+            path = Path(container_path)
+            if not path.exists():
+                result.upload_failed += 1
+                result.failed.append(f"{path.name}: container not found")
+                continue
+
+            try:
+                with h5py.File(path, "r") as h5f:
+                    upload_status = str(h5f.attrs.get("upload_status", "") or "")
+                    zip_file_id = str(h5f.attrs.get("matador_zip_file_id", "") or "")
+                    h5_file_id = str(h5f.attrs.get("matador_h5_file_id", "") or "")
+                    upload_session_id = str(h5f.attrs.get("upload_session_id", "") or "")
+                    remote_container_id = str(
+                        h5f.attrs.get("upload_remote_container_id", "") or ""
+                    )
+                    local_checksum = str(
+                        h5f.attrs.get("upload_local_checksum_sha256", "") or ""
+                    )
+                    bytes_uploaded = int(h5f.attrs.get("upload_bytes", 0) or 0)
+                    zip_checksum = str(
+                        h5f.attrs.get("matador_zip_checksum_sha256", "") or ""
+                    )
+                    zip_size = int(h5f.attrs.get("matador_zip_size_bytes", 0) or 0)
+                    zip_path = str(h5f.attrs.get("matador_zip_path", "") or "")
+            except Exception as exc:
+                result.upload_failed += 1
+                result.failed.append(f"{path.name}: failed to read container ({exc})")
+                continue
+
+            if upload_status != cls.UPLOAD_STATUS_PENDING_VERIFICATION:
+                continue
+
+            cls._notify_progress(
+                progress_callback,
+                message=f"[{index}/{total}] {path.name}: Checking Matador verification...",
+                current=index,
+                total=total,
+                kind="verification_started",
+                container_path=path,
+            )
+
+            if not zip_file_id or not h5_file_id:
+                upload_result = UploadStubResult(
+                    success=False,
+                    upload_session_id=upload_session_id,
+                    message="Matador verification failed: missing saved file IDs",
+                    bytes_uploaded=bytes_uploaded,
+                    local_checksum_sha256=local_checksum,
+                    response_checksum_sha256="",
+                    remote_container_id=remote_container_id,
+                    zip_file_id=zip_file_id,
+                    h5_file_id=h5_file_id,
+                    zip_checksum_sha256=zip_checksum,
+                    zip_size_bytes=zip_size,
+                    zip_path=zip_path,
+                )
+            else:
+                zip_status = upload_api.get_file_status(int(zip_file_id))
+                h5_status = upload_api.get_file_status(int(h5_file_id))
+                zip_state = str(zip_status.upload_status or "")
+                h5_state = str(h5_status.upload_status or "")
+                zip_ok = zip_state.upper() == "HASH_VERIFIED"
+                h5_ok = h5_state.upper() == "HASH_VERIFIED"
+                failed = zip_state.upper() == "FAILED" or h5_state.upper() == "FAILED"
+                if zip_ok and h5_ok:
+                    upload_result = UploadStubResult(
+                        success=True,
+                        upload_session_id=upload_session_id,
+                        message=(
+                            "Matador upload verified: "
+                            f"zip={zip_file_id} h5={h5_file_id}"
+                        ),
+                        bytes_uploaded=bytes_uploaded,
+                        local_checksum_sha256=local_checksum,
+                        response_checksum_sha256=local_checksum,
+                        remote_container_id=remote_container_id,
+                        zip_file_id=zip_file_id,
+                        zip_upload_status=zip_state,
+                        zip_processing_status=str(zip_status.processing_status or ""),
+                        zip_checksum_sha256=(
+                            str(zip_status.actual_sha256 or "")
+                            or str(zip_status.expected_sha256 or "")
+                            or zip_checksum
+                        ),
+                        zip_size_bytes=zip_size,
+                        zip_path=zip_path,
+                        h5_file_id=h5_file_id,
+                        h5_upload_status=h5_state,
+                        h5_processing_status=str(h5_status.processing_status or ""),
+                    )
+                elif failed:
+                    upload_result = UploadStubResult(
+                        success=False,
+                        upload_session_id=upload_session_id,
+                        message=(
+                            "Matador verification failed: "
+                            f"zip={zip_state or 'unknown'} h5={h5_state or 'unknown'}"
+                        ),
+                        bytes_uploaded=bytes_uploaded,
+                        local_checksum_sha256=local_checksum,
+                        response_checksum_sha256="",
+                        remote_container_id=remote_container_id,
+                        zip_file_id=zip_file_id,
+                        zip_upload_status=zip_state,
+                        zip_processing_status=str(zip_status.processing_status or ""),
+                        zip_checksum_sha256=zip_checksum,
+                        zip_size_bytes=zip_size,
+                        zip_path=zip_path,
+                        h5_file_id=h5_file_id,
+                        h5_upload_status=h5_state,
+                        h5_processing_status=str(h5_status.processing_status or ""),
+                    )
+                else:
+                    result.upload_pending += 1
+                    cls._write_container_attrs(
+                        path,
+                        {
+                            "matador_zip_upload_status": zip_state,
+                            "matador_zip_processing_status": str(
+                                zip_status.processing_status or ""
+                            ),
+                            "matador_h5_upload_status": h5_state,
+                            "matador_h5_processing_status": str(
+                                h5_status.processing_status or ""
+                            ),
+                            "matador_verification_checked_at": time.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                        },
+                    )
+                    cls._notify_progress(
+                        progress_callback,
+                        message=(
+                            f"[{index}/{total}] {path.name}: PENDING - "
+                            f"zip={zip_state or 'unknown'} h5={h5_state or 'unknown'}"
+                        ),
+                        current=index,
+                        total=total,
+                        kind="verification_pending",
+                        container_path=path,
+                    )
+                    continue
+
+            wrote_result = cls.write_upload_result_metadata(path, upload_result)
+            wrote_log = cls.append_upload_attempt_log(
+                path,
+                operator_id=resolved_operator,
+                upload_result=upload_result,
+            )
+            ok = bool(upload_result.success and wrote_result and wrote_log)
+            mark_transferred = getattr(container_manager, "mark_container_transferred", None)
+            if callable(mark_transferred):
+                mark_transferred(path, sent=ok)
+            if ok:
+                result.upload_success += 1
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{index}/{total}] {path.name}: SUCCESS - Matador verification complete.",
+                    current=index,
+                    total=total,
+                    kind="verification_done",
+                    container_path=path,
+                )
+            else:
+                result.upload_failed += 1
+                result.failed.append(f"{path.name}: {upload_result.message}")
+                cls._notify_progress(
+                    progress_callback,
+                    message=f"[{index}/{total}] {path.name}: FAILED - {upload_result.message}",
+                    current=index,
+                    total=total,
+                    kind="verification_failed",
+                    container_path=path,
+                )
+
+        return result
 
     @classmethod
     def _archive_measurement_artifacts(
@@ -2503,7 +2965,15 @@ class SessionLifecycleActions:
                         wrote_upload_log,
                     )
 
-                effective_upload_success = bool(upload_result.success and metadata_write_ok)
+                effective_upload_pending = bool(
+                    getattr(upload_result, "verification_pending", False)
+                    and metadata_write_ok
+                )
+                effective_upload_success = bool(
+                    upload_result.success
+                    and metadata_write_ok
+                    and not effective_upload_pending
+                )
                 mark_transferred = getattr(container_manager, "mark_container_transferred", None)
                 if callable(mark_transferred):
                     mark_transferred(Path(archived_path), sent=effective_upload_success)
@@ -2516,6 +2986,19 @@ class SessionLifecycleActions:
                         current=item_index,
                         total=total_containers,
                         kind="container_done",
+                        container_path=Path(archived_path),
+                    )
+                elif effective_upload_pending:
+                    result.upload_pending += 1
+                    cls._notify_progress(
+                        progress_callback,
+                        message=(
+                            f"[{item_index}/{total_containers}] {candidate.name}: "
+                            "PENDING - ZIP and H5 uploaded; Matador verification will continue asynchronously."
+                        ),
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_pending",
                         container_path=Path(archived_path),
                     )
                 else:
@@ -2782,7 +3265,15 @@ class SessionLifecycleActions:
                     and bool(wrote_upload_result)
                     and bool(wrote_upload_log)
                 )
-                effective_upload_success = bool(upload_result.success and metadata_write_ok)
+                effective_upload_pending = bool(
+                    getattr(upload_result, "verification_pending", False)
+                    and metadata_write_ok
+                )
+                effective_upload_success = bool(
+                    upload_result.success
+                    and metadata_write_ok
+                    and not effective_upload_pending
+                )
 
                 mark_transferred = getattr(container_manager, "mark_container_transferred", None)
                 if callable(mark_transferred):
@@ -2799,6 +3290,19 @@ class SessionLifecycleActions:
                         current=item_index,
                         total=total_containers,
                         kind="container_done",
+                        container_path=candidate,
+                    )
+                elif effective_upload_pending:
+                    result.upload_pending += 1
+                    cls._notify_progress(
+                        progress_callback,
+                        message=(
+                            f"[{item_index}/{total_containers}] {candidate.name}: "
+                            "PENDING - archived container uploaded; Matador verification will continue asynchronously."
+                        ),
+                        current=item_index,
+                        total=total_containers,
+                        kind="container_pending",
                         container_path=candidate,
                     )
                 else:

@@ -6,7 +6,11 @@ from .poni_center_validation import (
     parse_poni_center_px,
     resolve_poni_rule_alias,
     validate_poni_centers,
+    validate_poni_metadata,
 )
+from .poni_agbh_peak_qc import evaluate_agbh_peak_qc_for_h5
+from .poni_distance_validation import parse_poni_distance_cm, validate_poni_distances
+from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
 os = _module.os
 logger = _module.logger
@@ -20,11 +24,9 @@ get_container_manager = _module.get_container_manager
 get_technical_validator = _module.get_technical_validator
 get_schema = _module.get_schema
 
-from difra.gui.main_window_ext.technical import h5_management_lock_actions
-
 
 class H5ManagementLockingMixin:
-    PONI_OVERRIDE_PASSWORD = "Ulster2026_REDACTED"
+    PONI_OVERRIDE_PASSWORD = "Ulster2026!"
     CONTAINER_STATE_ATTR = "container_state"
     CONTAINER_STATE_REASON_ATTR = "container_state_reason"
     CONTAINER_STATE_UPDATED_ATTR = "container_state_updated_at"
@@ -710,6 +712,192 @@ class H5ManagementLockingMixin:
 
         return poni_by_alias
 
+    @staticmethod
+    def _parse_poni_distance_cm(poni_text: str):
+        return parse_poni_distance_cm(poni_text)
+
+    def _poni_distance_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_distance_validation", {})
+        if not isinstance(validation_cfg, dict):
+            validation_cfg = {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _agbh_peak_qc_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("agbh_peak_qc", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _embedded_agbh_peak_qc_warnings(self, container_path: Path):
+        validation_cfg = self._agbh_peak_qc_config()
+        if not validation_cfg:
+            return []
+        try:
+            return evaluate_agbh_peak_qc_for_h5(
+                Path(container_path),
+                schema=get_schema(self.config if hasattr(self, "config") else None),
+                validation_config=validation_cfg,
+            )
+        except Exception as exc:
+            logger.debug("AgBH peak QC failed for %s: %s", container_path, exc, exc_info=True)
+            return []
+
+    def _embedded_poni_distance_validation_errors(
+        self,
+        container_path: Path,
+        *,
+        tolerance_percent: float = 5.0,
+    ):
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        errors = []
+
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                root_distance = self._to_float_or_none(
+                    h5f.attrs.get(schema.ATTR_DISTANCE_CM)
+                )
+                distances_by_alias = {}
+
+                technical_group = h5f.get(schema.GROUP_TECHNICAL)
+                if technical_group is not None:
+                    for event_name in sorted(technical_group.keys()):
+                        event_group = technical_group[event_name]
+                        if not hasattr(event_group, "keys"):
+                            continue
+                        for detector_name in sorted(event_group.keys()):
+                            detector_group = event_group[detector_name]
+                            if not hasattr(detector_group, "attrs"):
+                                continue
+                            distance_cm = self._to_float_or_none(
+                                detector_group.attrs.get(schema.ATTR_DISTANCE_CM)
+                            )
+                            if distance_cm is None:
+                                continue
+                            alias, detector_id, alias_candidates = (
+                                self._resolve_configured_technical_alias(
+                                    detector_group.attrs.get(schema.ATTR_DETECTOR_ALIAS, ""),
+                                    detector_group.attrs.get(
+                                        getattr(schema, "ATTR_DETECTOR_ID", "detector_id"),
+                                        "",
+                                    ),
+                                    detector_name,
+                                )
+                            )
+                            for candidate in [alias, detector_id, *sorted(alias_candidates)]:
+                                key = str(candidate or "").strip().upper()
+                                if key:
+                                    distances_by_alias[key] = distance_cm
+
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is None:
+                    return errors
+
+                poni_text_by_alias = {}
+                poni_name_by_alias = {}
+                for ds_name in sorted(poni_group.keys()):
+                    ds = poni_group[ds_name]
+                    value = ds[()]
+                    if isinstance(value, bytes):
+                        poni_text = value.decode("utf-8", errors="replace")
+                    else:
+                        poni_text = str(value)
+
+                    alias, detector_id, alias_candidates = (
+                        self._resolve_configured_technical_alias(
+                            ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, ""),
+                            ds.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id"), ""),
+                            ds_name,
+                        )
+                    )
+                    expected_cm = None
+                    for candidate in [alias, detector_id, *sorted(alias_candidates)]:
+                        key = str(candidate or "").strip().upper()
+                        if key in distances_by_alias:
+                            expected_cm = distances_by_alias[key]
+                            break
+                    if expected_cm is None:
+                        expected_cm = root_distance
+
+                    label = str(alias or ds_name).strip() or str(ds_name)
+                    if expected_cm is None:
+                        continue
+                    poni_text_by_alias[label] = poni_text
+                    poni_name_by_alias[label] = "embedded PONI"
+                    distances_by_alias[label] = expected_cm
+
+                cfg = dict(self._poni_distance_validation_config() or {})
+                if "tolerance_percent" not in cfg and "default_tolerance_percent" not in cfg:
+                    cfg["tolerance_percent"] = float(tolerance_percent)
+                errors.extend(
+                    validate_poni_distances(
+                        poni_text_by_alias=poni_text_by_alias,
+                        distances_by_alias=distances_by_alias,
+                        poni_name_by_alias=poni_name_by_alias,
+                        validation_config=cfg,
+                    )
+                )
+        except Exception as exc:
+            errors.append(f"Failed to validate embedded PONI distances: {exc}")
+
+        return errors
+
+    def _poni_metadata_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_metadata_validation", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _embedded_poni_metadata_validation_errors(self, container_path: Path):
+        validation_cfg = self._poni_metadata_validation_config()
+        if not validation_cfg:
+            return []
+
+        import h5py
+
+        schema = get_schema(self.config if hasattr(self, "config") else None)
+        poni_text_by_alias = {}
+        errors = []
+
+        try:
+            with h5py.File(container_path, "r") as h5f:
+                poni_group = h5f.get(schema.GROUP_TECHNICAL_PONI)
+                if poni_group is None:
+                    return errors
+                for ds_name in sorted(poni_group.keys()):
+                    ds = poni_group[ds_name]
+                    value = ds[()]
+                    if isinstance(value, bytes):
+                        poni_text = value.decode("utf-8", errors="replace")
+                    else:
+                        poni_text = str(value)
+                    alias, detector_id, alias_candidates = (
+                        self._resolve_configured_technical_alias(
+                            ds.attrs.get(schema.ATTR_DETECTOR_ALIAS, ""),
+                            ds.attrs.get(getattr(schema, "ATTR_DETECTOR_ID", "detector_id"), ""),
+                            ds_name,
+                        )
+                    )
+                    label = str(alias or detector_id or ds_name).strip() or str(ds_name)
+                    poni_text_by_alias[label] = poni_text
+        except Exception as exc:
+            return [f"Failed to validate embedded PONI metadata: {exc}"]
+
+        return validate_poni_metadata(
+            poni_text_by_alias=poni_text_by_alias,
+            validation_config=validation_cfg,
+        )
+
     def _detector_sizes_by_alias(self):
         sizes = {}
         for detector_cfg in self.config.get("detectors", []) if hasattr(self, "config") else []:
@@ -795,7 +983,7 @@ class H5ManagementLockingMixin:
 
     def _prompt_poni_override_password(self, *, container_id: str) -> bool:
         try:
-            from PyQt5.QtWidgets import QLineEdit
+            from difra.gui.qt_compat import QLineEdit
 
             echo_mode = QLineEdit.Password
         except Exception:
@@ -1439,6 +1627,27 @@ class H5ManagementLockingMixin:
         if center_warnings:
             warnings.extend(center_warnings)
 
+        distance_errors = self._embedded_poni_distance_validation_errors(
+            Path(container_path)
+        )
+        if distance_errors:
+            errors.extend(distance_errors)
+            is_valid = False
+
+        metadata_errors = self._embedded_poni_metadata_validation_errors(
+            Path(container_path)
+        )
+        if metadata_errors:
+            errors.extend(metadata_errors)
+            is_valid = False
+
+        agbh_peak_warnings = self._embedded_agbh_peak_qc_warnings(Path(container_path))
+        if agbh_peak_warnings:
+            warnings.extend(agbh_peak_warnings)
+            self._log_technical_event(
+                f"AgBH peak QC warnings before lock for {container_id}: {len(agbh_peak_warnings)} warning(s)"
+            )
+
         if not is_valid:
             details = []
             for i, err in enumerate(errors[:8], 1):
@@ -1454,6 +1663,17 @@ class H5ManagementLockingMixin:
             if has_distance_error:
                 remediation_lines.append(
                     "Distance check failed: update PONI file distance values or detector distance settings."
+                )
+            has_metadata_error = any(
+                ("pixel size" in str(err).lower())
+                or ("energy" in str(err).lower())
+                or ("detector shape" in str(err).lower())
+                for err in errors
+            )
+            if has_metadata_error:
+                remediation_lines.append(
+                    "PONI metadata check failed: use Xena PONI files with 8.04 keV, "
+                    "55 um pixels, and 256 x 256 detector shape."
                 )
             if center_error_count > 0:
                 remediation_lines.append(
@@ -1491,6 +1711,17 @@ class H5ManagementLockingMixin:
             self._log_technical_event(
                 f"Validation warnings before lock for {container_id}: {len(warnings)} warning(s)"
             )
+            if agbh_peak_warnings and bool(self._agbh_peak_qc_config().get("show_dialog", True)):
+                details = "\n".join(f"- {msg}" for msg in agbh_peak_warnings[:6])
+                if len(agbh_peak_warnings) > 6:
+                    details += f"\n- ... and {len(agbh_peak_warnings) - 6} more"
+                QMessageBox.warning(
+                    self,
+                    "AgBH Peak QC Warning",
+                    "AgBH peak positions do not fully match theoretical lines.\n\n"
+                    + details
+                    + "\n\nThis is a warning only; lock can continue.",
+                )
 
         return True
 
@@ -1582,6 +1813,27 @@ class H5ManagementLockingMixin:
             is_valid = False
         if center_warnings:
             warnings.extend(center_warnings)
+
+        distance_errors = self._embedded_poni_distance_validation_errors(
+            Path(container_path)
+        )
+        if distance_errors:
+            errors.extend(distance_errors)
+            is_valid = False
+
+        metadata_errors = self._embedded_poni_metadata_validation_errors(
+            Path(container_path)
+        )
+        if metadata_errors:
+            errors.extend(metadata_errors)
+            is_valid = False
+
+        agbh_peak_warnings = self._embedded_agbh_peak_qc_warnings(Path(container_path))
+        if agbh_peak_warnings:
+            warnings.extend(agbh_peak_warnings)
+            self._log_technical_event(
+                f"AgBH peak QC warnings before lock for {container_id}: {len(agbh_peak_warnings)} warning(s)"
+            )
         
         # Build validation summary
         status_icon = "✅" if is_valid else ("⚠️" if errors else "✅")

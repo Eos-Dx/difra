@@ -280,15 +280,15 @@ def test_auto_poni_defaults_use_active_container_distance_for_two_cm(tmp_path):
     )
 
     assert settings["distance_cm_by_alias"] == {
-        "PRIMARY": 2.0,
-        "SECONDARY": 2.0,
+        "PRIMARY": 2.3,
+        "SECONDARY": 2.48,
     }
     assert settings["first_visible_ring_by_alias"] == {
         "PRIMARY": 2,
         "SECONDARY": 5,
     }
     assert settings["rings_to_search_by_alias"] == {
-        "PRIMARY": 5,
+        "PRIMARY": 3,
         "SECONDARY": 4,
     }
 
@@ -319,6 +319,39 @@ def test_auto_poni_defaults_use_first_ring_for_seventeen_cm(tmp_path):
     }
 
 
+def test_auto_poni_defaults_use_long_distance_profile_for_eighteen_cm(tmp_path):
+    harness = _Harness()
+    container_path = tmp_path / "technical_abc_18cm_20260506.nxs.h5"
+    with h5py.File(container_path, "w") as h5f:
+        h5f.attrs["distance_cm"] = 18.0
+    harness._active_technical_container_path = str(container_path)
+
+    settings = harness._auto_poni_default_settings(
+        normalized_auto_poni_config({}),
+        ["PRIMARY", "SECONDARY"],
+    )
+
+    assert settings["first_visible_ring_by_alias"] == {
+        "PRIMARY": 1,
+        "SECONDARY": 1,
+    }
+    assert settings["rings_to_search_by_alias"] == {
+        "PRIMARY": 3,
+        "SECONDARY": 3,
+    }
+
+
+def test_auto_poni_agbh_q_range_hint_is_concise():
+    assert (
+        TechnicalCaptureMixin._auto_poni_agbh_q_range_text(1, 3)
+        == "I(q): 1.08-3.23 nm^-1 | rings 1-3"
+    )
+    assert (
+        TechnicalCaptureMixin._auto_poni_agbh_q_range_text(5, 4)
+        == "I(q): 5.38-8.61 nm^-1 | rings 5-8"
+    )
+
+
 def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
     harness = _Harness()
     harness._current_technical_output_folder = lambda: str(tmp_path)
@@ -329,11 +362,15 @@ def test_auto_poni_prepare_uses_dialog_distance_override(tmp_path):
         normalized_auto_poni_config({}),
         sources={"PRIMARY": str(agbh_path)},
         distance_cm_by_alias={"PRIMARY": 2.0},
+        first_visible_ring_by_alias={"PRIMARY": 1},
     )
 
     review = prepared["reviews"]["PRIMARY"]
     assert "Distance: 0.02" in review.poni_text
     assert review.poni_path.parent == tmp_path / "autopony"
+    assert review.image_path.name == "PRIMARY_pyfai.tif"
+    assert review.poni_path.name == "PRIMARY.poni"
+    assert (tmp_path / "autopony" / "PRIMARY.npt").exists()
 
 
 def test_auto_poni_saxs_uses_physical_primary_detector_config():
@@ -343,7 +380,7 @@ def test_auto_poni_saxs_uses_physical_primary_detector_config():
             "id": "MiniPIX G08-W0299",
             "alias": "PRIMARY",
             "size": {"width": 256, "height": 256},
-            "pixel_size_um": [50, 50],
+            "pixel_size_um": [55, 55],
         },
         {
             "id": "DUMMY-0001",
@@ -359,7 +396,7 @@ def test_auto_poni_saxs_uses_physical_primary_detector_config():
 
     assert cfg["alias"] == "SAXS"
     assert cfg["id"] == "DUMMY-0001"
-    assert cfg["pixel_size_um"] == [50, 50]
+    assert cfg["pixel_size_um"] == [55, 55]
 
 
 def test_auto_poni_correct_uses_legacy_sidecar_env(monkeypatch):
@@ -434,14 +471,30 @@ def test_auto_poni_prepare_cleans_autopony_folder(tmp_path):
         normalized_auto_poni_config({}),
         sources={"PRIMARY": str(agbh_path)},
         distance_cm_by_alias={"PRIMARY": 2.0},
+        first_visible_ring_by_alias={"PRIMARY": 1},
     )
 
     assert prepared
     assert not stale.exists()
-    assert any((tmp_path / "autopony").iterdir())
+    assert sorted(path.name for path in (tmp_path / "autopony").iterdir()) == [
+        "PRIMARY.npt",
+        "PRIMARY.poni",
+        "PRIMARY_pyfai.tif",
+    ]
 
 
-def test_auto_poni_validate_noops_when_active_container_locked(tmp_path):
+def test_auto_poni_validate_noops_when_active_container_locked(tmp_path, monkeypatch):
+    warnings = []
+    fake_tm = SimpleNamespace(
+        QMessageBox=SimpleNamespace(
+            warning=lambda _parent, _title, message: warnings.append(str(message))
+        )
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.technical.capture_mixin._tm",
+        lambda: fake_tm,
+    )
+
     class _SyncHarness(_Harness):
         def __init__(self):
             super().__init__()
@@ -479,6 +532,74 @@ def test_auto_poni_validate_noops_when_active_container_locked(tmp_path):
     assert harness.created == []
     assert harness.synced == 0
     assert not (tmp_path / "AgBH_001_PRIMARY.poni").exists()
+    assert warnings == [
+        "Active technical container is locked. PONI files cannot be updated in this container."
+    ]
+
+
+def test_auto_poni_validate_rejects_wrong_pixel_size(tmp_path, monkeypatch):
+    warnings = []
+    fake_tm = SimpleNamespace(
+        QMessageBox=SimpleNamespace(
+            warning=lambda _parent, _title, message: warnings.append(str(message))
+        )
+    )
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.technical.capture_mixin._tm",
+        lambda: fake_tm,
+    )
+
+    class _SyncHarness(_Harness):
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+            self.config["poni_metadata_validation"] = {
+                "enabled": True,
+                "expected_energy_keV": 8.04,
+                "energy_tolerance_keV": 0.1,
+                "expected_pixel_size_um": [55, 55],
+                "pixel_tolerance_um": 0.25,
+                "expected_shape": [256, 256],
+            }
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+    harness = _SyncHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    bad_poni = "\n".join(
+        [
+            "poni_version: 2.1",
+            "Detector: Detector",
+            'Detector_config: {"pixel1": 5e-05, "pixel2": 5e-05, "max_shape": [256, 256]}',
+            "Distance: 0.02",
+            "Poni1: 0.0",
+            "Poni2: 0.0",
+            "Rot1: 0.0",
+            "Rot2: 0.0",
+            "Rot3: 0.0",
+            "Wavelength: 1.5420920203134363e-10",
+        ]
+    )
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text=bad_poni,
+        source_path=agbh_path,
+    )
+
+    assert not harness._validate_auto_poni_reviews({"PRIMARY": review})
+    assert harness.synced == 0
+    assert not (tmp_path / "AgBH_001_PRIMARY.poni").exists()
+    assert warnings
+    assert "PONI was not accepted or saved" in warnings[0]
+    assert "pixel" in warnings[0]
 
 
 def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
@@ -511,6 +632,68 @@ def test_auto_poni_validate_moves_poni_and_syncs_unlocked_container(tmp_path):
     assert target.read_text(encoding="utf-8") == "Distance: 0.02\n"
     assert harness.poni_files["PRIMARY"]["path"] == str(target)
     assert harness.synced == 1
+
+
+def test_auto_poni_validate_runs_poni_review_after_sync(tmp_path):
+    class _ReviewHarness(_Harness):
+        STATE_PENDING_PONI_REVIEW = "pending_poni_review"
+
+        def __init__(self):
+            super().__init__()
+            self.synced = 0
+            self.state_calls = []
+            self.review_calls = []
+            self.sync_state_calls = []
+            self._active_technical_container_path = str(tmp_path / "technical.nxs.h5")
+
+        def _sync_active_technical_container_from_table(self, show_errors=False):
+            self.synced += 1
+            return True
+
+        def _set_container_state(self, path, *, state, reason):
+            self.state_calls.append((Path(path), state, reason))
+
+        def _run_poni_center_review_workflow(
+            self,
+            container_path,
+            *,
+            container_id,
+            prompt_reload_on_reject=True,
+        ):
+            self.review_calls.append(
+                (Path(container_path), container_id, bool(prompt_reload_on_reject))
+            )
+            return True
+
+        def _sync_container_state(self, path, *, reason):
+            self.sync_state_calls.append((Path(path), reason))
+
+    harness = _ReviewHarness()
+    with h5py.File(harness._active_technical_container_path_obj(), "w"):
+        pass
+    agbh_path = tmp_path / "AgBH_001_PRIMARY.npy"
+    np.save(agbh_path, np.ones((8, 8), dtype=np.float32))
+    review = PyfaiCalib2Review(
+        image_path=tmp_path / "autopony" / "AgBH_001_PRIMARY_pyfai.tif",
+        poni_path=tmp_path / "autopony" / "generated.poni",
+        command=[],
+        poni_text="Distance: 0.02\n",
+        source_path=agbh_path,
+    )
+
+    assert harness._validate_auto_poni_reviews({"PRIMARY": review})
+
+    container_path = harness._active_technical_container_path_obj()
+    assert harness.synced == 1
+    assert harness.state_calls == [
+        (container_path, "pending_poni_review", "auto_poni_synced_review_required")
+    ]
+    assert harness.review_calls == [
+        (container_path, container_path.stem, False)
+    ]
+    assert harness.sync_state_calls == [
+        (container_path, "auto_poni_review_completed")
+    ]
 
 
 def test_auto_poni_seed_center_uses_poni_validation_config():

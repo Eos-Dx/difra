@@ -142,7 +142,39 @@ def test_sync_archive_tree_skips_permission_denied_file(monkeypatch, tmp_path, c
     assert summary.copied_files == 0
     assert summary.updated_files == 0
     assert summary.skipped_files == 1
-    assert "permission error" in capsys.readouterr().err
+    assert summary.permission_error_files == 1
+    err = capsys.readouterr().err
+    assert "Skipped 1 archive mirror file(s) due to permission errors" in err
+    assert "locked.h5" in err
+
+
+def test_sync_archive_tree_coalesces_permission_denied_warnings(
+    monkeypatch, tmp_path, capsys
+):
+    module = _load_module(
+        REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
+        "test_sync_archive_to_onedrive_permission_coalesced",
+    )
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    for name in ("locked_a.h5", "locked_b.h5"):
+        source_file = source_root / "measurements" / "folder_a" / name
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("locked", encoding="utf-8")
+
+    def _raise_permission_error(*_args, **_kwargs):
+        raise PermissionError("locked by OneDrive")
+
+    monkeypatch.setattr(module.shutil, "copy2", _raise_permission_error)
+
+    summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert summary.skipped_files == 2
+    assert summary.permission_error_files == 2
+    err = capsys.readouterr().err
+    assert err.count("[WARN]") == 1
+    assert "Skipped 2 archive mirror file(s) due to permission errors" in err
 
 
 def test_main_reports_dry_run_without_copying(monkeypatch, capsys, tmp_path):

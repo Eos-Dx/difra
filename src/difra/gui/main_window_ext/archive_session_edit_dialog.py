@@ -1,4 +1,4 @@
-"""Dialog for correcting archived session Matador project/study metadata."""
+"""Dialog for correcting archived session Matador metadata."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import h5py
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import QEvent, QTimer, Qt
+from difra.gui.qt_compat import (
     QApplication,
     QComboBox,
     QDialog,
@@ -61,6 +61,7 @@ class ArchiveSessionEditDialog(QDialog):
         self._initial_project_name: str = ""
         self._initial_study_id: Optional[int] = None
         self._initial_study_name: str = ""
+        self._initial_specimen_id: str = ""
         self._references_loaded_from_matador = False
 
         self._inspect_current_selection()
@@ -72,7 +73,8 @@ class ArchiveSessionEditDialog(QDialog):
         layout = QVBoxLayout(self)
 
         header_label = QLabel(
-            f"This will overwrite Project and Study in {len(self._container_paths)} archived session container(s)."
+            "This will overwrite selected metadata in "
+            f"{len(self._container_paths)} archived session container(s)."
         )
         header_label.setWordWrap(True)
         layout.addWidget(header_label)
@@ -98,6 +100,12 @@ class ArchiveSessionEditDialog(QDialog):
 
         matador_group = QGroupBox("Matador Reference Data")
         matador_layout = QFormLayout(matador_group)
+
+        self.specimen_id_edit = QLineEdit()
+        self.specimen_id_edit.setText(self._initial_specimen_id)
+        self.specimen_id_edit.setPlaceholderText("Leave empty to keep existing Specimen ID")
+        self.specimen_id_edit.installEventFilter(self)
+        matador_layout.addRow("Specimen ID:", self.specimen_id_edit)
 
         refresh_row = QHBoxLayout()
         self.refresh_matador_btn = QPushButton("Refresh from Matador")
@@ -140,9 +148,7 @@ class ArchiveSessionEditDialog(QDialog):
 
         layout.addWidget(matador_group)
 
-        info_label = QLabel(
-            "Only Project and Study will be changed. Specimen ID will remain untouched."
-        )
+        info_label = QLabel("Specimen ID, Project and Study can be changed under password.")
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: gray; font-style: italic;")
         layout.addWidget(info_label)
@@ -152,6 +158,9 @@ class ArchiveSessionEditDialog(QDialog):
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
         self._ok_button = self.button_box.button(QDialogButtonBox.Ok)
+        for button in self.button_box.buttons():
+            button.setAutoDefault(False)
+            button.setDefault(False)
 
         self._populate_project_combo([])
         self._populate_study_combo([])
@@ -161,6 +170,13 @@ class ArchiveSessionEditDialog(QDialog):
             "Project and Study must be loaded from Matador with a runtime token.",
         )
         QTimer.singleShot(0, self._ensure_matador_references_loaded)
+
+    def eventFilter(self, obj, event):
+        if obj is self.specimen_id_edit and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
     @staticmethod
     def _as_text(value: Any, default: str = "") -> str:
@@ -185,10 +201,15 @@ class ArchiveSessionEditDialog(QDialog):
         project_names = set()
         study_ids = set()
         study_names = set()
+        specimen_ids = set()
 
         for path in self._container_paths:
             try:
                 with h5py.File(path, "r") as h5f:
+                    specimen_id = self._as_text(
+                        h5f.attrs.get("specimenId", h5f.attrs.get("sample_id")),
+                        "",
+                    ).strip()
                     project_id = self._coerce_optional_int(h5f.attrs.get("matadorProjectId"))
                     project_name = self._as_text(
                         h5f.attrs.get("matadorProjectName", h5f.attrs.get("project_id")),
@@ -199,6 +220,8 @@ class ArchiveSessionEditDialog(QDialog):
             except Exception:
                 continue
 
+            if specimen_id:
+                specimen_ids.add(specimen_id)
             if project_id is not None:
                 project_ids.add(project_id)
             if project_name:
@@ -208,6 +231,8 @@ class ArchiveSessionEditDialog(QDialog):
             if study_name:
                 study_names.add(study_name)
 
+        if len(specimen_ids) == 1:
+            self._initial_specimen_id = next(iter(specimen_ids))
         if len(project_ids) == 1:
             self._initial_project_id = next(iter(project_ids))
         if len(project_names) == 1:
@@ -218,6 +243,7 @@ class ArchiveSessionEditDialog(QDialog):
             self._initial_study_name = next(iter(study_names))
 
     def _current_selection_summary(self) -> str:
+        specimen_text = self._initial_specimen_id or "multiple / unknown"
         project_text = self._initial_project_name or "multiple / unknown"
         if self._initial_project_id is not None and self._initial_project_name:
             project_text = f"{self._initial_project_name} [{self._initial_project_id}]"
@@ -230,7 +256,10 @@ class ArchiveSessionEditDialog(QDialog):
         elif self._initial_study_id is not None:
             study_text = f"[{self._initial_study_id}]"
 
-        return f"Current selection: Project {project_text}; Study {study_text}."
+        return (
+            f"Current selection: Specimen {specimen_text}; "
+            f"Project {project_text}; Study {study_text}."
+        )
 
     def _runtime_matador_context(self) -> Dict[str, str]:
         return get_runtime_matador_context(self.parent() or self)
@@ -579,6 +608,7 @@ class ArchiveSessionEditDialog(QDialog):
 
     def get_selection(self) -> Dict[str, Any]:
         return {
+            "specimen_id": str(self.specimen_id_edit.text() or "").strip(),
             "project_id": self._selected_project_id,
             "project_name": self._selected_project_name,
             "study_id": self._selected_study_id,

@@ -16,8 +16,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.modules.setdefault("cv2", types.SimpleNamespace())
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import (
     QApplication,
     QCheckBox,
     QDoubleSpinBox,
@@ -2640,6 +2640,10 @@ def test_sync_rewrites_embedded_poni_when_only_poni_changes(qapp, tmp_path, monk
     harness = _TechnicalLoadHarness(
         config={
             "operator_id": "sad",
+            "detectors": [
+                {"id": "det_primary", "alias": "PRIMARY"},
+                {"id": "det_secondary", "alias": "SECONDARY"},
+            ],
         },
         work_dir=technical_folder,
     )
@@ -2656,10 +2660,26 @@ def test_sync_rewrites_embedded_poni_when_only_poni_changes(qapp, tmp_path, monk
     qapp.processEvents()
     assert harness._sync_active_technical_container_from_table(show_errors=True) is True
 
-    initial_content = str(harness.ponis["PRIMARY"])
-    updated_content = initial_content + "\n# updated during test\n"
+    updated_content = (
+        "# synthetic updated poni\n"
+        "Distance: 0.17\n"
+        "PixelSize1: 5.5e-05\n"
+        "PixelSize2: 5.5e-05\n"
+        "Poni1: 0.01\n"
+        "Poni2: 0.02\n"
+        "Rot1: 0\n"
+        "Rot2: 0\n"
+        "Rot3: 0\n"
+        "Wavelength: 1.5406e-10\n"
+        "# updated during test\n"
+    )
     harness.ponis["PRIMARY"] = updated_content
-    harness.poni_files["PRIMARY"] = {"path": "/tmp/primary_updated.poni", "name": "primary_updated.poni"}
+    updated_poni_path = tmp_path / "primary_updated.poni"
+    updated_poni_path.write_text(updated_content, encoding="utf-8")
+    harness.poni_files["PRIMARY"] = {
+        "path": str(updated_poni_path),
+        "name": "primary_updated.poni",
+    }
 
     assert harness._sync_active_technical_container_from_table(show_errors=True) is True
 

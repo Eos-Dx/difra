@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import h5py
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import QTableWidget, QTableWidgetItem
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,9 @@ class SessionTabPresenter:
             "specimenId": "UNKNOWN",
             "study_name": "UNSPECIFIED",
             "project_id": "UNSPECIFIED",
+            "matadorProjectId": "",
+            "matadorStudyId": "",
+            "matador_send_status": "",
             "operator_id": "UNKNOWN",
             "technical_container_id": "",
             "technical_container_path": "",
@@ -113,6 +116,15 @@ class SessionTabPresenter:
                             h5f.attrs.get("project_id", info["study_name"]),
                         )
                     )
+                )
+                info["matadorProjectId"] = str(
+                    cls.decode_attr(h5f.attrs.get("matadorProjectId", ""))
+                )
+                info["matadorStudyId"] = str(
+                    cls.decode_attr(h5f.attrs.get("matadorStudyId", ""))
+                )
+                info["matador_send_status"] = str(
+                    cls.decode_attr(h5f.attrs.get("matador_send_status", ""))
                 )
                 info["operator_id"] = str(
                     cls.decode_attr(h5f.attrs.get(schema.ATTR_OPERATOR_ID, "UNKNOWN"))

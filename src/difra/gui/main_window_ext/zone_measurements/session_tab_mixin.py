@@ -7,12 +7,16 @@ import json
 import os
 from pathlib import Path
 import shutil
+import threading
+import time
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from difra.gui.qt_compat import Qt
+from difra.gui.qt_compat import (
     QAbstractItemView,
     QApplication,
+    QBrush,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -28,15 +32,21 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
-    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QTableWidget,
+    QTableWidgetItem,
+    QTimer,
     QVBoxLayout,
     QWidget,
 )
 
+from difra.gui.archive_project_statistics import (
+    build_archive_project_statistics,
+    collect_matador_project_sets,
+)
 from difra.gui.container_api import get_container_manager, get_schema
+from difra.gui.daily_valid_container_reporter import build_daily_report_for_containers
 from difra.gui.main_window_ext.archive_session_edit_dialog import (
     ArchiveSessionEditDialog,
 )
@@ -44,6 +54,10 @@ from difra.gui.matador_runtime_context import (
     get_runtime_matador_context,
     set_runtime_matador_context,
 )
+from difra.gui.matador_upload_error_reporter import (
+    send_matador_upload_error_report,
+)
+from difra.gui.matador_upload_api import build_matador_upload_api
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService
@@ -107,6 +121,7 @@ class SessionTabMixin:
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "uploadSessionId": str(getattr(workflow_result, "upload_session_id", "") or ""),
             "uploadSuccess": int(getattr(workflow_result, "upload_success", 0)),
+            "uploadPending": int(getattr(workflow_result, "upload_pending", 0)),
             "uploadFailed": int(getattr(workflow_result, "upload_failed", 0)),
             "moved": int(getattr(workflow_result, "moved", 0)),
             "archivedPaths": [str(path) for path in getattr(workflow_result, "archived_paths", [])],
@@ -118,6 +133,223 @@ class SessionTabMixin:
         with open(log_path, "w", encoding="utf-8") as file_handle:
             json.dump(payload, file_handle, indent=2, ensure_ascii=False)
         return log_path
+
+    def _send_matador_upload_error_report(
+        self,
+        *,
+        runtime_config: dict,
+        workflow_result,
+        log_path: Path,
+        context: str,
+    ) -> str:
+        if int(getattr(workflow_result, "upload_failed", 0) or 0) <= 0:
+            return ""
+        try:
+            result = send_matador_upload_error_report(
+                config=runtime_config,
+                workflow_result=workflow_result,
+                log_path=Path(log_path),
+                context=context,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send Matador upload error email", exc_info=True)
+            return f"Matador error email failed: {exc}"
+        return str(result.get("message") or "").strip()
+
+    def _schedule_matador_pending_verification(
+        self,
+        *,
+        container_paths: List[Path],
+        runtime_config: dict,
+        initial_delay_sec: Optional[float] = None,
+    ) -> None:
+        paths = [Path(path) for path in (container_paths or []) if Path(path).exists()]
+        if not paths:
+            return
+        if getattr(self, "_matador_pending_verification_running", False):
+            return
+        interval_sec = max(
+            float(runtime_config.get("matador_async_verification_interval_sec", 30.0)),
+            5.0,
+        )
+        batch_size = max(
+            int(
+                runtime_config.get(
+                    "matador_async_verification_batch_size",
+                    runtime_config.get("matador_upload_max_parallel", 4),
+                )
+            ),
+            1,
+        )
+        max_rounds = max(
+            int(runtime_config.get("matador_async_verification_max_rounds", 40)),
+            1,
+        )
+        first_delay_sec = (
+            interval_sec
+            if initial_delay_sec is None
+            else max(float(initial_delay_sec), 0.0)
+        )
+        container_manager = self._container_manager()
+        setattr(self, "_matador_pending_verification_running", True)
+
+        def _worker():
+            try:
+                offset = 0
+                for round_index in range(1, max_rounds + 1):
+                    delay_sec = first_delay_sec if round_index == 1 else interval_sec
+                    if delay_sec > 0:
+                        time.sleep(delay_sec)
+                    pending_paths = []
+                    for path in paths:
+                        try:
+                            info = SessionTabPresenter.read_session_container_metadata(
+                                path,
+                                schema=self._container_schema(),
+                                container_manager=container_manager,
+                            )
+                        except Exception:
+                            continue
+                        if str(info.get("upload_status") or "") == (
+                            SessionLifecycleActions.UPLOAD_STATUS_PENDING_VERIFICATION
+                        ):
+                            pending_paths.append(path)
+                    if not pending_paths:
+                        break
+                    if offset >= len(pending_paths):
+                        offset = 0
+                    batch = pending_paths[offset : offset + batch_size]
+                    if not batch:
+                        batch = pending_paths[:batch_size]
+                        offset = 0
+                    offset = (offset + batch_size) % max(len(pending_paths), 1)
+                    result = SessionLifecycleActions.verify_pending_matador_uploads(
+                        batch,
+                        container_manager=container_manager,
+                        config=runtime_config,
+                        operator_id=str(runtime_config.get("operator_id") or "unknown"),
+                    )
+                    logger.info(
+                        "Matador pending verification round %s/%s: checked=%s success=%s pending=%s failed=%s",
+                        round_index,
+                        max_rounds,
+                        len(batch),
+                        result.upload_success,
+                        result.upload_pending,
+                        result.upload_failed,
+                    )
+            finally:
+                setattr(self, "_matador_pending_verification_running", False)
+
+        thread = threading.Thread(
+            target=_worker,
+            name="matador-pending-verifier",
+            daemon=True,
+        )
+        thread.start()
+
+    def _archive_pending_verification_paths(self) -> List[Path]:
+        paths = []
+        for row in list(getattr(self, "_archived_rows_all", []) or []):
+            if str(row.get("upload_status") or "").strip() != (
+                SessionLifecycleActions.UPLOAD_STATUS_PENDING_VERIFICATION
+            ):
+                continue
+            raw_path = str(row.get("path") or "").strip()
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if path.exists():
+                paths.append(path)
+        return paths
+
+    def _runtime_config_for_archive_pending_verification(self) -> Optional[dict]:
+        runtime_config = dict(
+            self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        )
+        context = get_runtime_matador_context(self)
+        token = str(
+            context.get("token")
+            or runtime_config.get("matador_token")
+            or os.environ.get("MATADOR_TOKEN")
+            or ""
+        ).strip()
+        matador_url = str(
+            context.get("matador_url")
+            or runtime_config.get("matador_url")
+            or os.environ.get("MATADOR_URL")
+            or ""
+        ).strip()
+        if not token or not matador_url:
+            upload_context = self._request_upload_login_context(
+                fallback_operator=str(runtime_config.get("operator_id") or "unknown")
+            )
+            if upload_context is None:
+                return None
+            token = str(upload_context.get("token") or "").strip()
+            matador_url = str(upload_context.get("matador_url") or "").strip()
+            runtime_config["operator_id"] = str(
+                upload_context.get("uploader_id")
+                or runtime_config.get("operator_id")
+                or "unknown"
+            )
+        runtime_config["matador_token"] = token
+        runtime_config["matador_url"] = matador_url
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
+        runtime_config.setdefault("matador_async_verification_interval_sec", 30.0)
+        runtime_config.setdefault("matador_async_verification_max_rounds", 40)
+        runtime_config.setdefault("operator_id", "unknown")
+        return runtime_config
+
+    def _ensure_archive_pending_refresh_timer(self) -> None:
+        timer = getattr(self, "_archive_pending_refresh_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(5000)
+            timer.timeout.connect(self._archive_pending_refresh_tick)
+            setattr(self, "_archive_pending_refresh_timer", timer)
+        if not timer.isActive():
+            timer.start()
+
+    def _archive_pending_refresh_tick(self) -> None:
+        dialog = getattr(self, "_archive_window_dialog", None)
+        if dialog is None or not dialog.isVisible():
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+            return
+        self._refresh_session_container_lists()
+        if (
+            not getattr(self, "_matador_pending_verification_running", False)
+            and not self._archive_pending_verification_paths()
+        ):
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+
+    def _start_archive_pending_verification(self) -> None:
+        pending_paths = self._archive_pending_verification_paths()
+        if not pending_paths:
+            return
+        self._ensure_archive_pending_refresh_timer()
+        if getattr(self, "_matador_pending_verification_running", False):
+            return
+        runtime_config = self._runtime_config_for_archive_pending_verification()
+        if runtime_config is None:
+            timer = getattr(self, "_archive_pending_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(
+                    "Matador pending verification skipped: token or URL not configured."
+                )
+            return
+        self._schedule_matador_pending_verification(
+            container_paths=pending_paths,
+            runtime_config=runtime_config,
+            initial_delay_sec=0.0,
+        )
 
     def _container_schema(self):
         return get_schema(self.config if hasattr(self, "config") else None)
@@ -319,7 +551,8 @@ class SessionTabMixin:
     def _show_archive_window(self):
         dialog = getattr(self, "_archive_window_dialog", None)
         if dialog is not None and dialog.isVisible():
-            self._populate_archive_window_table()
+            self._refresh_session_container_lists()
+            self._start_archive_pending_verification()
             dialog.raise_()
             dialog.activateWindow()
             return
@@ -407,15 +640,25 @@ class SessionTabMixin:
         )
         self.send_archived_window_btn.setEnabled(False)
         actions.addWidget(self.send_archived_window_btn)
+
+        self.archive_project_statistics_btn = QPushButton("Statistics by project")
+        self.archive_project_statistics_btn.clicked.connect(
+            self._show_archive_project_statistics
+        )
+        actions.addWidget(self.archive_project_statistics_btn)
         actions.addStretch()
         layout.addLayout(actions)
 
         dialog.finished.connect(self._clear_archive_window_refs)
         self._archive_window_dialog = dialog
-        self._populate_archive_window_table()
+        self._refresh_session_container_lists()
         dialog.show()
+        self._start_archive_pending_verification()
 
     def _clear_archive_window_refs(self):
+        timer = getattr(self, "_archive_pending_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
         self._archive_window_dialog = None
         self.archive_window_table = None
         self.archive_window_path_label = None
@@ -426,6 +669,7 @@ class SessionTabMixin:
         self.archive_window_search_edit = None
         self.archive_window_sort_combo = None
         self.send_archived_window_btn = None
+        self.archive_project_statistics_btn = None
 
     def _populate_archive_window_table(self):
         table = getattr(self, "archive_window_table", None)
@@ -477,6 +721,227 @@ class SessionTabMixin:
         if label is not None:
             label.setText(f"Archive folder: {self._get_session_archive_folder()}")
         self._update_archive_action_buttons()
+
+    @staticmethod
+    def _stats_item(value, *, color: Optional[QColor] = None) -> QTableWidgetItem:
+        item = QTableWidgetItem(str(value))
+        item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        if color is not None:
+            item.setBackground(QBrush(color))
+        return item
+
+    @staticmethod
+    def _stats_count(value) -> str:
+        return "Unknown" if value is None else str(value)
+
+    @classmethod
+    def _stats_status_color(cls, value: str) -> QColor:
+        text = str(value or "").strip().lower()
+        if text in {"sent", "ok", "in", "yes"}:
+            return QColor("#d8f5d0")
+        if text in {"unsent", "out", "no", "unmeasured"}:
+            return QColor("#ffd6d6")
+        if text in {"partial", "unknown"}:
+            return QColor("#fff4bf")
+        return QColor("#eeeeee")
+
+    def _archive_project_keys_from_rows(self, rows: List[dict]) -> List[str]:
+        keys = []
+        for row in rows:
+            raw = str(row.get("matadorProjectId") or "").strip()
+            if raw and raw not in keys:
+                keys.append(raw)
+        return keys
+
+    def _load_matador_archive_project_sets(self, rows: List[dict]):
+        context = get_runtime_matador_context(self)
+        token = str(context.get("token") or "").strip()
+        matador_url = str(context.get("matador_url") or "").strip()
+        if not token or not matador_url:
+            return {}, {}, "Matador: token not configured"
+
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        runtime_config.update(
+            {
+                "matador_url": matador_url,
+                "matador_token": token,
+                "matador_force_stub": False,
+            }
+        )
+        try:
+            api = build_matador_upload_api(runtime_config)
+            studies = api.list_studies()
+            specimen_sets, uploaded_sets, errors = collect_matador_project_sets(
+                api=api,
+                project_keys=self._archive_project_keys_from_rows(rows),
+                studies=studies,
+            )
+        except Exception as exc:
+            return {}, {}, f"Matador: unavailable ({exc})"
+
+        if errors:
+            return specimen_sets, uploaded_sets, "Matador: partial data; " + "; ".join(errors[:3])
+        return specimen_sets, uploaded_sets, "Matador: loaded"
+
+    def _populate_project_statistics_tables(
+        self,
+        *,
+        project_table: QTableWidget,
+        specimen_table: QTableWidget,
+        status_label: QLabel,
+        stats,
+        matador_status: str,
+    ) -> None:
+        project_table.setRowCount(0)
+        for row_index, row in enumerate(stats.projects):
+            project_table.insertRow(row_index)
+            values = [
+                row.get("label", ""),
+                self._stats_count(row.get("matadorSpecimens")),
+                row.get("archiveMeasured", 0),
+                self._stats_count(row.get("matadorSpecimens")),
+                self._stats_count(row.get("matadorUploaded")),
+                self._stats_count(row.get("missingInArchive")),
+                self._stats_count(row.get("notUploaded")),
+                self._stats_count(row.get("archiveOnly")),
+            ]
+            for col, value in enumerate(values):
+                color = None
+                if col in {2, 4} and str(value) != "Unknown" and int(value or 0):
+                    color = QColor("#d8f5d0")
+                if col in {5, 6, 7} and str(value) != "Unknown" and int(value or 0):
+                    color = QColor("#ffd6d6")
+                item = self._stats_item(value, color=color)
+                if col == 0:
+                    item.setData(Qt.UserRole, str(row.get("key") or ""))
+                project_table.setItem(row_index, col, item)
+
+        def _select_project():
+            selected_rows = sorted(
+                {index.row() for index in project_table.selectedIndexes()}
+            )
+            if not selected_rows and project_table.rowCount():
+                selected_rows = [0]
+            if not selected_rows:
+                return
+            key_item = project_table.item(selected_rows[0], 0)
+            project_key = str(key_item.data(Qt.UserRole) or "") if key_item else ""
+            detail_rows = list(stats.specimens_by_project.get(project_key, []) or [])
+            specimen_table.setRowCount(0)
+            for detail_index, detail in enumerate(detail_rows):
+                specimen_table.insertRow(detail_index)
+                values = [
+                    detail.get("displaySpecimenId") or detail.get("specimenId", ""),
+                    detail.get("matadorSpecimen", "Unknown"),
+                    "Yes" if detail.get("localMeasured") else "No",
+                    detail.get("matadorMeasurement", "Unknown"),
+                    detail.get("localStatus", ""),
+                ]
+                for col, value in enumerate(values):
+                    color = None
+                    if col in {1, 2, 3, 4}:
+                        color = self._stats_status_color(str(value))
+                    specimen_table.setItem(
+                        detail_index,
+                        col,
+                        self._stats_item(value, color=color),
+                    )
+            specimen_table.resizeColumnsToContents()
+
+        project_table.itemSelectionChanged.connect(_select_project)
+        project_table.resizeColumnsToContents()
+        status_label.setText(matador_status)
+        if project_table.rowCount():
+            project_table.selectRow(0)
+            _select_project()
+
+    def _show_archive_project_statistics(self):
+        self._refresh_session_container_lists()
+        rows = list(getattr(self, "_archived_rows_all", []) or [])
+        if not rows:
+            QMessageBox.information(
+                self,
+                "No Archive Data",
+                "No archived session containers found.",
+            )
+            return
+
+        matador_specimens, matador_uploaded, matador_status = (
+            self._load_matador_archive_project_sets(rows)
+        )
+        stats = build_archive_project_statistics(
+            rows,
+            matador_specimens_by_project=matador_specimens,
+            matador_uploaded_by_project=matador_uploaded,
+        )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Statistics by project")
+        dialog.setModal(False)
+        dialog.resize(1250, 760)
+        layout = QVBoxLayout(dialog)
+
+        status_label = QLabel("")
+        status_label.setStyleSheet("color: #555; padding: 4px;")
+        layout.addWidget(status_label)
+
+        project_box = QGroupBox("Projects")
+        project_layout = QVBoxLayout(project_box)
+        project_table = QTableWidget(0, 8, project_box)
+        project_table.setHorizontalHeaderLabels(
+            [
+                "Project",
+                "DB specimens",
+                "Archive measured",
+                "Matador specimens",
+                "Matador In",
+                "Not measured",
+                "Archive not uploaded",
+                "Archive only",
+            ]
+        )
+        project_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        project_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        project_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        project_layout.addWidget(project_table)
+        layout.addWidget(project_box, 1)
+
+        specimen_box = QGroupBox("Specimens")
+        specimen_layout = QVBoxLayout(specimen_box)
+        specimen_table = QTableWidget(0, 5, specimen_box)
+        specimen_table.setHorizontalHeaderLabels(
+            [
+                "Specimen ID",
+                "Matador specimen",
+                "Measured archive",
+                "Matador In",
+                "Archive status",
+            ]
+        )
+        specimen_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        specimen_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        specimen_layout.addWidget(specimen_table)
+        layout.addWidget(specimen_box, 2)
+
+        buttons = QHBoxLayout()
+        close_button = QPushButton("Close", dialog)
+        close_button.clicked.connect(dialog.close)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        self._populate_project_statistics_tables(
+            project_table=project_table,
+            specimen_table=specimen_table,
+            status_label=status_label,
+            stats=stats,
+            matador_status=matador_status,
+        )
+        self._archive_project_statistics_dialog = dialog
+        dialog.finished.connect(
+            lambda *_args: setattr(self, "_archive_project_statistics_dialog", None)
+        )
+        dialog.show()
 
     def _get_measurements_folder_for_queue(self) -> Path:
         if hasattr(self, "config") and self.config:
@@ -539,14 +1004,27 @@ class SessionTabMixin:
         if load_button is not None:
             load_button.setEnabled(True)
 
-        for attr_name in (
-            "close_session_btn",
-            "send_session_btn",
-            "preview_session_data_btn",
-        ):
+        for attr_name in ("close_session_btn", "send_session_btn"):
             button = getattr(self, attr_name, None)
             if button is not None:
                 button.setEnabled(bool(enabled))
+        self._update_preview_session_data_enabled()
+
+    def _active_session_container_path(self) -> Optional[Path]:
+        session_manager = getattr(self, "session_manager", None)
+        active_path = getattr(session_manager, "session_path", None)
+        if not active_path:
+            return None
+        path = Path(active_path)
+        return path if path.exists() else None
+
+    def _preview_session_container_path(self) -> Optional[Path]:
+        return self._selected_pending_container() or self._active_session_container_path()
+
+    def _update_preview_session_data_enabled(self) -> None:
+        button = getattr(self, "preview_session_data_btn", None)
+        if button is not None:
+            button.setEnabled(self._preview_session_container_path() is not None)
 
     def _update_pending_session_summary(self, pending_rows: List[dict]) -> None:
         rows = list(pending_rows or [])
@@ -816,7 +1294,7 @@ class SessionTabMixin:
             )
 
     def _show_session_data_preview_dialog(self, container_path: Path, payload: dict):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
 
         dialog = QDialog(self)
@@ -874,11 +1352,7 @@ class SessionTabMixin:
         return dialog
 
     def _on_preview_session_data(self):
-        container_path = self._selected_pending_container()
-        if container_path is None:
-            session_manager = getattr(self, "session_manager", None)
-            active_path = getattr(session_manager, "session_path", None)
-            container_path = Path(active_path) if active_path else None
+        container_path = self._preview_session_container_path()
         if container_path is None or not Path(container_path).exists():
             QMessageBox.warning(
                 self,
@@ -1041,6 +1515,7 @@ class SessionTabMixin:
         for container_path in targets:
             result = SessionLifecycleActions.edit_archived_session_matador_metadata(
                 container_path=container_path,
+                specimen_id=selection.get("specimen_id"),
                 project_id=selection.get("project_id"),
                 project_name=selection.get("project_name"),
                 study_id=selection.get("study_id"),
@@ -1056,6 +1531,7 @@ class SessionTabMixin:
                 unchanged.append(container_path.name)
 
         summary = [
+            f"Specimen ID: {selection.get('specimen_id') or 'unchanged'}",
             f"Project: {selection.get('project_name')} [{selection.get('project_id')}]",
             f"Study: {selection.get('study_name')} [{selection.get('study_id')}]",
             f"Changed by: {editor_id}",
@@ -1249,6 +1725,7 @@ class SessionTabMixin:
         )
         if transfer_status == "NOT_COMPLETE":
             send_action.setEnabled(False)
+        analyst_report_action = menu.addAction("Send Report to Analysts")
         old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
@@ -1265,8 +1742,73 @@ class SessionTabMixin:
                     table, fallback_path=container_path
                 )
             )
+        elif selected == analyst_report_action:
+            self._send_selected_archived_report_to_analysts(
+                self._selected_paths_from_archive_table(
+                    table, fallback_path=container_path
+                )
+            )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
+
+    def _send_selected_archived_report_to_analysts(self, container_paths: List[Path]):
+        targets = [Path(path) for path in container_paths if Path(path).exists()]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "Select archived session container(s) to report.",
+            )
+            return
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        base_folder = runtime_config.get("difra_base_folder") or Path.home() / "difra"
+        output_dir = Path(base_folder) / "daily_reports" / "manual_analyst_reports"
+        try:
+            result = build_daily_report_for_containers(
+                config=runtime_config,
+                container_paths=targets,
+                output_dir=output_dir,
+                send_email=True,
+                allow_interactive_setup=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send selected analyst report",
+                exc_info=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Report Failed",
+                f"Could not send report to analysts:\n{exc}",
+            )
+            return
+
+        email_result = result.email_result or {}
+        summary = [
+            f"Selected containers: {len(targets)}",
+            f"Valid containers: {result.valid_containers}",
+            f"Images: {len(result.images)}",
+            f"ZIP: {result.zip_path}",
+            f"Email: {email_result.get('message', 'not sent')}",
+        ]
+        if result.skipped:
+            summary.append("")
+            summary.append("Skipped:")
+            summary.extend(result.skipped[:8])
+            if len(result.skipped) > 8:
+                summary.append(f"... and {len(result.skipped) - 8} more")
+        if email_result.get("sent"):
+            QMessageBox.information(
+                self,
+                "Report Sent to Analysts",
+                "\n".join(summary),
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Report Not Sent",
+                "\n".join(summary),
+            )
 
     def _on_send_selected_archived_sessions(self):
         container_paths = self._selected_archived_containers()
@@ -1366,6 +1908,9 @@ class SessionTabMixin:
             return
         uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
         runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["operator_id"] = uploader_id
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
         runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = False
@@ -1442,6 +1987,7 @@ class SessionTabMixin:
         summary.append(
             "Upload result: "
             f"{workflow_result.upload_success} success / "
+            f"{getattr(workflow_result, 'upload_pending', 0)} pending / "
             f"{workflow_result.upload_failed} failed"
         )
         summary.append(f"Cleaned measurement artifacts: {workflow_result.cleaned_artifacts}")
@@ -1479,6 +2025,21 @@ class SessionTabMixin:
 
         if workflow_result.upload_failed > 0 and hasattr(self, "_append_session_log"):
             self._append_session_log(f"Matador send log saved: {log_path}")
+        report_status = self._send_matador_upload_error_report(
+            runtime_config=runtime_config,
+            workflow_result=workflow_result,
+            log_path=log_path,
+            context="send-and-archive",
+        )
+        if report_status:
+            summary.append(report_status)
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(report_status)
+        if getattr(workflow_result, "upload_pending", 0) > 0:
+            self._schedule_matador_pending_verification(
+                container_paths=list(workflow_result.archived_paths),
+                runtime_config=runtime_config,
+            )
 
         progress_log.appendPlainText("")
         for line in summary:
@@ -1486,6 +2047,8 @@ class SessionTabMixin:
         progress_label.setText(
             "Matador send finished with failures."
             if workflow_result.upload_failed > 0
+            else "Matador send uploaded files; verification pending."
+            if getattr(workflow_result, "upload_pending", 0) > 0
             else "Matador send finished successfully."
         )
         close_button.setEnabled(True)
@@ -1541,6 +2104,9 @@ class SessionTabMixin:
 
         uploader_id = str(upload_context.get("uploader_id") or uploader_id or lock_user or "unknown")
         runtime_config = dict(self.config if hasattr(self, "config") and isinstance(self.config, dict) else {})
+        runtime_config["operator_id"] = uploader_id
+        runtime_config.setdefault("matador_upload_max_parallel", 4)
+        runtime_config.setdefault("matador_async_verification_batch_size", 4)
         runtime_config["matador_token"] = str(upload_context.get("token") or runtime_config.get("matador_token") or "")
         runtime_config["matador_url"] = str(upload_context.get("matador_url") or runtime_config.get("matador_url") or "")
         simulate_upload_failure = bool(runtime_config.get("upload_stub_force_failure", False))
@@ -1603,6 +2169,7 @@ class SessionTabMixin:
             f"Processed {len(container_paths)} archived session container(s).",
             "Upload result: "
             f"{workflow_result.upload_success} success / "
+            f"{getattr(workflow_result, 'upload_pending', 0)} pending / "
             f"{workflow_result.upload_failed} failed",
         ]
         if workflow_result.upload_session_id:
@@ -1628,6 +2195,21 @@ class SessionTabMixin:
         )
         summary.append("")
         summary.append(f"Matador log saved to: {log_path}")
+        report_status = self._send_matador_upload_error_report(
+            runtime_config=runtime_config,
+            workflow_result=workflow_result,
+            log_path=log_path,
+            context="archived-resend",
+        )
+        if report_status:
+            summary.append(report_status)
+            if hasattr(self, "_append_session_log"):
+                self._append_session_log(report_status)
+        if getattr(workflow_result, "upload_pending", 0) > 0:
+            self._schedule_matador_pending_verification(
+                container_paths=list(workflow_result.archived_paths),
+                runtime_config=runtime_config,
+            )
 
         progress_log.appendPlainText("")
         for line in summary:
@@ -1635,6 +2217,8 @@ class SessionTabMixin:
         progress_label.setText(
             "Matador resend finished with failures."
             if workflow_result.upload_failed > 0
+            else "Matador resend uploaded files; verification pending."
+            if getattr(workflow_result, "upload_pending", 0) > 0
             else "Matador resend finished successfully."
         )
         close_button.setEnabled(True)
@@ -1822,6 +2406,7 @@ class SessionTabMixin:
         self.session_info_label.setText(view_state.info_text)
 
         self._refresh_session_container_lists()
+        self._update_preview_session_data_enabled()
 
     def _on_close_finalize_session(self):
         """Close and finalize the active session container and archive measurement files."""

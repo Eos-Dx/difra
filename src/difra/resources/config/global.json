@@ -4,7 +4,7 @@
     "xray_energy_kev": 8.04,
     "container_version": "0.2",
     "default_setup": "Ulster (Xena)",
-    "DEV": true,
+    "DEV": false,
     "expected_technical_schema_version": "0.2",
     "validate_containers_before_locking": true,
     "difra_base_folder": "/Users/sad/dev/Data/difra",
@@ -13,6 +13,12 @@
     "measurements_folder": "/Users/sad/dev/Data/difra/measurements",
     "measurements_archive_folder": "/Users/sad/dev/Data/difra/archive/measurements",
     "matador_url": "https://portal.matur.co.uk",
+    "upload_error_email_enabled": true,
+    "upload_error_email_recipient": "sdenisov@matur.co",
+    "upload_error_email_sender": "difra-upload@company.co.uk",
+    "upload_error_smtp_host": "",
+    "upload_error_smtp_port": 587,
+    "upload_error_smtp_tls": true,
     "measurements_archive_mirror_folder": null,
     "default_folder": null,
     "default_image_folder": "C:\\dev\\eos_play\\unzipped_data\\Ulster\\pancreas\\sheep_pancreas\\U2\\Xena_Cu\\20250313",
@@ -34,13 +40,23 @@
             "PRIMARY": 2,
             "SECONDARY": 5
         },
+        "first_visible_ring_by_distance_cm": {
+            "2": {
+                "PRIMARY": 2,
+                "SECONDARY": 5
+            },
+            "17": {
+                "PRIMARY": 1,
+                "SECONDARY": 1
+            }
+        },
         "rings_to_search_by_alias": {
             "PRIMARY": 3,
             "SECONDARY": 3
         },
         "rings_to_search_by_distance_cm": {
             "2": {
-                "PRIMARY": 5,
+                "PRIMARY": 3,
                 "SECONDARY": 4
             },
             "17": {
@@ -48,7 +64,27 @@
                 "SECONDARY": 3
             }
         },
-        "rings_to_show": 3
+        "rings_to_show": 3,
+        "seed_distance_cm_by_distance_cm": {
+            "2": {
+                "PRIMARY": 2.3,
+                "SECONDARY": 2.48
+            },
+            "17": {
+                "PRIMARY": 17.0,
+                "SECONDARY": 17.0
+            }
+        },
+        "seed_center_px_by_alias": {
+            "PRIMARY": [
+                128.0,
+                10.0
+            ],
+            "SECONDARY": [
+                130.0,
+                306.0
+            ]
+        }
     },
     "poni_center_validation": {
         "enabled": true,
@@ -71,6 +107,43 @@
                 "col_tolerance_px": 10,
                 "col_max_px": 320
             }
+        }
+    },
+    "poni_distance_validation": {
+        "default_tolerance_percent": 5.0,
+        "nominal_ranges_cm": [
+            {
+                "nominal_cm": 2.0,
+                "min_cm": 1.8,
+                "max_cm": 3.0,
+                "match_tolerance_cm": 0.35
+            },
+            {
+                "nominal_cm": 17.0,
+                "min_cm": 16.5,
+                "max_cm": 18.0,
+                "match_tolerance_cm": 0.85
+            }
+        ]
+    },
+    "agbh_peak_qc": {
+        "enabled": true,
+        "apply_in_dev_mode": false,
+        "show_dialog": true,
+        "calibrant": "AgBh",
+        "npt": 600,
+        "peak_window_nm_inv": 0.2,
+        "peak_shift_warning_nm_inv": 0.25,
+        "min_checked_peaks": 4,
+        "q_ranges_by_alias": {
+            "PRIMARY": [
+                1.0,
+                18.0
+            ],
+            "SECONDARY": [
+                4.5,
+                23.0
+            ]
         }
     }
 }

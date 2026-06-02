@@ -691,7 +691,7 @@ def test_poni_review_accept_out_of_zone_can_override_with_password(monkeypatch):
         monkeypatch.setattr(
             locking_mod.QInputDialog,
             "getText",
-            staticmethod(lambda *args, **kwargs: ("Ulster2026_REDACTED", True)),
+            staticmethod(lambda *args, **kwargs: ("Ulster2026!", True)),
         )
         monkeypatch.setattr(
             harness,

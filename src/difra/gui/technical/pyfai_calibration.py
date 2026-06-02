@@ -121,10 +121,6 @@ def pyfai_detector_name(detector_config: Mapping | None) -> str:
 
     width, height = detector_size_px(cfg)
     pixel1, pixel2 = pixel_size_m(cfg)
-    if (width, height) == (256, 256) and abs(pixel1 - 50e-6) < 1e-12 and abs(
-        pixel2 - 50e-6
-    ) < 1e-12:
-        return "DIFRA-256-50UM"
     if (width, height) == (256, 256) and abs(pixel1 - 55e-6) < 1e-12 and abs(
         pixel2 - 55e-6
     ) < 1e-12:
@@ -265,6 +261,7 @@ def export_calibration_image_for_pyfai(
     *,
     output_dir: str | Path | None = None,
     alias: str = "",
+    output_stem: str | None = None,
 ) -> Path:
     text = str(source or "").strip()
     if not text:
@@ -289,7 +286,10 @@ def export_calibration_image_for_pyfai(
         output_root = Path(output_dir)
         stem = "h5ref" if text.startswith("h5ref://") else Path(text).stem
     output_root.mkdir(parents=True, exist_ok=True)
-    target = output_root / f"{_safe_token(stem)}_{_safe_token(alias, 'detector')}_pyfai.tif"
+    if output_stem:
+        target = output_root / f"{_safe_token(output_stem)}_pyfai.tif"
+    else:
+        target = output_root / f"{_safe_token(stem)}_{_safe_token(alias, 'detector')}_pyfai.tif"
 
     from PIL import Image
 
@@ -363,17 +363,17 @@ def write_pyfai_calib2_launcher(
                 "from pyFAI.detectors import ALL_DETECTORS",
                 "",
                 "",
-                "class Difra256x256Detector50um(Detector):",
-                "    aliases = ['DIFRA-256-50UM', 'difra-256-50um']",
+                "class Difra256x256Detector55um(Detector):",
+                "    aliases = ['DIFRA-256-55UM', 'difra-256-55um']",
                 "    MAX_SHAPE = (256, 256)",
                 "    force_pixel = True",
                 "",
                 "    def __init__(self):",
-                "        super().__init__(pixel1=50e-6, pixel2=50e-6, max_shape=(256, 256))",
+                "        super().__init__(pixel1=55e-6, pixel2=55e-6, max_shape=(256, 256))",
                 "",
                 "",
-                "ALL_DETECTORS['difra-256-50um'] = Difra256x256Detector50um",
-                "ALL_DETECTORS['DIFRA-256-50UM'] = Difra256x256Detector50um",
+                "ALL_DETECTORS['difra-256-55um'] = Difra256x256Detector55um",
+                "ALL_DETECTORS['DIFRA-256-55UM'] = Difra256x256Detector55um",
                 f"sys.argv = {json.dumps(list(command))}",
                 "raise SystemExit(main())",
                 "",
@@ -401,6 +401,10 @@ def auto_poni_default_config() -> dict:
                 "PRIMARY": 1,
                 "SECONDARY": 1,
             },
+            "18": {
+                "PRIMARY": 1,
+                "SECONDARY": 1,
+            },
         },
         "rings_to_search_by_alias": {
             "PRIMARY": 3,
@@ -408,15 +412,33 @@ def auto_poni_default_config() -> dict:
         },
         "rings_to_search_by_distance_cm": {
             "2": {
-                "PRIMARY": 5,
+                "PRIMARY": 3,
                 "SECONDARY": 4,
             },
             "17": {
                 "PRIMARY": 3,
                 "SECONDARY": 3,
             },
+            "18": {
+                "PRIMARY": 3,
+                "SECONDARY": 3,
+            },
         },
         "rings_to_show": 3,
+        "seed_distance_cm_by_distance_cm": {
+            "2": {
+                "PRIMARY": 2.30,
+                "SECONDARY": 2.48,
+            },
+            "17": {
+                "PRIMARY": 17.0,
+                "SECONDARY": 17.0,
+            },
+        },
+        "seed_center_px_by_alias": {
+            "PRIMARY": [128.0, 10.0],
+            "SECONDARY": [130.0, 306.0],
+        },
     }
 
 
@@ -500,6 +522,50 @@ def normalized_auto_poni_config(config: Mapping | None) -> dict:
                     normalized_counts[alias_key] = count
             if normalized_counts:
                 rings_by_distance[str(distance_key or "").strip()] = normalized_counts
+    seed_distance_by_distance = {
+        str(distance_key or "").strip(): {
+            str(alias or "").strip().upper(): float(distance_cm)
+            for alias, distance_cm in distances.items()
+            if str(alias or "").strip()
+        }
+        for distance_key, distances in (
+            defaults["seed_distance_cm_by_distance_cm"].items()
+        )
+    }
+    configured_seed_distance_by_distance = raw.get("seed_distance_cm_by_distance_cm")
+    if isinstance(configured_seed_distance_by_distance, Mapping):
+        for distance_key, distances in configured_seed_distance_by_distance.items():
+            if not isinstance(distances, Mapping):
+                continue
+            normalized_distances = {}
+            for alias, value in distances.items():
+                try:
+                    distance_cm = float(value)
+                except (TypeError, ValueError):
+                    continue
+                alias_key = str(alias or "").strip().upper()
+                if alias_key and distance_cm > 0.0:
+                    normalized_distances[alias_key] = distance_cm
+            if normalized_distances:
+                seed_distance_by_distance[str(distance_key or "").strip()] = normalized_distances
+    seed_center_by_alias = {
+        str(alias or "").strip().upper(): [float(values[0]), float(values[1])]
+        for alias, values in defaults["seed_center_px_by_alias"].items()
+    }
+    configured_seed_center_by_alias = raw.get("seed_center_px_by_alias")
+    if isinstance(configured_seed_center_by_alias, Mapping):
+        for alias, value in configured_seed_center_by_alias.items():
+            if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+                continue
+            if len(value) < 2:
+                continue
+            try:
+                center = [float(value[0]), float(value[1])]
+            except (TypeError, ValueError):
+                continue
+            alias_key = str(alias or "").strip().upper()
+            if alias_key:
+                seed_center_by_alias[alias_key] = center
     try:
         rings_to_show = int(raw.get("rings_to_show", defaults["rings_to_show"]))
     except (TypeError, ValueError):
@@ -520,7 +586,69 @@ def normalized_auto_poni_config(config: Mapping | None) -> dict:
         "rings_to_search_by_alias": rings_by_alias,
         "rings_to_search_by_distance_cm": rings_by_distance,
         "rings_to_show": max(1, rings_to_show),
+        "seed_distance_cm_by_distance_cm": seed_distance_by_distance,
+        "seed_center_px_by_alias": seed_center_by_alias,
     }
+
+
+def auto_poni_distance_key(distance_cm) -> str:
+    try:
+        value = float(distance_cm)
+    except (TypeError, ValueError):
+        return ""
+    rounded = round(value)
+    if abs(value - rounded) <= 0.55:
+        return str(int(rounded))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def auto_poni_seed_distance_cm(
+    auto_config: Mapping | None,
+    *,
+    alias: str,
+    nominal_distance_cm,
+) -> float | None:
+    try:
+        nominal = float(nominal_distance_cm)
+    except (TypeError, ValueError):
+        return None
+    if nominal <= 0.0:
+        return None
+    cfg = auto_config if isinstance(auto_config, Mapping) else {}
+    by_distance = cfg.get("seed_distance_cm_by_distance_cm", {})
+    distance_key = auto_poni_distance_key(nominal)
+    alias_key = str(alias or "").strip().upper()
+    if isinstance(by_distance, Mapping):
+        distance_rules = by_distance.get(distance_key, {})
+        if isinstance(distance_rules, Mapping):
+            try:
+                value = float(distance_rules.get(alias_key))
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and value > 0.0:
+                return value
+    return nominal
+
+
+def auto_poni_seed_center_px(
+    auto_config: Mapping | None,
+    *,
+    alias: str,
+) -> tuple[float, float] | None:
+    cfg = auto_config if isinstance(auto_config, Mapping) else {}
+    centers = cfg.get("seed_center_px_by_alias", {})
+    if not isinstance(centers, Mapping):
+        return None
+    alias_key = str(alias or "").strip().upper()
+    value = centers.get(alias_key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    if len(value) < 2:
+        return None
+    try:
+        return float(value[0]), float(value[1])
+    except (TypeError, ValueError):
+        return None
 
 
 def ring_two_theta_rad(*, wavelength_m: float, d_spacing_a: float) -> float | None:
@@ -681,6 +809,50 @@ def write_agbh_clicked_points_npt(
     return target
 
 
+def write_agbh_points_by_ring_npt(
+    *,
+    poni_text: str,
+    output_path: str | Path,
+    points_by_ring: Mapping[int, Sequence[tuple[float, float]]],
+    calibrant: str = DEFAULT_CALIBRANT,
+) -> Path:
+    params = parse_poni_parameters(poni_text)
+    wavelength_m = float(params.get("Wavelength", DEFAULT_WAVELENGTH_M))
+    lines = [
+        "# set of control point used by pyFAI to calibrate the geometry of a scattering experiment",
+        "# angles are in radians, wavelength in meter and positions in pixels",
+        f"calibrant: {calibrant} {wavelength_m}",
+        f"wavelength: {wavelength_m}",
+        "dspacing:" + " ".join(str(value) for value in AGBH_D_SPACING_A),
+    ]
+    group_index = 0
+    for ring in sorted(int(key) for key in points_by_ring.keys()):
+        points = list(points_by_ring.get(ring, []) or [])
+        if not points:
+            continue
+        d_spacing_index = min(len(AGBH_D_SPACING_A) - 1, max(0, ring - 1))
+        two_theta = ring_two_theta_rad(
+            wavelength_m=wavelength_m,
+            d_spacing_a=AGBH_D_SPACING_A[d_spacing_index],
+        )
+        lines.extend(
+            [
+                "",
+                f"New group of points: {group_index}",
+                f"2theta: {_format_float(two_theta or 0.0)}",
+                f"ring: {max(0, ring - 1)}",
+            ]
+        )
+        for col, row in points:
+            lines.append(f"point: x={_format_float(col)} y={_format_float(row)}")
+        group_index += 1
+
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
 def refine_poni_from_clicked_ring_points(
     *,
     poni_text: str,
@@ -741,6 +913,8 @@ def run_headless_agbh_fit(
     first_visible_ring: int = 1,
     rings_to_show: int = 8,
     points_per_degree: float = 0.25,
+    output_prefix: str | None = None,
+    retry_count: int = 5,
 ) -> HeadlessPoniFitResult:
     image = np.asarray(load_calibration_array(source_image), dtype=np.float64)
     if image.ndim != 2:
@@ -759,7 +933,10 @@ def run_headless_agbh_fit(
     wavelength = float(wavelength_m or DEFAULT_WAVELENGTH_M)
 
     cal = get_calibrant(str(calibrant or DEFAULT_CALIBRANT))
-    cal.set_wavelength(wavelength)
+    try:
+        cal.wavelength = wavelength
+    except Exception:
+        cal.set_wavelength(wavelength)
     detector = Detector(pixel1=pixel1, pixel2=pixel2, max_shape=(height, width))
     geometry = {
         "dist": float(distance_m),
@@ -772,60 +949,103 @@ def run_headless_agbh_fit(
         "detector": detector,
     }
 
-    single_geometry = SingleGeometry(
-        label=str(alias or "detector"),
-        image=image,
-        calibrant=cal,
-        detector=detector,
-        geometry=geometry,
-    )
     max_ring = max(1, int(first_visible_ring) + max(1, int(rings_to_show)) - 1)
-    extracted = single_geometry.extract_cp(
-        max_rings=max_ring,
-        pts_per_deg=float(points_per_degree),
-    )
-
     first_zero_based = max(0, int(first_visible_ring) - 1)
     last_zero_based = first_zero_based + max(1, int(rings_to_show)) - 1
-    filtered = ControlPoints(calibrant=cal)
-    for row, col, ring in extracted.getList():
-        ring_i = int(ring)
-        if first_zero_based <= ring_i <= last_zero_based:
-            filtered.append([(float(row), float(col))], ring_i)
-
-    data = np.asarray(filtered.getList(), dtype=np.float64)
-    if data.size == 0:
-        raise ValueError("pyFAI did not extract any control points")
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
-    stem = _safe_token(Path(str(source_image)).stem)
     alias_token = _safe_token(alias, "detector")
-    npt_path = output_root / f"{stem}_{alias_token}_headless_fit.npt"
-    filtered.save(str(npt_path))
+    if output_prefix:
+        prefix = _safe_token(output_prefix, alias_token)
+        npt_path = output_root / f"{prefix}.npt"
+        poni_path = output_root / f"{prefix}.poni"
+    else:
+        stem = _safe_token(Path(str(source_image)).stem)
+        npt_path = output_root / f"{stem}_{alias_token}_headless_fit.npt"
+        poni_path = output_root / f"{stem}_{alias_token}_headless_fit.poni"
 
-    refinement = single_geometry.geometry_refinement
-    refinement.data = data
-    chi2 = None
-    refined = False
-    if data.shape[0] >= 3:
-        chi2 = float(
-            refinement.refine3(
-                fix=["wavelength", "rot1", "rot2", "rot3"],
-            )
+    best = None
+    attempts = max(1, int(retry_count or 1))
+    for attempt in range(attempts):
+        single_geometry = SingleGeometry(
+            label=str(alias or "detector"),
+            image=image,
+            calibrant=cal,
+            detector=detector,
+            geometry=dict(geometry),
         )
-        refined = True
+        extracted = single_geometry.extract_cp(
+            max_rings=max_ring,
+            pts_per_deg=float(points_per_degree),
+        )
 
-    poni_path = output_root / f"{stem}_{alias_token}_headless_fit.poni"
+        filtered = ControlPoints(calibrant=cal)
+        for row, col, ring in extracted.getList():
+            ring_i = int(ring)
+            if first_zero_based <= ring_i <= last_zero_based:
+                filtered.append([(float(row), float(col))], ring_i)
+
+        data = np.asarray(filtered.getList(), dtype=np.float64)
+        if data.size == 0:
+            continue
+
+        refinement = single_geometry.geometry_refinement
+        refinement.data = data
+        chi2 = None
+        refined = False
+        if data.shape[0] >= 3:
+            chi2 = float(
+                refinement.refine3(
+                    fix=["wavelength", "rot1", "rot2", "rot3"],
+                )
+            )
+            refined = True
+
+        attempt_poni_path = poni_path.with_name(
+            f"{poni_path.stem}_attempt_{attempt}{poni_path.suffix}"
+        )
+        if attempt_poni_path.exists():
+            attempt_poni_path.unlink()
+        refinement.save(str(attempt_poni_path))
+        poni_text = attempt_poni_path.read_text(encoding="utf-8")
+        score = float(chi2) if chi2 is not None else float("inf")
+        candidate = (
+            score,
+            -int(data.shape[0]),
+            filtered,
+            poni_text,
+            int(data.shape[0]),
+            bool(refined),
+            chi2,
+            attempt_poni_path,
+        )
+        if best is None or candidate[:2] < best[:2]:
+            best = candidate
+
+    if best is None:
+        raise ValueError("pyFAI did not extract any control points")
+
+    _score, _neg_points, filtered, poni_text, point_count, refined, chi2, best_attempt_path = best
+    filtered.save(str(npt_path))
     if poni_path.exists():
         poni_path.unlink()
-    refinement.save(str(poni_path))
-    poni_text = poni_path.read_text(encoding="utf-8")
+    poni_path.write_text(poni_text, encoding="utf-8")
+    for attempt_path in output_root.glob(f"{poni_path.stem}_attempt_*{poni_path.suffix}"):
+        if attempt_path != best_attempt_path:
+            try:
+                attempt_path.unlink()
+            except OSError:
+                pass
+    try:
+        best_attempt_path.unlink()
+    except OSError:
+        pass
     return HeadlessPoniFitResult(
         poni_path=poni_path,
         poni_text=poni_text,
         npt_path=npt_path,
-        extracted_points=int(data.shape[0]),
+        extracted_points=point_count,
         refined=refined,
         chi2=chi2,
     )
@@ -878,12 +1098,15 @@ def prepare_agbh_calib2_review(
     center_px: tuple[float, float] | None = None,
     first_visible_ring: int | None = None,
     rings_to_show: int = 4,
+    output_prefix: str | None = None,
 ) -> PyfaiCalib2Review:
+    prefix = _safe_token(output_prefix, _safe_token(alias, "detector")) if output_prefix else ""
     output_root = Path(output_dir) if output_dir is not None else None
     image_path = export_calibration_image_for_pyfai(
         source_image,
         output_dir=output_root,
         alias=alias,
+        output_stem=prefix or None,
     )
     if output_root is None:
         output_root = image_path.parent
@@ -897,7 +1120,10 @@ def prepare_agbh_calib2_review(
         wavelength_m=None if wavelength_m is None else float(wavelength_m),
         center_px=center_px,
     )
-    poni_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.poni"
+    if prefix:
+        poni_path = output_root / f"{prefix}.poni"
+    else:
+        poni_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.poni"
     poni_path.write_text(poni_text, encoding="utf-8")
     command = build_pyfai_calib2_command(
         image_path=image_path,
@@ -906,7 +1132,10 @@ def prepare_agbh_calib2_review(
         calibrant=calibrant,
     )
     if first_visible_ring is not None:
-        npt_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.npt"
+        if prefix:
+            npt_path = output_root / f"{prefix}.npt"
+        else:
+            npt_path = output_root / f"{_safe_token(image_path.stem)}_{_safe_token(alias, 'detector')}_seed.npt"
         write_agbh_control_points_npt(
             poni_text=poni_text,
             detector_config=detector_config,

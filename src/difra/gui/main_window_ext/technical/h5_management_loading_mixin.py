@@ -7,7 +7,8 @@ import json
 import numpy as np
 
 from . import h5_management_mixin as _module
-from .poni_center_validation import resolve_poni_rule_alias
+from .poni_center_validation import resolve_poni_rule_alias, validate_poni_metadata
+from .poni_distance_validation import parse_poni_distance_cm, validate_poni_distances
 from . import technical_startup_reconcile
 from difra.gui.technical.analysis_compat import detect_faulty_pixel_masks
 
@@ -167,15 +168,157 @@ class H5ManagementLoadingMixin:
 
     def _collect_poni_data_by_alias(self):
         poni_data = {}
-        ponis = getattr(self, "ponis", {}) or {}
         poni_files = getattr(self, "poni_files", {}) or {}
-        for alias, poni_text in ponis.items():
-            if not poni_text:
+        active_aliases = set()
+        get_active_aliases = getattr(self, "_get_active_detector_aliases", None)
+        if callable(get_active_aliases):
+            try:
+                active_aliases = {
+                    str(alias).strip().upper()
+                    for alias in (get_active_aliases() or [])
+                    if str(alias).strip()
+                }
+            except Exception:
+                active_aliases = set()
+
+        def _canonical_alias(alias):
+            raw = str(alias or "").strip()
+            if not raw:
+                return ""
+            alias_key = raw.upper()
+            if not active_aliases:
+                return alias_key
+            if alias_key in active_aliases:
+                return alias_key
+            resolver = getattr(self, "_resolve_configured_technical_alias", None)
+            if callable(resolver):
+                try:
+                    resolved, _detector_id, candidates = resolver(alias_key)
+                    for candidate in [resolved, *sorted(candidates or [])]:
+                        candidate_key = str(candidate or "").strip().upper()
+                        if candidate_key in active_aliases:
+                            return candidate_key
+                except Exception:
+                    logger.debug("Failed to canonicalize PONI alias %s", alias, exc_info=True)
+            return ""
+
+        for alias, info in poni_files.items():
+            if not isinstance(info, dict):
                 continue
-            info = poni_files.get(alias, {}) if isinstance(poni_files.get(alias, {}), dict) else {}
-            poni_name = info.get("name") or f"{alias}.poni"
-            poni_data[str(alias)] = (str(poni_text), str(poni_name))
+            alias_key = _canonical_alias(alias)
+            if not alias_key:
+                continue
+            path = str(info.get("path") or "").strip()
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                poni_text = Path(path).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                logger.warning("Failed to read PONI file from path: %s", path, exc_info=True)
+                continue
+            poni_name = str(info.get("name") or Path(path).name or f"{alias_key}.poni")
+            if alias_key not in poni_data or str(alias).strip().upper() == alias_key:
+                poni_data[alias_key] = (poni_text, poni_name)
         return poni_data
+
+    def _copy_poni_files_to_container_folder(self, active_path):
+        active_path = Path(active_path)
+        poni_files = getattr(self, "poni_files", {}) or {}
+        if not isinstance(poni_files, dict):
+            return 0
+        copied = 0
+        for alias, info in list(poni_files.items()):
+            if not isinstance(info, dict):
+                continue
+            source = Path(str(info.get("path") or "").strip())
+            if not source.exists() or not source.is_file():
+                continue
+            dest_name = str(info.get("name") or source.name or f"{alias}.poni")
+            dest = active_path.parent / dest_name
+            try:
+                if source.resolve() != dest.resolve():
+                    shutil.copy2(source, dest)
+                    copied += 1
+                info["path"] = str(dest)
+                info["name"] = dest.name
+                poni_files[alias] = info
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to copy PONI file next to technical container: %s -> %s: %s",
+                    source,
+                    dest,
+                    exc,
+                    exc_info=True,
+                )
+        return copied
+
+    @staticmethod
+    def _parse_poni_distance_cm(poni_text: str):
+        return parse_poni_distance_cm(poni_text)
+
+    def _poni_distance_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_distance_validation", {})
+        if not isinstance(validation_cfg, dict):
+            validation_cfg = {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    @classmethod
+    def _poni_distance_validation_errors(
+        cls,
+        poni_data,
+        distances_by_alias,
+        *,
+        tolerance_percent: float = 5.0,
+        validation_config=None,
+    ):
+        if not poni_data or not distances_by_alias:
+            return []
+        poni_text_by_alias = {}
+        poni_name_by_alias = {}
+        for alias, payload in dict(poni_data).items():
+            try:
+                poni_text, poni_name = payload
+            except Exception:
+                poni_text, poni_name = payload, f"{alias}.poni"
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+            poni_name_by_alias[str(alias)] = str(poni_name or f"{alias}.poni")
+        cfg = dict(validation_config or {})
+        if "tolerance_percent" not in cfg and "default_tolerance_percent" not in cfg:
+            cfg["tolerance_percent"] = float(tolerance_percent)
+        return validate_poni_distances(
+            poni_text_by_alias=poni_text_by_alias,
+            distances_by_alias=distances_by_alias,
+            poni_name_by_alias=poni_name_by_alias,
+            validation_config=cfg,
+        )
+
+    def _poni_metadata_validation_config(self):
+        cfg = self.config if hasattr(self, "config") and isinstance(self.config, dict) else {}
+        validation_cfg = cfg.get("poni_metadata_validation", {})
+        if not isinstance(validation_cfg, dict) or not bool(validation_cfg.get("enabled", False)):
+            return {}
+        if bool(cfg.get("DEV", False)) and not bool(validation_cfg.get("apply_in_dev_mode", False)):
+            return {}
+        return validation_cfg
+
+    def _poni_metadata_validation_errors(self, poni_data):
+        validation_cfg = self._poni_metadata_validation_config()
+        if not validation_cfg:
+            return []
+        poni_text_by_alias = {}
+        for alias, payload in dict(poni_data or {}).items():
+            try:
+                poni_text, _poni_name = payload
+            except Exception:
+                poni_text = payload
+            poni_text_by_alias[str(alias)] = str(poni_text or "")
+        return validate_poni_metadata(
+            poni_text_by_alias=poni_text_by_alias,
+            validation_config=validation_cfg,
+        )
 
     def _canonical_faulty_pixel_alias(self, *values) -> str:
         normalize = getattr(self, "_normalize_technical_alias_candidates", None)
@@ -875,7 +1018,7 @@ class H5ManagementLoadingMixin:
             is_primary = False
             if primary_widget is not None:
                 try:
-                    from PyQt5.QtWidgets import QCheckBox
+                    from difra.gui.qt_compat import QCheckBox
 
                     checkbox = primary_widget.findChild(QCheckBox)
                 except (ImportError, AttributeError, RuntimeError, TypeError):
@@ -1021,6 +1164,96 @@ class H5ManagementLoadingMixin:
         runtime_signature = self._runtime_rows_signature(persisted_runtime_rows)
         poni_data = self._collect_poni_data_by_alias()
         poni_signature = self._poni_data_signature(poni_data)
+        prefer_draft_distances = bool(
+            getattr(self, "_use_draft_distances_for_next_sync", False)
+        )
+        if prefer_draft_distances:
+            setattr(self, "_use_draft_distances_for_next_sync", False)
+        distances_for_write = self._distance_map_by_alias(
+            prefer_draft=prefer_draft_distances
+        )
+        if not distances_for_write:
+            set_state = getattr(self, "_set_container_state", None)
+            if callable(set_state):
+                set_state(
+                    Path(active_path),
+                    state=getattr(self, "STATE_PENDING_DISTANCES", "pending_distances"),
+                    reason="missing_distances_before_table_sync",
+                )
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "Technical Container Sync",
+                    "Cannot sync active technical container without a real distance_cm.",
+                )
+            self._log_technical_event(
+                "Technical container sync blocked: missing distance_cm"
+            )
+            return False
+
+        distance_errors = self._poni_distance_validation_errors(
+            poni_data,
+            distances_for_write,
+            validation_config=self._poni_distance_validation_config(),
+        )
+        if distance_errors:
+            set_state = getattr(self, "_set_container_state", None)
+            if callable(set_state):
+                set_state(
+                    Path(active_path),
+                    state=getattr(self, "STATE_PENDING_PONI", "pending_poni"),
+                    reason="poni_distance_mismatch",
+                )
+            details = "\n".join(f"- {msg}" for msg in distance_errors[:8])
+            if len(distance_errors) > 8:
+                details += f"\n- ... and {len(distance_errors) - 8} more"
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "PONI Distance Mismatch",
+                    "PONI files do not match the current detector distance.\n\n"
+                    + details
+                    + "\n\nSelect or generate PONI files for this technical container distance.",
+                )
+            self._log_technical_event(
+                "Technical container sync blocked: PONI distance mismatch: "
+                + "; ".join(distance_errors[:4])
+            )
+            return False
+
+        metadata_errors = self._poni_metadata_validation_errors(poni_data)
+        if metadata_errors:
+            set_state = getattr(self, "_set_container_state", None)
+            if callable(set_state):
+                set_state(
+                    Path(active_path),
+                    state=getattr(self, "STATE_PENDING_PONI", "pending_poni"),
+                    reason="poni_metadata_mismatch",
+                )
+            details = "\n".join(f"- {msg}" for msg in metadata_errors[:8])
+            if len(metadata_errors) > 8:
+                details += f"\n- ... and {len(metadata_errors) - 8} more"
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "PONI Metadata Mismatch",
+                    "PONI files do not match the required detector metadata.\n\n"
+                    + details
+                    + "\n\nSelect or generate PONI files for this detector setup.",
+                )
+            self._log_technical_event(
+                "Technical container sync blocked: PONI metadata mismatch: "
+                + "; ".join(metadata_errors[:4])
+            )
+            return False
+
+        copied_poni_count = self._copy_poni_files_to_container_folder(active_path)
+        if copied_poni_count:
+            poni_data = self._collect_poni_data_by_alias()
+            poni_signature = self._poni_data_signature(poni_data)
+            self._log_technical_event(
+                f"Copied {copied_poni_count} PONI file(s) next to {active_path.name}"
+            )
 
         try:
             import h5py
@@ -1125,34 +1358,6 @@ class H5ManagementLoadingMixin:
                 poni_group = h5f.create_group(schema.GROUP_TECHNICAL_PONI)
                 poni_group.attrs[schema.ATTR_NX_CLASS] = schema.NX_CLASS_COLLECTION
 
-            prefer_draft_distances = bool(
-                getattr(self, "_use_draft_distances_for_next_sync", False)
-            )
-            if prefer_draft_distances:
-                setattr(self, "_use_draft_distances_for_next_sync", False)
-            distances_by_alias = self._distance_map_by_alias(
-                prefer_draft=prefer_draft_distances
-            )
-            if not distances_by_alias:
-                set_state = getattr(self, "_set_container_state", None)
-                if callable(set_state):
-                    set_state(
-                        Path(active_path),
-                        state=getattr(self, "STATE_PENDING_DISTANCES", "pending_distances"),
-                        reason="missing_distances_before_table_sync",
-                    )
-                if show_errors:
-                    QMessageBox.warning(
-                        self,
-                        "Technical Container Sync",
-                        "Cannot sync active technical container without a real distance_cm.",
-                    )
-                self._log_technical_event(
-                    "Technical container sync blocked: missing distance_cm"
-                )
-                return False
-            distances_for_write = distances_by_alias
-
             try:
                 technical_container.write_detector_config(
                     active_path,
@@ -1213,15 +1418,17 @@ class H5ManagementLoadingMixin:
                 with h5py.File(active_path, "a") as h5f:
                     h5f.attrs[schema.ATTR_DISTANCE_CM] = root_distance
 
-            source_ref_role = self._aux_metadata_role() - 1
-            source_info_role = self._aux_source_info_role()
+            aux_table = getattr(self, "auxTable", None)
+            if aux_table is not None:
+                source_ref_role = self._aux_metadata_role() - 1
+                source_info_role = self._aux_source_info_role()
 
             for entry in persisted_runtime_rows:
-                if not hasattr(self, "auxTable") or self.auxTable is None:
+                if aux_table is None:
                     break
-                if int(entry["index"]) >= self.auxTable.rowCount():
+                if int(entry["index"]) >= aux_table.rowCount():
                     continue
-                file_item = self.auxTable.item(int(entry["index"]), self.AUX_COL_FILE)
+                file_item = aux_table.item(int(entry["index"]), self.AUX_COL_FILE)
                 if file_item is None:
                     continue
                 file_item.setData(source_ref_role, str(entry["source_ref"] or ""))
@@ -2043,7 +2250,28 @@ class H5ManagementLoadingMixin:
                         if isinstance(poni_filename, bytes):
                             poni_filename = poni_filename.decode("utf-8", errors="replace")
 
-                        for candidate in [alias_key, *sorted(alias_candidates)]:
+                        store_candidates = []
+                        active_aliases = set()
+                        get_active_aliases = getattr(self, "_get_active_detector_aliases", None)
+                        if callable(get_active_aliases):
+                            try:
+                                active_aliases = {
+                                    str(item).strip().upper()
+                                    for item in (get_active_aliases() or [])
+                                    if str(item).strip()
+                                }
+                            except Exception:
+                                active_aliases = set()
+                        if active_aliases:
+                            for candidate in [alias_key, *sorted(alias_candidates)]:
+                                candidate_key = str(candidate or "").strip().upper()
+                                if candidate_key in active_aliases:
+                                    store_candidates = [candidate_key]
+                                    break
+                        else:
+                            store_candidates = [alias_key] if alias_key else []
+
+                        for candidate in store_candidates:
                             store_key = str(candidate or "").strip().upper()
                             if not store_key:
                                 continue
