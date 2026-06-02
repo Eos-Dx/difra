@@ -358,7 +358,7 @@ def test_normalized_auto_poni_config_defaults_visible_rings():
     assert cfg["rings_to_show"] == 3
     assert cfg["first_visible_ring_by_alias"]["PRIMARY"] == 2
     assert cfg["first_visible_ring_by_alias"]["SECONDARY"] == 5
-    assert cfg["first_visible_ring_by_distance_cm"]["2"]["PRIMARY"] == 3
+    assert cfg["first_visible_ring_by_distance_cm"]["2"]["PRIMARY"] == 2
     assert cfg["first_visible_ring_by_distance_cm"]["2"]["SECONDARY"] == 5
     assert cfg["first_visible_ring_by_distance_cm"]["17"]["PRIMARY"] == 1
     assert cfg["rings_to_search_by_distance_cm"]["2"]["PRIMARY"] == 3

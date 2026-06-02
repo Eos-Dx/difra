@@ -284,7 +284,7 @@ def test_auto_poni_defaults_use_active_container_distance_for_two_cm(tmp_path):
         "SECONDARY": 2.48,
     }
     assert settings["first_visible_ring_by_alias"] == {
-        "PRIMARY": 3,
+        "PRIMARY": 2,
         "SECONDARY": 5,
     }
     assert settings["rings_to_search_by_alias"] == {

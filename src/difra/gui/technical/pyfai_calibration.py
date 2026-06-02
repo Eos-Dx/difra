@@ -394,7 +394,7 @@ def auto_poni_default_config() -> dict:
         },
         "first_visible_ring_by_distance_cm": {
             "2": {
-                "PRIMARY": 3,
+                "PRIMARY": 2,
                 "SECONDARY": 5,
             },
             "17": {
