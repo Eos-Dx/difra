@@ -11,7 +11,7 @@ from difra.gui.qt_compat import QApplication, QDialog, QDialogButtonBox, QTest, 
 
 from container.v0_2 import writer as session_writer
 from difra.gui.main_window_ext.archive_session_edit_dialog import ArchiveSessionEditDialog
-import difra.gui.main_window_ext.archive_session_edit_dialog as dialog_module
+import difra.gui.main_window_ext.archive_session_edit_matador_mixin as matador_mixin_module
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +38,7 @@ def _create_session_file(folder: Path, sample: str, study: str) -> Path:
 
 def test_archive_edit_dialog_blocks_without_runtime_matador_token(qapp, tmp_path, monkeypatch):
     session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A", "STUDY_A")
-    monkeypatch.setattr(dialog_module, "get_runtime_matador_context", lambda _owner: {})
+    monkeypatch.setattr(matador_mixin_module, "get_runtime_matador_context", lambda _owner: {})
 
     dialog = ArchiveSessionEditDialog(
         container_paths=[session_path],
@@ -58,7 +58,7 @@ def test_archive_edit_dialog_blocks_without_runtime_matador_token(qapp, tmp_path
 def test_archive_edit_dialog_loads_projects_and_studies_live_from_matador(qapp, tmp_path, monkeypatch):
     session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A", "STUDY_A")
     monkeypatch.setattr(
-        dialog_module,
+        matador_mixin_module,
         "get_runtime_matador_context",
         lambda _owner: {
             "token": "jwt-token",
@@ -82,7 +82,7 @@ def test_archive_edit_dialog_loads_projects_and_studies_live_from_matador(qapp, 
             ],
         }
 
-    monkeypatch.setattr(dialog_module, "refresh_matador_reference_cache", _refresh_stub)
+    monkeypatch.setattr(matador_mixin_module, "refresh_matador_reference_cache", _refresh_stub)
 
     dialog = ArchiveSessionEditDialog(
         container_paths=[session_path],
@@ -121,7 +121,7 @@ def test_archive_edit_dialog_specimen_scan_enter_does_not_accept(
 ):
     session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A", "STUDY_A")
     monkeypatch.setattr(
-        dialog_module,
+        matador_mixin_module,
         "get_runtime_matador_context",
         lambda _owner: {
             "token": "jwt-token",
@@ -129,7 +129,7 @@ def test_archive_edit_dialog_specimen_scan_enter_does_not_accept(
         },
     )
     monkeypatch.setattr(
-        dialog_module,
+        matador_mixin_module,
         "refresh_matador_reference_cache",
         lambda **_kwargs: {
             "studies": [
@@ -169,7 +169,7 @@ def test_archive_edit_dialog_specimen_scan_enter_does_not_accept(
 def test_archive_edit_dialog_shows_loading_status_while_refresh_runs(qapp, tmp_path, monkeypatch):
     session_path = _create_session_file(tmp_path / "measurements", "SAMPLE_A", "STUDY_A")
     monkeypatch.setattr(
-        dialog_module,
+        matador_mixin_module,
         "get_runtime_matador_context",
         lambda _owner: {
             "token": "jwt-token",
@@ -194,7 +194,7 @@ def test_archive_edit_dialog_shows_loading_status_while_refresh_runs(qapp, tmp_p
             ],
         }
 
-    monkeypatch.setattr(dialog_module, "refresh_matador_reference_cache", _refresh_stub)
+    monkeypatch.setattr(matador_mixin_module, "refresh_matador_reference_cache", _refresh_stub)
 
     dialog = ArchiveSessionEditDialog(
         container_paths=[session_path],
