@@ -3,26 +3,22 @@
 from pathlib import Path
 
 from . import h5_generation_mixin as _module
+from difra.gui.main_window_ext.technical.h5_generation_aux_rows_mixin import (
+    H5GenerationAuxRowsMixin,
+)
 
-json = _module.json
 logger = _module.logger
 os = _module.os
-re = _module.re
-uuid = _module.uuid
 
-QComboBox = _module.QComboBox
 QDialog = _module.QDialog
-QFileDialog = _module.QFileDialog
 QInputDialog = _module.QInputDialog
 QMessageBox = _module.QMessageBox
-QCheckBox = _module.QCheckBox
-Qt = _module.Qt
 
 get_schema = _module.get_schema
 get_technical_container = _module.get_technical_container
 
 
-class H5GenerationContainerMixin:
+class H5GenerationContainerMixin(H5GenerationAuxRowsMixin):
     def generate_technical_h5(self):
         """Generate technical HDF5 container from measurements in aux table."""
         schema = get_schema(self.config if hasattr(self, "config") else None)
@@ -62,8 +58,6 @@ class H5GenerationContainerMixin:
             folder,
         )
 
-        aux_measurements = {}
-        primary_measurements = {}  # Track which measurements are marked as primary: {(type, alias): [is_prim1, is_prim2, ...]}
         gui_integration_ms = None
         gui_n_frames = None
         try:
@@ -75,112 +69,17 @@ class H5GenerationContainerMixin:
         except Exception:
             gui_n_frames = None
 
-        # Get active detector aliases for validation
-        try:
-            active_aliases = self._get_active_detector_aliases()
-        except Exception:
-            active_aliases = []
-
-        for row in rows:
-            # Check if primary checkbox is checked
-            checkbox_widget = self.auxTable.cellWidget(row, 0)
-            is_primary = False
-            if checkbox_widget:
-                # Find the QCheckBox within the widget
-                checkbox = checkbox_widget.findChild(QCheckBox)
-                if checkbox:
-                    is_primary = checkbox.isChecked()
-            
-            file_item = self.auxTable.item(row, 1)
-            if not file_item:
-                continue
-            file_path = file_item.data(Qt.UserRole)
-            source_info = {}
-            try:
-                source_info = file_item.data(self._aux_source_info_role())
-            except (AttributeError, RuntimeError, TypeError):
-                source_info = {}
-            if isinstance(source_info, dict):
-                original_source_path = str(source_info.get("source_path") or "").strip()
-                if str(file_path or "").startswith("h5ref://") and original_source_path:
-                    file_path = original_source_path
-            if not file_path or not os.path.exists(file_path):
-                QMessageBox.warning(
-                    self, "Missing File", f"Row {row+1}: file path does not exist."
-                )
-                return
-
-            # Type
-            type_cb = self.auxTable.cellWidget(row, 2)
-            if (
-                not isinstance(type_cb, QComboBox)
-                or type_cb.currentText() == self.NO_SELECTION_LABEL
-            ):
-                QMessageBox.warning(
-                    self, "Missing Type", f"Row {row+1}: select measurement type."
-                )
-                return
-            typ_ui = type_cb.currentText()
-            typ = self._normalize_technical_type(typ_ui)
-
-            # Alias (must be selected)
-            cb = self.auxTable.cellWidget(row, 3)
-            if (
-                not isinstance(cb, QComboBox)
-                or cb.currentText() == self.NO_SELECTION_LABEL
-            ):
-                QMessageBox.warning(
-                    self, "Missing Alias", f"Row {row+1}: select an alias."
-                )
-                return
-            alias = cb.currentText()
-
-            if typ not in schema.ALL_TECHNICAL_TYPES:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Type",
-                    f"Type '{typ_ui}' is not supported for HDF5.\n"
-                    f"Supported: {', '.join(schema.ALL_TECHNICAL_TYPES)}",
-                )
-                return
-
-            if typ_ui == "SPECIAL":
-                self._log_technical_event("Mapping type SPECIAL → WATER for HDF5")
-
-            # Allow multiple measurements per (type, alias) pair
-            # Only PRIMARY measurements will be used in H5, supplementary are ignored
-            # We validate PRIMARY uniqueness later
-            # 
-            # If this is a primary measurement, it will be used for H5
-            if is_primary:
-                entry = {"file_path": file_path}
-                try:
-                    row_metadata = self._get_aux_row_metadata(
-                        row,
-                        str(file_path),
-                        include_filename_fallback=False,
-                    )
-                except Exception:
-                    row_metadata = {}
-                if isinstance(row_metadata, dict):
-                    for key, value in row_metadata.items():
-                        if value is not None:
-                            entry[key] = value
-                if entry.get("integration_time_ms") is None and gui_integration_ms is not None:
-                    entry["integration_time_ms"] = gui_integration_ms
-                if entry.get("n_frames") is None and gui_n_frames is not None:
-                    entry["n_frames"] = gui_n_frames
-                aux_measurements.setdefault(typ, {})[alias] = entry
-            
-            # Track primary/supplementary status for this row
-            pair = (typ, alias)
-            if pair not in primary_measurements:
-                primary_measurements[pair] = []
-            primary_measurements[pair].append(is_primary)
-            
-            self._log_technical_event(
-                f"Row {row+1}: {typ_ui} for {alias} - {'PRIMARY' if is_primary else 'supplementary'}"
-            )
+        row_collection = self._collect_h5_aux_measurements(
+            rows=rows,
+            schema=schema,
+            gui_integration_ms=gui_integration_ms,
+            gui_n_frames=gui_n_frames,
+        )
+        if row_collection is None:
+            return
+        aux_measurements = row_collection["aux_measurements"]
+        primary_measurements = row_collection["primary_measurements"]
+        active_aliases = row_collection["active_aliases"]
 
         # Enforce completeness: all REQUIRED measurement types must be present, and for each alias
         required_types = set(
