@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import difra.gui.operator_manager as operator_manager_module
+import difra.gui.operator_dialogs as operator_dialogs_module
 from difra.gui.operator_manager import NewOperatorDialog, OperatorSelectionDialog
 
 
@@ -159,7 +160,7 @@ def test_selection_dialog_create_and_edit_operator_flow(monkeypatch):
         def get_operator_id(self):
             return "new" if self.existing_operator_id is None else self.existing_operator_id
 
-    monkeypatch.setattr(operator_manager_module, "NewOperatorDialog", _FakeNewOperatorDialog)
+    monkeypatch.setattr(operator_dialogs_module, "NewOperatorDialog", _FakeNewOperatorDialog)
     warnings = []
     monkeypatch.setattr(
         operator_manager_module.QMessageBox,
