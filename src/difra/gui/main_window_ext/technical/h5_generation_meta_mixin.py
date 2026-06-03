@@ -7,7 +7,9 @@ from .poni_center_validation import (
     validate_poni_metadata,
     validate_poni_centers,
 )
-from .poni_agbh_peak_qc import evaluate_agbh_peak_qc_for_aux_measurements
+from difra.gui.technical.agbh_peak_qc_service import (
+    evaluate_agbh_peak_qc_for_aux_measurements,
+)
 from .poni_distance_validation import validate_poni_distances
 from difra.gui.technical.pyfai_calibration_common import detector_size_px, pixel_size_m
 

@@ -89,6 +89,8 @@ class H5LockingPoniValidationMixin:
         if not validation_cfg:
             return []
         try:
+            from difra.gui.technical.agbh_peak_qc_service import evaluate_agbh_peak_qc_for_h5
+
             return evaluate_agbh_peak_qc_for_h5(
                 Path(container_path),
                 schema=get_schema(self.config if hasattr(self, "config") else None),
@@ -295,4 +297,3 @@ class H5LockingPoniValidationMixin:
             detector_sizes_by_alias=detector_sizes,
             validation_config=validation_cfg,
         )
-

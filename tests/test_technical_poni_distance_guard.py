@@ -8,7 +8,10 @@ import pytest
 
 from container.v0_2 import technical_container
 from difra.gui.main_window_ext.technical.h5_management_mixin import H5ManagementMixin
-from difra.gui.main_window_ext.technical.poni_agbh_peak_qc import evaluate_peak_alignment
+from difra.gui.technical.agbh_peak_qc_service import (
+    AgbhPeakQcService,
+    evaluate_peak_alignment,
+)
 
 
 def _poni(distance_m: float) -> str:
@@ -227,6 +230,43 @@ def test_agbh_peak_alignment_warns_when_late_peaks_drift():
     assert result["ok"] is False
     assert result["bad"] >= 2
     assert result["max_shift"] > 0.3
+
+
+def test_agbh_peak_qc_service_wraps_series_evaluation():
+    theoretical_q = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=float)
+    q = np.linspace(0.5, 4.5, 400)
+    intensity = np.zeros_like(q)
+    for peak_q in [1.0, 2.0, 3.35, 4.35]:
+        intensity += np.exp(-((q - peak_q) ** 2) / (2 * 0.025**2))
+
+    service = AgbhPeakQcService(
+        {
+            "enabled": True,
+            "peak_shift_warning_nm_inv": 0.18,
+            "peak_window_nm_inv": 0.5,
+            "min_checked_peaks": 3,
+        }
+    )
+    warnings = service.evaluate_series(
+        [
+            {
+                "label": "technical_test",
+                "alias": "PRIMARY",
+                "image": np.ones((4, 4), dtype=float),
+                "poni_text": "unused",
+            }
+        ]
+    )
+
+    assert isinstance(warnings, list)
+    assert evaluate_peak_alignment(
+        q,
+        intensity,
+        theoretical_q,
+        peak_shift_warning_nm_inv=0.18,
+        peak_window_nm_inv=0.5,
+        min_checked_peaks=3,
+    )["ok"] is False
 
 
 def test_embedded_poni_distance_validation_catches_bad_locked_candidate(tmp_path):

@@ -12,7 +12,7 @@ from .poni_center_validation import (
     validate_poni_centers,
     validate_poni_metadata,
 )
-from .poni_agbh_peak_qc import evaluate_agbh_peak_qc_for_h5
+from difra.gui.technical.agbh_peak_qc_service import evaluate_agbh_peak_qc_for_h5
 from .poni_distance_validation import parse_poni_distance_cm, validate_poni_distances
 from difra.gui.main_window_ext.technical import h5_management_lock_actions
 
