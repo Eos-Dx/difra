@@ -15,3 +15,6 @@ _run_*.py
 _test_*.py
 smoke_test_*.py
 auto_poni_*.py
+matador_downloads/
+report_validation_local_archive/
+scripts/technical_poni_rebuild_dry_run.py
