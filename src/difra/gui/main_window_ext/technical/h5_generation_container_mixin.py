@@ -95,6 +95,15 @@ class H5GenerationContainerMixin:
             if not file_item:
                 continue
             file_path = file_item.data(Qt.UserRole)
+            source_info = {}
+            try:
+                source_info = file_item.data(self._aux_source_info_role())
+            except (AttributeError, RuntimeError, TypeError):
+                source_info = {}
+            if isinstance(source_info, dict):
+                original_source_path = str(source_info.get("source_path") or "").strip()
+                if str(file_path or "").startswith("h5ref://") and original_source_path:
+                    file_path = original_source_path
             if not file_path or not os.path.exists(file_path):
                 QMessageBox.warning(
                     self, "Missing File", f"Row {row+1}: file path does not exist."
@@ -311,7 +320,7 @@ class H5GenerationContainerMixin:
             len(missing_poni),
         )
 
-        if missing_poni:
+        if missing_poni and not dev_mode:
             QMessageBox.warning(
                 self,
                 "Missing PONI Data",
@@ -320,6 +329,11 @@ class H5GenerationContainerMixin:
                 + "\n\nSelect PONI files and try again.",
             )
             return
+        if missing_poni:
+            self._log_technical_event(
+                "Dev mode: missing PONI files will be replaced with generated fake PONI data for "
+                + ", ".join(missing_poni)
+            )
 
         # Check if per-detector distances have been configured
         if hasattr(self, '_detector_distances') and self._detector_distances:
