@@ -119,7 +119,11 @@ class TechnicalAuxTableMixin:
         tm = _tm()
 
         try:
-            if source_kind == "file" and not self._validate_timestamp_before_alias(npy_path):
+            if (
+                source_kind == "file"
+                and not getattr(self, "_restoring_aux_table", False)
+                and not self._validate_timestamp_before_alias(npy_path)
+            ):
                 tm.QMessageBox.warning(
                     self,
                     "Filename format",
@@ -684,7 +688,11 @@ class TechnicalAuxTableMixin:
             )
         if hasattr(cb, "addItem"):
             cb.addItem(self.NO_SELECTION_LABEL, None)
-            for alias in self._get_active_detector_aliases():
+            aliases = list(self._get_active_detector_aliases())
+            preselect_alias = str(preselect or "").strip()
+            if preselect_alias and preselect_alias not in aliases:
+                aliases.append(preselect_alias)
+            for alias in aliases:
                 cb.addItem(alias, alias)
         if preselect:
             if hasattr(cb, "findText") and hasattr(cb, "setCurrentIndex"):
