@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Optional, Sequence
 import h5py
 from difra.gui.qt_compat import Qt
 from difra.gui.qt_compat import QTableWidget, QTableWidgetItem
+from difra.gui.session_transfer_status import (
+    TRANSFER_STATUS_NOT_COMPLETE,
+    transfer_status_from_row,
+    transfer_status_matches_filter,
+)
 
 
 @dataclass(frozen=True)
@@ -25,7 +30,7 @@ class SessionTabPresenter:
     """Helpers for reading session metadata and rendering Session tab tables."""
 
     _ARCHIVE_STAMP_RE = re.compile(r"(\d{8}_\d{6})(?:_\d+)?$")
-    _TRANSFER_STATUS_NOT_COMPLETE = "NOT_COMPLETE"
+    _TRANSFER_STATUS_NOT_COMPLETE = TRANSFER_STATUS_NOT_COMPLETE
 
     @staticmethod
     def decode_attr(value):
@@ -305,17 +310,7 @@ class SessionTabPresenter:
 
     @classmethod
     def _row_transfer_status(cls, row: Dict[str, str]) -> str:
-        explicit = str(row.get("transfer_status") or "").strip().upper()
-        if explicit:
-            return explicit
-        status_text = str(row.get("status") or "").strip().upper()
-        if "NOT_COMPLETE" in status_text:
-            return "NOT_COMPLETE"
-        if "SENT" in status_text:
-            return "SENT"
-        if "UNSENT" in status_text:
-            return "UNSENT"
-        return ""
+        return transfer_status_from_row(row)
 
     @classmethod
     def filter_archived_rows(
@@ -348,11 +343,7 @@ class SessionTabPresenter:
                 continue
 
             transfer_status = cls._row_transfer_status(row)
-            if status_filter == "unsent" and transfer_status != "UNSENT":
-                continue
-            if status_filter == "sent" and transfer_status != "SENT":
-                continue
-            if status_filter == "not complete" and transfer_status != "NOT_COMPLETE":
+            if not transfer_status_matches_filter(transfer_status, status_filter):
                 continue
 
             project_value = str(row.get("project_id") or row.get("study_name") or "")

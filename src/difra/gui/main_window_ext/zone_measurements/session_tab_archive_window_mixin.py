@@ -23,6 +23,7 @@ from difra.gui.qt_compat import (
     QVBoxLayout,
     QWidget,
 )
+from difra.gui.session_transfer_status import ARCHIVE_STATUS_FILTER_OPTIONS
 
 from difra.gui.archive_project_statistics import (
     build_archive_project_statistics,
@@ -203,9 +204,7 @@ class SessionTabArchiveWindowMixin:
         filter_row.addWidget(self.archive_window_date_filter_combo)
 
         self.archive_window_status_filter_combo = QComboBox()
-        self.archive_window_status_filter_combo.addItems(
-            ["All statuses", "Unsent", "REQ_RESEND", "Sent", "Not complete"]
-        )
+        self.archive_window_status_filter_combo.addItems(ARCHIVE_STATUS_FILTER_OPTIONS)
         self.archive_window_status_filter_combo.currentIndexChanged.connect(
             self._populate_archive_window_table
         )

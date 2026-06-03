@@ -307,3 +307,39 @@ def test_filter_archived_rows_can_filter_unsent_today_and_sort():
 
     assert [row["sample_id"] for row in filtered] == ["SPEC_C", "SPEC_B"]
 
+
+def test_filter_archived_rows_can_filter_req_resend():
+    rows = [
+        {
+            "file_name": "session_req_resend.nxs.h5",
+            "sample_id": "SPEC_REQ",
+            "project_id": "PROJECT_A",
+            "study_name": "STUDY_A",
+            "operator_id": "alice",
+            "uploaded_by": "alice",
+            "created": "2026-04-06 09:00:00",
+            "archived": "20260406_090000",
+            "status": "LOCKED / REQ_RESEND",
+            "transfer_status": "req_resend",
+        },
+        {
+            "file_name": "session_sent.nxs.h5",
+            "sample_id": "SPEC_SENT",
+            "project_id": "PROJECT_A",
+            "study_name": "STUDY_A",
+            "operator_id": "alice",
+            "uploaded_by": "alice",
+            "created": "2026-04-06 10:00:00",
+            "archived": "20260406_100000",
+            "status": "LOCKED / SENT",
+            "transfer_status": "sent",
+        },
+    ]
+
+    filtered = SessionTabPresenter.filter_archived_rows(
+        rows,
+        transfer_status_filter="REQ_RESEND",
+        sort_mode="Archived: oldest first",
+    )
+
+    assert [row["sample_id"] for row in filtered] == ["SPEC_REQ"]
