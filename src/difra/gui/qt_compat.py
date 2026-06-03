@@ -2,6 +2,29 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
+
+
+def _prepend_dll_path(path: Path) -> None:
+    if not path.exists():
+        return
+    path_text = str(path)
+    existing = os.environ.get("PATH", "")
+    parts = existing.split(os.pathsep) if existing else []
+    if path_text not in parts:
+        os.environ["PATH"] = path_text + (os.pathsep + existing if existing else "")
+    if hasattr(os, "add_dll_directory"):
+        try:
+            os.add_dll_directory(path_text)
+        except OSError:
+            pass
+
+
+def _configure_windows_qt_dll_paths() -> None:
+    if sys.platform != "win32":
+        return
+    conda_lib_bin = Path(sys.executable).resolve().parent / "Library" / "bin"
+    _prepend_dll_path(conda_lib_bin)
 
 _REQUESTED_QT_API = os.environ.get("DIFRA_QT_API", "auto").strip().lower()
 if _REQUESTED_QT_API not in {"auto", "pyqt5", "pyqt6"}:
@@ -9,6 +32,9 @@ if _REQUESTED_QT_API not in {"auto", "pyqt5", "pyqt6"}:
         "DIFRA_QT_API must be one of: auto, pyqt5, pyqt6 "
         f"(got {_REQUESTED_QT_API!r})"
     )
+
+
+_configure_windows_qt_dll_paths()
 
 
 def _configure_pyqt6_plugins() -> None:

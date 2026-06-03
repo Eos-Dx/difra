@@ -42,6 +42,16 @@ def _probe_env(
             if not existing_pythonpath
             else src_text + os.pathsep + existing_pythonpath
         )
+    if sys.platform == "win32":
+        conda_lib_bin = Path(sys.executable).resolve().parent / "Library" / "bin"
+        if conda_lib_bin.exists():
+            path_text = str(conda_lib_bin)
+            existing_path = env.get("PATH", "")
+            parts = existing_path.split(os.pathsep) if existing_path else []
+            if path_text not in parts:
+                env["PATH"] = path_text + (
+                    os.pathsep + existing_path if existing_path else ""
+                )
     return env
 
 
