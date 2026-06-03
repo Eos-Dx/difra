@@ -383,7 +383,7 @@ class SessionTabQueueMixin:
             )
 
     def _show_session_data_preview_dialog(self, container_path: Path, payload: dict):
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
 
         dialog = QDialog(self)

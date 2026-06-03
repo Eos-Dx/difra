@@ -7,7 +7,7 @@ from typing import Optional
 
 import h5py
 import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from difra.gui.qt_compat import QAction, QHeaderView, Qt, QtWidgets

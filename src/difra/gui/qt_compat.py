@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("QT_API", "pyqt5")
+
 try:
     from PyQt5 import QtCore, QtGui, QtTest, QtWidgets, sip
     from PyQt5.QtCore import (  # noqa: F401

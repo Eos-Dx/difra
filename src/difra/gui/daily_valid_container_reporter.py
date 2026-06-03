@@ -2,374 +2,81 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from email.message import EmailMessage
-import base64
 import getpass
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
 import platform
 import smtplib
 import socket
-import subprocess
 import sys
 import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-import zipfile
 
 import h5py
 import numpy as np
 
-import matplotlib
-
-matplotlib.use("Agg")
-from matplotlib import pyplot as plt  # noqa: E402
-
-
-DEFAULT_REPORT_RECIPIENT = "sdenisov@matur.co.uk"
-DEFAULT_REPORT_SENDER = "difra-upload@company.co.uk"
-DEFAULT_POINTS = 100
-DEFAULT_DPI = 200
-DEFAULT_KEYCHAIN_SERVICE = "difra_daily_report_smtp_password"
-DEFAULT_EMAIL_SETUP_PASSWORD = "Ulster2025!"
-DEFAULT_ENCRYPTED_PASSWORD_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "resources"
-    / "secrets"
-    / "daily_report_smtp_password.enc.json"
+from difra.gui.daily_report_common import (  # noqa: E402
+    DEFAULT_DPI,
+    DEFAULT_EMAIL_CONFIG_PATH,
+    DEFAULT_EMAIL_SETUP_PASSWORD,
+    DEFAULT_ENCRYPTED_PASSWORD_PATH,
+    DEFAULT_KEYCHAIN_SERVICE,
+    DEFAULT_POINTS,
+    DEFAULT_REPORT_RECIPIENT,
+    DEFAULT_REPORT_SENDER,
+    SAXS_DISTANCE_THRESHOLD_CM,
+    SAXS_RANGE,
+    WAXS_RANGE,
+    _append_report_attempt,
+    _as_bool,
+    _as_email_recipients,
+    _as_int,
+    _as_text,
+    _candidate_containers,
+    _config_value,
+    _filter_containers_for_date,
+    _load_json_config,
+    _load_report_state,
+    _parse_report_datetime,
+    _report_state_path,
+    _safe_token,
+    _write_report_state,
 )
-DEFAULT_EMAIL_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "resources"
-    / "config"
-    / "daily_report_email.json"
+from difra.gui.daily_report_common import load_report_config  # noqa: E402
+from difra.gui.daily_report_credentials import (  # noqa: E402
+    _decrypt_secret_blob,
+    _delete_macos_keychain_password,
+    _delete_windows_credential_password,
+    _encrypt_secret_blob,
+    _read_macos_keychain_password,
+    _read_windows_credential_password,
+    _write_macos_keychain_password,
+    _write_windows_credential_password,
 )
-DEFAULT_REPORT_STATE_FILENAME = "daily_report_state.json"
-SAXS_RANGE = (1.0, 3.0)
-WAXS_RANGE = (2.0, 21.0)
-SAXS_DISTANCE_THRESHOLD_CM = 10.0
-@dataclass(frozen=True)
-class DetectorSeries:
-    specimen_id: str
-    detector_group: str
-    detector_alias: str
-    detector_name: str
-    detector_side: str
-    range_name: str
-    q_range: Tuple[float, float]
-    range_label: str
-    range_assignment: str
-    q: np.ndarray
-    intensity: np.ndarray
-    poni_text: str
-    poni_source: str
-    poni_sha256: str
-    source_data_sha256: str
-    source_data_shape: Tuple[int, ...]
-    source_data_min: float
-    source_data_median: float
-    source_data_max: float
-    integration_backend: str
-    source_container: Path
-    source_dataset: str
-
-    @property
-    def detector_key(self) -> str:
-        return _safe_token(
-            "_".join(
-                item
-                for item in (
-                    self.detector_alias,
-                    self.detector_group,
-                    self.detector_name,
-                )
-                if item
-            ),
-            "detector",
-        )
-
-
-@dataclass
-class DailyReportResult:
-    scanned: int = 0
-    valid_containers: int = 0
-    skipped: List[str] = field(default_factory=list)
-    images: List[Path] = field(default_factory=list)
-    zip_path: Optional[Path] = None
-    email_result: Dict[str, Any] = field(default_factory=dict)
-    manifest: Dict[str, Any] = field(default_factory=dict)
-    state_path: Optional[Path] = None
-    period_start: Optional[str] = None
-    period_end: Optional[str] = None
-    tracking_started_at: Optional[str] = None
-
-
-def _as_text(value: Any, default: str = "") -> str:
-    if value is None:
-        return default
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    text = str(value).strip()
-    return text if text else default
-
-
-def _as_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _as_email_recipients(value: Any, default: str) -> List[str]:
-    if isinstance(value, (list, tuple, set)):
-        raw_items = value
-    else:
-        text = _as_text(value, default)
-        raw_items = str(text or "").replace(";", ",").split(",")
-    recipients = []
-    for item in raw_items:
-        text = _as_text(item, "").strip()
-        if text and text not in recipients:
-            recipients.append(text)
-    return recipients or [default]
-
-
-def _config_value(
-    config: Optional[Dict[str, Any]],
-    key: str,
-    env_key: str,
-    default: Any,
-    *,
-    fallback_key: str = "",
-    fallback_env_key: str = "",
-) -> Any:
-    if env_key in os.environ:
-        return os.environ.get(env_key)
-    if fallback_env_key and fallback_env_key in os.environ:
-        return os.environ.get(fallback_env_key)
-    if isinstance(config, dict) and key in config:
-        return config.get(key)
-    if fallback_key and isinstance(config, dict) and fallback_key in config:
-        return config.get(fallback_key)
-    return default
-
-
-def _read_macos_keychain_password(*, account: str, service: str) -> str:
-    if platform.system() != "Darwin":
-        return ""
-    account = str(account or "").strip()
-    service = str(service or "").strip()
-    if not account or not service:
-        return ""
-    try:
-        completed = subprocess.run(
-            [
-                "security",
-                "find-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-                "-w",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        return ""
-    if completed.returncode != 0:
-        return ""
-    return str(completed.stdout or "").strip()
-
-
-def _write_macos_keychain_password(
-    *,
-    account: str,
-    service: str,
-    password: str,
-) -> bool:
-    if platform.system() != "Darwin":
-        return False
-    account = str(account or "").strip()
-    service = str(service or "").strip()
-    password = str(password or "").strip()
-    if not account or not service or not password:
-        return False
-    try:
-        completed = subprocess.run(
-            [
-                "security",
-                "add-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-                "-w",
-                password,
-                "-U",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        return False
-    return completed.returncode == 0
-
-
-def _delete_macos_keychain_password(*, account: str, service: str) -> bool:
-    if platform.system() != "Darwin":
-        return False
-    account = str(account or "").strip()
-    service = str(service or "").strip()
-    if not account or not service:
-        return False
-    try:
-        completed = subprocess.run(
-            [
-                "security",
-                "delete-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        return False
-    return completed.returncode == 0
-
-
-def _read_windows_credential_password(*, account: str, service: str) -> str:
-    if platform.system() != "Windows":
-        return ""
-    service = str(service or "").strip()
-    if not service:
-        return ""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class CREDENTIAL(ctypes.Structure):
-            _fields_ = [
-                ("Flags", wintypes.DWORD),
-                ("Type", wintypes.DWORD),
-                ("TargetName", wintypes.LPWSTR),
-                ("Comment", wintypes.LPWSTR),
-                ("LastWritten", wintypes.FILETIME),
-                ("CredentialBlobSize", wintypes.DWORD),
-                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
-                ("Persist", wintypes.DWORD),
-                ("AttributeCount", wintypes.DWORD),
-                ("Attributes", ctypes.c_void_p),
-                ("TargetAlias", wintypes.LPWSTR),
-                ("UserName", wintypes.LPWSTR),
-            ]
-
-        credential_ptr = ctypes.POINTER(CREDENTIAL)()
-        if not ctypes.windll.advapi32.CredReadW(service, 1, 0, ctypes.byref(credential_ptr)):
-            return ""
-        try:
-            credential = credential_ptr.contents
-            size = int(credential.CredentialBlobSize or 0)
-            if size <= 0:
-                return ""
-            payload = ctypes.string_at(credential.CredentialBlob, size)
-            return payload.decode("utf-16-le", errors="ignore").rstrip("\x00").strip()
-        finally:
-            ctypes.windll.advapi32.CredFree(credential_ptr)
-    except Exception:
-        return ""
-
-
-def _write_windows_credential_password(
-    *,
-    account: str,
-    service: str,
-    password: str,
-) -> bool:
-    if platform.system() != "Windows":
-        return False
-    account = str(account or "").strip()
-    service = str(service or "").strip()
-    password = str(password or "").strip()
-    if not account or not service or not password:
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class CREDENTIAL(ctypes.Structure):
-            _fields_ = [
-                ("Flags", wintypes.DWORD),
-                ("Type", wintypes.DWORD),
-                ("TargetName", wintypes.LPWSTR),
-                ("Comment", wintypes.LPWSTR),
-                ("LastWritten", wintypes.FILETIME),
-                ("CredentialBlobSize", wintypes.DWORD),
-                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
-                ("Persist", wintypes.DWORD),
-                ("AttributeCount", wintypes.DWORD),
-                ("Attributes", ctypes.c_void_p),
-                ("TargetAlias", wintypes.LPWSTR),
-                ("UserName", wintypes.LPWSTR),
-            ]
-
-        blob = password.encode("utf-16-le")
-        blob_buffer = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
-        credential = CREDENTIAL()
-        credential.Flags = 0
-        credential.Type = 1
-        credential.TargetName = service
-        credential.Comment = "DiFRA daily report SMTP password"
-        credential.CredentialBlobSize = len(blob)
-        credential.CredentialBlob = blob_buffer
-        credential.Persist = 2
-        credential.AttributeCount = 0
-        credential.Attributes = None
-        credential.TargetAlias = None
-        credential.UserName = account
-        return bool(ctypes.windll.advapi32.CredWriteW(ctypes.byref(credential), 0))
-    except Exception:
-        return False
-
-
-def _delete_windows_credential_password(*, account: str, service: str) -> bool:
-    if platform.system() != "Windows":
-        return False
-    service = str(service or "").strip()
-    if not service:
-        return False
-    try:
-        import ctypes
-
-        return bool(ctypes.windll.advapi32.CredDeleteW(service, 1, 0))
-    except Exception:
-        return False
+from difra.gui.daily_report_models import (  # noqa: E402
+    DailyReportResult,
+    DetectorSeries,
+)
+from difra.gui.daily_report_integration import (  # noqa: E402
+    _integrated_range_is_complete,
+    _integrated_signal_fraction,
+    _resample_range,
+    integrate_detector_signal,
+)
+from difra.gui.daily_report_rendering import (  # noqa: E402
+    _detector_sort_key,
+    _poni_arcname,
+    _report_image_name,
+    _write_report_poni_files,
+    build_report_manifest_diagnostics,
+    create_simple_test_image_zip,
+    create_zip,
+    render_report_images,
+)
 
 
 def _read_stored_smtp_password(*, account: str, service: str) -> str:
@@ -401,89 +108,6 @@ def _delete_stored_smtp_password(*, account: str, service: str) -> bool:
     if platform.system() == "Windows":
         return _delete_windows_credential_password(account=account, service=service)
     return _delete_macos_keychain_password(account=account, service=service)
-
-
-def _xor_bytes(payload: bytes, key: bytes, nonce: bytes) -> bytes:
-    out = bytearray()
-    counter = 0
-    while len(out) < len(payload):
-        block = hmac.new(
-            key,
-            nonce + counter.to_bytes(8, "big"),
-            hashlib.sha256,
-        ).digest()
-        out.extend(block)
-        counter += 1
-    return bytes(left ^ right for left, right in zip(payload, out))
-
-
-def _derive_secret_keys(passphrase: str, salt: bytes, iterations: int) -> Tuple[bytes, bytes]:
-    key_material = hashlib.pbkdf2_hmac(
-        "sha256",
-        str(passphrase or "").encode("utf-8"),
-        salt,
-        int(iterations),
-        dklen=64,
-    )
-    return key_material[:32], key_material[32:]
-
-
-def _blob_mac_payload(blob: Dict[str, Any]) -> bytes:
-    payload = {
-        key: blob[key]
-        for key in (
-            "version",
-            "kdf",
-            "iterations",
-            "salt",
-            "nonce",
-            "ciphertext",
-        )
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def _encrypt_secret_blob(secret: str, passphrase: str, *, iterations: int = 600_000) -> Dict[str, Any]:
-    salt = os.urandom(16)
-    nonce = os.urandom(16)
-    enc_key, mac_key = _derive_secret_keys(passphrase, salt, iterations)
-    ciphertext = _xor_bytes(str(secret or "").encode("utf-8"), enc_key, nonce)
-    blob = {
-        "version": 1,
-        "kdf": "pbkdf2-sha256",
-        "iterations": int(iterations),
-        "salt": base64.b64encode(salt).decode("ascii"),
-        "nonce": base64.b64encode(nonce).decode("ascii"),
-        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
-    }
-    mac = hmac.new(mac_key, _blob_mac_payload(blob), hashlib.sha256).digest()
-    blob["mac"] = base64.b64encode(mac).decode("ascii")
-    return blob
-
-
-def _decrypt_secret_blob(blob: Dict[str, Any], passphrase: str) -> str:
-    if int(blob.get("version", 0)) != 1:
-        return ""
-    if str(blob.get("kdf") or "") != "pbkdf2-sha256":
-        return ""
-    iterations = int(blob.get("iterations") or 0)
-    if iterations < 100_000:
-        return ""
-    try:
-        salt = base64.b64decode(str(blob.get("salt") or ""), validate=True)
-        nonce = base64.b64decode(str(blob.get("nonce") or ""), validate=True)
-        ciphertext = base64.b64decode(str(blob.get("ciphertext") or ""), validate=True)
-        expected_mac = base64.b64decode(str(blob.get("mac") or ""), validate=True)
-    except Exception:
-        return ""
-    enc_key, mac_key = _derive_secret_keys(passphrase, salt, iterations)
-    actual_mac = hmac.new(mac_key, _blob_mac_payload(blob), hashlib.sha256).digest()
-    if not hmac.compare_digest(actual_mac, expected_mac):
-        return ""
-    try:
-        return _xor_bytes(ciphertext, enc_key, nonce).decode("utf-8").strip()
-    except Exception:
-        return ""
 
 
 def _encrypted_password_path(config: Optional[Dict[str, Any]]) -> Path:
@@ -699,190 +323,6 @@ def ensure_daily_report_email_password_configured_gui(
     }
 
 
-def _load_json_config(path: Path) -> Dict[str, Any]:
-    try:
-        if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return payload
-    except Exception:
-        return {}
-    return {}
-
-
-def load_report_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    candidates = []
-    if config_path is not None:
-        candidates.append(Path(config_path))
-    root = Path(__file__).resolve().parents[1]
-    candidates.extend(
-        [
-            root / "resources" / "config" / "global.json",
-            root / "resources" / "config" / "main.json",
-        ]
-    )
-    config: Dict[str, Any] = {}
-    base_path: Optional[Path] = None
-    for candidate in candidates:
-        loaded = _load_json_config(candidate)
-        if loaded:
-            config.update(loaded)
-            base_path = Path(candidate)
-            break
-
-    overlay_candidates = []
-    env_overlay = os.environ.get("DIFRA_DAILY_REPORT_EMAIL_CONFIG")
-    if env_overlay:
-        overlay_candidates.append(Path(env_overlay))
-    if base_path is not None:
-        overlay_candidates.append(base_path.parent / "daily_report_email.json")
-    overlay_candidates.append(DEFAULT_EMAIL_CONFIG_PATH)
-
-    seen = set()
-    for candidate in overlay_candidates:
-        resolved = str(Path(candidate).expanduser())
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        config.update(_load_json_config(Path(candidate).expanduser()))
-    return config
-
-
-def _parse_report_datetime(value: Any) -> Optional[datetime]:
-    text = _as_text(value, "")
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text)
-    except Exception:
-        return None
-
-
-def _report_state_path(config: Optional[Dict[str, Any]], output_dir: Path) -> Path:
-    configured = _as_text(
-        _config_value(
-            config,
-            "daily_report_state_path",
-            "DIFRA_DAILY_REPORT_STATE_PATH",
-            "",
-        )
-    )
-    if configured:
-        return Path(configured).expanduser()
-    return Path(output_dir) / DEFAULT_REPORT_STATE_FILENAME
-
-
-def _load_report_state(path: Path) -> Dict[str, Any]:
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _write_report_state(path: Path, state: Dict[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
-
-
-def _append_report_attempt(
-    state: Dict[str, Any],
-    *,
-    result: "DailyReportResult",
-    manifest: Dict[str, Any],
-    email_result: Dict[str, Any],
-    period_start: datetime,
-    period_end: datetime,
-) -> None:
-    attempts = state.get("attempts")
-    if not isinstance(attempts, list):
-        attempts = []
-    attempts.append(
-        {
-            "attemptedAt": datetime.now().isoformat(timespec="seconds"),
-            "periodStart": period_start.isoformat(timespec="seconds"),
-            "periodEnd": period_end.isoformat(timespec="seconds"),
-            "sent": bool(email_result.get("sent")),
-            "skipped": bool(email_result.get("skipped")),
-            "message": _as_text(email_result.get("message"), ""),
-            "zipPath": str(result.zip_path or ""),
-            "scanned": int(result.scanned),
-            "validContainers": int(result.valid_containers),
-            "imageCount": len(result.images),
-            "projectIds": manifest.get("projectIds", []),
-            "matadorUploaded": int(manifest.get("matadorUploaded", 0) or 0),
-        }
-    )
-    state["attempts"] = attempts[-200:]
-
-
-def _safe_token(value: str, fallback: str = "unknown") -> str:
-    token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    token = "_".join(part for part in token.split("_") if part)
-    return token or fallback
-
-
-def _candidate_containers(roots: Iterable[Path], *, since: Optional[datetime]) -> List[Path]:
-    paths: List[Path] = []
-    min_mtime = since.timestamp() if since is not None else None
-    for root in roots:
-        folder = Path(root)
-        if not folder.exists():
-            continue
-        for path in folder.rglob("*.h5"):
-            name_upper = path.name.upper()
-            if "H5OLD" in name_upper:
-                continue
-            if not (path.name.endswith(".nxs.h5") or path.name.endswith(".h5")):
-                continue
-            if min_mtime is not None and path.stat().st_mtime < min_mtime:
-                continue
-            paths.append(path)
-    return sorted(set(paths))
-
-
-def _container_report_datetime(path: Path) -> Optional[datetime]:
-    try:
-        with h5py.File(path, "r") as h5f:
-            for attr_name in (
-                "acquisition_date",
-                "creation_timestamp",
-                "created_at",
-                "timestamp_start",
-                "lock_timestamp",
-                "archived_timestamp",
-            ):
-                text = _as_text(h5f.attrs.get(attr_name), "").strip()
-                if not text:
-                    continue
-                for candidate in (
-                    text,
-                    text.replace("Z", ""),
-                    text.replace(" ", "T"),
-                ):
-                    try:
-                        return datetime.fromisoformat(candidate)
-                    except Exception:
-                        continue
-    except Exception:
-        return None
-    try:
-        return datetime.fromtimestamp(Path(path).stat().st_mtime)
-    except Exception:
-        return None
-
-
-def _filter_containers_for_date(container_paths: Iterable[Path], report_date: date) -> List[Path]:
-    target = report_date.isoformat()
-    selected: List[Path] = []
-    for path in container_paths:
-        stamp = _container_report_datetime(Path(path))
-        if stamp is not None and stamp.date().isoformat() == target:
-            selected.append(Path(path))
-    return sorted(set(selected))
-
-
 def _is_container_valid(h5f: h5py.File) -> Tuple[bool, str]:
     specimen = _as_text(h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", "")))
     if not specimen:
@@ -973,15 +413,6 @@ def _detector_range_config(
     if any(item in token for item in ("PRIMARY", "SAXS", "LEFT", "DET_PRIMARY", "DET_SAXS")):
         return "SAXS", SAXS_RANGE, "SAXS 1-3 nm^-1", "alias/name matched SAXS/PRIMARY"
     return "SAXS", SAXS_RANGE, "SAXS 1-3 nm^-1", "default: alias/name did not identify SAXS or WAXS"
-
-
-def _detector_sort_key(item: DetectorSeries) -> Tuple[int, str]:
-    token = f"{item.detector_group} {item.detector_alias} {item.detector_side}".upper()
-    if any(part in token for part in ("PRIMARY", "LEFT", "SAXS")):
-        return (0, f"{item.detector_alias} {item.detector_name}")
-    if any(part in token for part in ("SECONDARY", "RIGHT", "WAXS")):
-        return (1, f"{item.detector_alias} {item.detector_name}")
-    return (2, f"{item.detector_alias} {item.detector_name}")
 
 
 def _sha256_text(value: str) -> str:
@@ -1085,222 +516,6 @@ def _resolve_poni_info(h5f: h5py.File, det_group: h5py.Group, alias: str) -> Tup
 def _resolve_poni_text(h5f: h5py.File, det_group: h5py.Group, alias: str) -> str:
     text, _source = _resolve_poni_info(h5f, det_group, alias)
     return text
-
-
-def _report_image_name(specimen_id: str) -> str:
-    return f"{_safe_token(specimen_id)}_detectors.png"
-
-
-def _poni_arcname(item: DetectorSeries) -> str:
-    if not item.poni_text.strip():
-        return ""
-    source_token = _safe_token(
-        str(item.source_dataset or "").replace("/entry/measurements/", ""),
-        "measurement",
-    )
-    hash_token = str(item.poni_sha256 or "")[:12] or "nohash"
-    return (
-        "poni/"
-        f"{_safe_token(item.specimen_id)}_"
-        f"{_safe_token(item.detector_group)}_"
-        f"{_safe_token(item.detector_name)}_"
-        f"{_safe_token(item.detector_side)}_"
-        f"{source_token}_{hash_token}.poni"
-    )
-
-
-def _write_report_poni_files(series: Iterable[DetectorSeries], output_dir: Path) -> Dict[str, Path]:
-    output = Path(output_dir)
-    files: Dict[str, Path] = {}
-    for item in series:
-        arcname = _poni_arcname(item)
-        if not arcname or arcname in files:
-            continue
-        path = output / arcname
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(item.poni_text, encoding="utf-8")
-        files[arcname] = path
-    return files
-
-
-def build_report_manifest_diagnostics(
-    series: Iterable[DetectorSeries],
-    *,
-    poni_files: Dict[str, Path],
-) -> Dict[str, Any]:
-    grouped: Dict[str, List[DetectorSeries]] = {}
-    for item in series:
-        grouped.setdefault(item.specimen_id, []).append(item)
-
-    image_entries = []
-    series_entries = []
-    poni_entries = {}
-    for specimen_id, items in sorted(grouped.items()):
-        image_file = _report_image_name(specimen_id)
-        detector_panels = []
-        for detector_key in sorted({item.detector_key for item in items}):
-            panel_items = [item for item in items if item.detector_key == detector_key]
-            if not panel_items:
-                continue
-            first = sorted(panel_items, key=_detector_sort_key)[0]
-            detector_panels.append(
-                {
-                    "detectorAlias": first.detector_alias,
-                    "detectorName": first.detector_name,
-                    "detectorGroup": first.detector_group,
-                    "detectorSide": first.detector_side,
-                    "rangeName": first.range_name,
-                    "qRangeNm^-1": [float(first.q_range[0]), float(first.q_range[1])],
-                    "rangeAssignment": first.range_assignment,
-                    "seriesCount": len(panel_items),
-                }
-            )
-        image_entries.append(
-            {
-                "imageFile": image_file,
-                "specimenId": specimen_id,
-                "layout": "one subplot per detector alias; PRIMARY/LEFT panels are ordered before SECONDARY/RIGHT panels",
-                "detectorPanels": detector_panels,
-                "seriesCount": len(items),
-            }
-        )
-        for detector_key in sorted({item.detector_key for item in items}):
-            panel_items = sorted(
-                [item for item in items if item.detector_key == detector_key],
-                key=lambda item: item.source_dataset,
-            )
-            for panel_index, item in enumerate(panel_items, start=1):
-                poni_arcname = _poni_arcname(item)
-                if poni_arcname:
-                    poni_entries[poni_arcname] = {
-                        "poniFile": poni_arcname,
-                        "poniSource": item.poni_source,
-                        "poniSha256": item.poni_sha256,
-                        "presentInZip": poni_arcname in poni_files,
-                    }
-                side = f" {item.detector_side}" if item.detector_side else ""
-                series_entries.append(
-                    {
-                        "imageFile": image_file,
-                        "seriesIndex": panel_index,
-                        "label": f"{item.detector_alias}{side} #{panel_index}",
-                        "specimenId": item.specimen_id,
-                        "detectorGroup": item.detector_group,
-                        "detectorSide": item.detector_side,
-                        "detectorAlias": item.detector_alias,
-                        "detectorName": item.detector_name,
-                        "rangeName": item.range_name,
-                        "rangeAssignment": item.range_assignment,
-                        "qRangeNm^-1": [float(item.q_range[0]), float(item.q_range[1])],
-                        "sourceContainer": str(item.source_container),
-                        "sourceDataset": item.source_dataset,
-                        "sourceDataSha256": item.source_data_sha256,
-                        "sourceDataShape": list(item.source_data_shape),
-                        "sourceDataMin": item.source_data_min,
-                        "sourceDataMedian": item.source_data_median,
-                        "sourceDataMax": item.source_data_max,
-                        "integrationBackend": item.integration_backend,
-                        "poniSource": item.poni_source,
-                        "poniFile": poni_arcname,
-                        "poniSha256": item.poni_sha256,
-                    }
-                )
-    return {
-        "images": image_entries,
-        "series": series_entries,
-        "poniFiles": sorted(poni_entries.values(), key=lambda item: item["poniFile"]),
-    }
-
-
-def integrate_detector_signal(
-    data: np.ndarray,
-    poni_text: str,
-    *,
-    npt: int = DEFAULT_POINTS,
-    q_range: Optional[Tuple[float, float]] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    arr = np.asarray(data, dtype=float)
-    if arr.ndim != 2 or not poni_text.strip():
-        return np.asarray([]), np.asarray([])
-    try:
-        from difra.gui.technical.analysis_compat import (
-            initialize_azimuthal_integrator_poni_text,
-        )
-
-        ai = initialize_azimuthal_integrator_poni_text(poni_text)
-        kwargs: Dict[str, Any] = {}
-        if q_range is not None:
-            kwargs["radial_range"] = (float(q_range[0]), float(q_range[1]))
-        result = ai.integrate1d(
-            arr,
-            max(int(npt), 2),
-            unit="q_nm^-1",
-            error_model="azimuthal",
-            **kwargs,
-        )
-        q = np.asarray(result.radial, dtype=float).reshape(-1)
-        intensity = np.asarray(result.intensity, dtype=float).reshape(-1)
-        finite = np.isfinite(q) & np.isfinite(intensity)
-        return q[finite], intensity[finite]
-    except Exception:
-        return np.asarray([]), np.asarray([])
-
-
-def _resample_range(
-    q: np.ndarray,
-    intensity: np.ndarray,
-    q_range: Tuple[float, float],
-    *,
-    points: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    q = np.asarray(q, dtype=float).reshape(-1)
-    intensity = np.asarray(intensity, dtype=float).reshape(-1)
-    finite = np.isfinite(q) & np.isfinite(intensity)
-    q = q[finite]
-    intensity = intensity[finite]
-    if q.size < 2:
-        return np.asarray([]), np.asarray([])
-    order = np.argsort(q)
-    q = q[order]
-    intensity = intensity[order]
-    if q[0] > float(q_range[0]) or q[-1] < float(q_range[1]):
-        return np.asarray([]), np.asarray([])
-    mask = (q >= float(q_range[0])) & (q <= float(q_range[1]))
-    if np.count_nonzero(mask) < 2:
-        return np.asarray([]), np.asarray([])
-    target_q = np.linspace(float(q_range[0]), float(q_range[1]), int(points))
-    target_i = np.interp(target_q, q[mask], intensity[mask])
-    return target_q, target_i
-
-
-def _integrated_range_is_complete(
-    q: np.ndarray,
-    intensity: np.ndarray,
-    q_range: Tuple[float, float],
-    *,
-    points: int,
-) -> bool:
-    q = np.asarray(q, dtype=float).reshape(-1)
-    intensity = np.asarray(intensity, dtype=float).reshape(-1)
-    if q.size != int(points) or intensity.size != int(points):
-        return False
-    if not np.all(np.isfinite(q)) or not np.all(np.isfinite(intensity)):
-        return False
-    q_min = float(np.nanmin(q))
-    q_max = float(np.nanmax(q))
-    return q_min >= float(q_range[0]) - 1e-6 and q_max <= float(q_range[1]) + 1e-6
-
-
-def _integrated_signal_fraction(intensity: np.ndarray) -> float:
-    values = np.asarray(intensity, dtype=float).reshape(-1)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return 0.0
-    scale = float(np.nanmax(np.abs(finite)))
-    if scale <= 0.0:
-        return 0.0
-    threshold = max(scale * 1e-6, 1e-12)
-    return float(np.count_nonzero(np.abs(finite) > threshold) / finite.size)
 
 
 def collect_report_series(
@@ -1471,119 +686,12 @@ def summarize_valid_containers(container_paths: Iterable[Path]) -> Dict[str, Any
     }
 
 
-def render_report_images(
-    series: Iterable[DetectorSeries],
-    output_dir: Path,
-    *,
-    dpi: int = DEFAULT_DPI,
-) -> List[Path]:
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    grouped: Dict[str, List[DetectorSeries]] = {}
-    for item in series:
-        grouped.setdefault(item.specimen_id, []).append(item)
-
-    images: List[Path] = []
-    for specimen_id, items in sorted(grouped.items()):
-        detector_keys = []
-        for item in sorted(items, key=_detector_sort_key):
-            if item.detector_key not in detector_keys:
-                detector_keys.append(item.detector_key)
-        panel_count = max(len(detector_keys), 1)
-        ncols = min(panel_count, 3)
-        nrows = int(np.ceil(panel_count / ncols))
-        fig, axes = plt.subplots(
-            nrows,
-            ncols,
-            figsize=(6.2 * ncols, 4.6 * nrows),
-            dpi=dpi,
-            squeeze=False,
-        )
-        for axis in axes.reshape(-1):
-            axis.set_visible(False)
-        for panel_index, detector_key in enumerate(detector_keys):
-            ax = axes.reshape(-1)[panel_index]
-            ax.set_visible(True)
-            panel_items = [item for item in items if item.detector_key == detector_key]
-            panel_items = sorted(panel_items, key=lambda item: item.source_dataset)
-            if not panel_items:
-                continue
-            first = panel_items[0]
-            q_range = tuple(first.q_range)
-            for index, item in enumerate(panel_items, start=1):
-                label = f"{item.detector_alias} #{index}"
-                ax.plot(item.q, item.intensity, linewidth=1.1, alpha=0.85, label=label)
-            side = f" ({first.detector_side})" if first.detector_side else ""
-            ax.set_title(f"{first.detector_alias}{side} | {first.range_label}")
-            ax.set_xlabel("q (nm^-1)")
-            ax.set_ylabel("I(q)")
-            ax.set_xlim(q_range)
-            ax.grid(True, alpha=0.25)
-            if len(panel_items) <= 12:
-                ax.legend(fontsize=7)
-        fig.suptitle(str(specimen_id), fontsize=12)
-        fig.tight_layout()
-        image_path = output / _report_image_name(specimen_id)
-        fig.savefig(image_path, dpi=dpi)
-        plt.close(fig)
-        images.append(image_path)
-    return images
-
-
 def _no_report_images_email_result() -> Dict[str, Any]:
     return {
         "sent": False,
         "skipped": True,
         "message": "daily report has no PNG images; email not sent",
     }
-
-
-def create_zip(
-    zip_path: Path,
-    image_paths: Iterable[Path],
-    *,
-    manifest: Dict[str, Any],
-    extra_files: Optional[Dict[str, Path]] = None,
-) -> Path:
-    target = Path(zip_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, indent=2, default=str))
-        for image_path in image_paths:
-            path = Path(image_path)
-            archive.write(path, arcname=path.name)
-        for arcname, source_path in sorted((extra_files or {}).items()):
-            path = Path(source_path)
-            if path.exists():
-                archive.write(path, arcname=str(arcname))
-    return target
-
-
-def create_simple_test_image_zip(output_dir: Path, *, dpi: int = DEFAULT_DPI) -> Path:
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    image_paths = []
-    for name, q_range, fn in (
-        ("test_PRIMARY_SAXS_1-3nm-1.png", SAXS_RANGE, lambda q: np.sin(q * 4.0) + 2.0),
-        ("test_SECONDARY_WAXS_2-21nm-1.png", WAXS_RANGE, lambda q: np.cos(q * 3.0) + 2.0),
-    ):
-        q = np.linspace(float(q_range[0]), float(q_range[1]), DEFAULT_POINTS)
-        y = fn(q)
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=dpi)
-        ax.plot(q, y, linewidth=1.5)
-        ax.set_xlabel("q (nm^-1)")
-        ax.set_ylabel("I(q)")
-        ax.grid(True, alpha=0.25)
-        fig.tight_layout()
-        image_path = output / name
-        fig.savefig(image_path, dpi=dpi)
-        plt.close(fig)
-        image_paths.append(image_path)
-    return create_zip(
-        output / "difra_daily_report_test_images.zip",
-        image_paths,
-        manifest={"kind": "test", "imageCount": len(image_paths)},
-    )
 
 
 def build_daily_report_email(
