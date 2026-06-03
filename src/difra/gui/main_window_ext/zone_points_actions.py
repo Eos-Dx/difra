@@ -10,6 +10,7 @@ def update_points_table_safe(owner):
     try:
         if not hasattr(owner, "pointsTable") or owner.pointsTable is None:
             logger.debug("pointsTable not available for safe update")
+            print("pointsTable not available for safe update")
             return
 
         owner._updating_points_table = True
