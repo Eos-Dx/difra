@@ -40,6 +40,11 @@ if os.path.isdir(kinesis_sdk_path):
     # ensuring its DLLs are discoverable for ctypes or similar bindings is crucial.
     sys.path.insert(0, kinesis_sdk_path)
 
+from difra.gui.qt_preflight import ensure_qt_api_for_gui
+
+
+qt_preflight_result = ensure_qt_api_for_gui(src_root=src_root)
+
 # Import Qt bindings with error handling for Application Control policies
 try:
     from difra.gui.qt_compat import (
@@ -85,6 +90,9 @@ except ImportError as e:
         print("\nNOTE: Unblock-File and Set-ExecutionPolicy do NOT work with WDAC policies.")
         print("="*80 + "\n")
     else:
+        fallback_reason = os.environ.get("DIFRA_QT_PREFLIGHT_FALLBACK_REASON", "")
+        if fallback_reason:
+            print(f"\nQt preflight fallback: {fallback_reason}")
         print(f"\nERROR: Failed to import Qt bindings: {error_msg}\n")
     sys.exit(1)
 
@@ -124,6 +132,12 @@ if __name__ == "__main__":
             logger.info("="*80)
             logger.info(f"Python version: {sys.version}")
             logger.info(f"Qt binding: {QT_API}")
+            if qt_preflight_result.fallback:
+                logger.warning(
+                    "Qt preflight selected %s: %s",
+                    qt_preflight_result.selected,
+                    qt_preflight_result.reason,
+                )
             logger.info(f"Log file path: {log_path}")
             logger.info(f"Working directory: {Path.cwd()}")
             logger.info(f"Source root: {src_root}")
