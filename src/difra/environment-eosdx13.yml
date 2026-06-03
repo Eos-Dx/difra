@@ -6,7 +6,7 @@ dependencies:
   - pip
 
   # GUI + imaging
-  - pyqt=5
+  - pyqt=6
   - matplotlib
   - seaborn
   - pillow
