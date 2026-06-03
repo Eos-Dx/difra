@@ -57,7 +57,6 @@ from difra.gui.matador_runtime_context import (
 from difra.gui.matador_upload_error_reporter import (
     send_matador_upload_error_report,
 )
-from difra.gui.matador_upload_api import build_matador_upload_api
 from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
 from difra.gui.session_lifecycle_actions import SessionLifecycleActions
 from difra.gui.session_lifecycle_service import SessionLifecycleService

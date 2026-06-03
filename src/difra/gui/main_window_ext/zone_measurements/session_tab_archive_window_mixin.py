@@ -32,7 +32,7 @@ from difra.gui.archive_project_statistics import (
 from difra.gui.matador_runtime_context import (
     get_runtime_matador_context,
 )
-from difra.gui.matador_upload_api import build_matador_upload_api
+from difra.gui.matador_upload_service import build_matador_upload_service
 from difra.gui.session_tab_presenter import SessionTabPresenter
 from difra.utils.logger import get_module_logger
 
@@ -395,7 +395,7 @@ class SessionTabArchiveWindowMixin:
             }
         )
         try:
-            api = build_matador_upload_api(runtime_config)
+            api = build_matador_upload_service(runtime_config).api
             studies = api.list_studies()
             specimen_sets, uploaded_sets, errors = collect_matador_project_sets(
                 api=api,

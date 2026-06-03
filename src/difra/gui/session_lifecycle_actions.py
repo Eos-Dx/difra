@@ -19,10 +19,10 @@ from difra.gui.matador_upload_api import (
     MatadorFindOrCreateSessionRequest,
     MatadorRegisterFileRequest,
     MatadorUploadContainerRequest,
-    build_matador_upload_api,
     sha256_file,
 )
 from difra.gui.main_window_ext.technical.helpers import _get_difra_base_folder
+from difra.gui.matador_upload_service import build_matador_upload_service
 from difra.gui.matador_zip_bundle_exporter import MatadorZipBundleExporter
 from difra.gui.session_lifecycle_archive_mixin import SessionLifecycleArchiveMixin
 from difra.gui.session_lifecycle_common import (
@@ -37,6 +37,11 @@ from difra.gui.session_lifecycle_service import SessionLifecycleService
 from difra.gui.session_old_format_exporter import SessionOldFormatExporter
 
 logger = logging.getLogger(__name__)
+
+
+def build_matador_upload_api(config: Optional[dict] = None):
+    return build_matador_upload_service(config=config).api
+
 
 class SessionLifecycleActions(
     SessionLifecycleReuploadMixin,
