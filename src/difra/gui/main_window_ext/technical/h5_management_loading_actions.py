@@ -1,5 +1,6 @@
 """Procedural loading/create helpers extracted from H5ManagementLoadingMixin."""
 
+from difra.gui.qt_compat import exec_dialog
 import logging
 from pathlib import Path
 
@@ -177,7 +178,7 @@ def prompt_existing_technical_container_resolution(owner, existing_path: Path):
     new_btn = msg_box.addButton("Create New", QMessageBox.ActionRole)
     cancel_btn = msg_box.addButton(QMessageBox.Cancel)
     msg_box.setDefaultButton(cancel_btn)
-    msg_box.exec_()
+    exec_dialog(msg_box)
 
     clicked = msg_box.clickedButton()
     if clicked == use_btn:
@@ -424,7 +425,7 @@ def ensure_active_technical_container_available(
     new_btn = msg_box.addButton("Create New Container", QMessageBox.ActionRole)
     cancel_btn = msg_box.addButton(QMessageBox.Cancel)
     msg_box.setDefaultButton(cancel_btn)
-    msg_box.exec_()
+    exec_dialog(msg_box)
 
     clicked = msg_box.clickedButton()
     if clicked == unlock_btn:

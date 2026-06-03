@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import logging
 from math import ceil, floor, sqrt
 
@@ -207,7 +208,7 @@ class ShapeCatchAutoMixin:
         buttons_layout.addWidget(cancel_button, 0, 1)
         layout.addWidget(buttons_row)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return None
 
         self.catch_auto_holder_rgb = tuple(holder_button.rgb)

@@ -1,5 +1,6 @@
 """Procedural measurement-start helpers extracted from ProcessStartMixin."""
 
+from difra.gui.qt_compat import exec_dialog
 import time
 import uuid
 from copy import copy
@@ -227,7 +228,7 @@ def start_measurements(owner):
             owner,
             session_manager=getattr(owner, "session_manager", None),
         )
-        if dialog.exec_() != dialog.Accepted:
+        if exec_dialog(dialog) != dialog.Accepted:
             owner._append_capture_log("Start cancelled: preflight checklist not confirmed")
             return
     except Exception as exc:

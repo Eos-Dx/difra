@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import json
 import os
 from pathlib import Path
@@ -354,7 +355,7 @@ class MainWindowBasic(QMainWindow):
             return
         default_folder = self.config.get("default_folder", "")
         dialog = CameraCaptureDialog(self, default_folder=default_folder)
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             image_path = getattr(dialog, "selected_image_path", None)
             if image_path and os.path.exists(image_path):
                 session_flow_actions.clear_session_workspace(self)
@@ -457,7 +458,7 @@ class MainWindowBasic(QMainWindow):
         buttons.rejected.connect(dlg.reject)
 
         dlg.resize(600, 400)
-        dlg.exec_()
+        exec_dialog(dlg)
 
     def edit_global_settings(self):
         """
@@ -503,7 +504,7 @@ class MainWindowBasic(QMainWindow):
         buttons.rejected.connect(dlg.reject)
 
         dlg.resize(600, 400)
-        dlg.exec_()
+        exec_dialog(dlg)
 
     def open_readme(self):
         """Open README.md file with system default application."""
@@ -567,7 +568,7 @@ class MainWindowBasic(QMainWindow):
         ok.clicked.connect(dlg.accept)
         layout.addWidget(ok)
         dlg.resize(380, 300)
-        if dlg.exec_() == QDialog.Accepted and lst.currentItem():
+        if exec_dialog(dlg) == QDialog.Accepted and lst.currentItem():
             name = lst.currentItem().text()
             path = (self._setups_dir / f"{name}.json").resolve()
             return name, path if path.exists() else (name, None)

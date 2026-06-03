@@ -1,5 +1,6 @@
 """Technical HDF5 container generation responsibilities."""
 
+from difra.gui.qt_compat import exec_dialog
 from pathlib import Path
 
 from . import h5_generation_mixin as _module
@@ -279,7 +280,7 @@ class H5GenerationContainerMixin:
                 parent=self,
             )
 
-            if poni_dialog.exec_() == QDialog.Accepted:
+            if exec_dialog(poni_dialog) == QDialog.Accepted:
                 selected_poni_files = poni_dialog.get_poni_files() or {}
             else:
                 return

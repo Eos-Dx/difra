@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import logging
 from pathlib import Path
 
@@ -617,6 +618,6 @@ class MeasurementHistoryWidget(QWidget):
 
             table.cellClicked.connect(cell_clicked)
             table.cellDoubleClicked.connect(cell_double_clicked)
-            dlg.exec_()
+            exec_dialog(dlg)
         except Exception as e:
             logging.getLogger(__name__).exception("Error showing history dialog: %s", e)

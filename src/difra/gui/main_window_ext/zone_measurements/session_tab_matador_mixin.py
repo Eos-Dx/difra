@@ -1,5 +1,6 @@
 """Session management tab for Zone Measurements."""
 
+from difra.gui.qt_compat import exec_dialog
 from datetime import datetime
 import json
 import os
@@ -369,7 +370,7 @@ class SessionTabMatadorMixin:
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return None
 
         uploader_text = str(uploader_edit.text() or "").strip()

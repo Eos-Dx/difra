@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import logging
 import os
 import shutil
@@ -677,7 +678,7 @@ class TechnicalCaptureAutoPoniConfigMixin:
             buttons.rejected.connect(dialog.reject)
             layout.addWidget(buttons)
 
-            result = dialog.exec_()
+            result = exec_dialog(dialog)
             if result != tm.QDialog.Accepted:
                 return None
 

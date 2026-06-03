@@ -1,5 +1,6 @@
 """Technical metadata generation responsibilities for H5 generation."""
 
+from difra.gui.qt_compat import exec_dialog
 from . import h5_generation_mixin as _module
 from .poni_center_validation import (
     normalize_alias_mapping_to_rule_aliases,
@@ -545,7 +546,7 @@ Wavelength: {wavelength}
                 parent=self,
             )
 
-            if poni_dialog.exec_() == dialog_class.Accepted:
+            if exec_dialog(poni_dialog) == dialog_class.Accepted:
                 selected_poni_files = poni_dialog.get_poni_files()
                 poni_lab_path = {}
                 poni_lab_values = {}

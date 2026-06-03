@@ -1,5 +1,6 @@
 """PONI center preview and range-editing dialog."""
 
+from difra.gui.qt_compat import exec_dialog
 import json
 import logging
 from pathlib import Path
@@ -456,7 +457,7 @@ def show_poni_centers_preview_window(
     dialog.resize(max(640, 460 * cols), 420)
     dialog._poni_zone_selectors = selectors
     if decision_mode:
-        result = dialog.exec_()
+        result = exec_dialog(dialog)
         return {"dialog": dialog, "accepted": bool(result == QDialog.Accepted)}
 
     dialog.show()

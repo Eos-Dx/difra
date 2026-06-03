@@ -4,6 +4,7 @@ Manages operator information stored in JSON format with contact details.
 Provides dialog for operator selection/creation on startup.
 """
 
+from difra.gui.qt_compat import exec_dialog
 import json
 import hashlib
 import hmac
@@ -397,7 +398,7 @@ class OperatorSelectionDialog(QDialog):
         """Handle create new operator button."""
         dialog = NewOperatorDialog(self.operator_manager, self)
         
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             new_operator_id = dialog.get_operator_id()
             
             # Refresh combo box
@@ -420,7 +421,7 @@ class OperatorSelectionDialog(QDialog):
             self,
             existing_operator_id=str(operator_id),
         )
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             updated_operator_id = dialog.get_operator_id() or str(operator_id)
             self._populate_operator_combo()
             for i in range(self.operator_combo.count()):

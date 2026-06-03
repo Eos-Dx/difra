@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 from difra.gui.image_view_ext.drawing_extension import DrawingMixin
 from difra.gui.image_view_ext.point_editing_extension import (
     PointEditingMixin,
@@ -189,7 +190,7 @@ class ImageView(ZoomMixin, DrawingMixin, PointEditingMixin, ImageViewBasic):
             menu.addSeparator()
         delete_points_action = menu.addAction("Delete Selected Point(s)")
         delete_action = menu.addAction("Delete Selected Shape(s)")
-        chosen = menu.exec_(event.globalPos())
+        chosen = exec_dialog(menu, event.globalPos())
         if chosen == calibration_square_action and selected_shape_infos:
             if hasattr(main_window, "define_shape_as_calibration_role"):
                 main_window.define_shape_as_calibration_role(

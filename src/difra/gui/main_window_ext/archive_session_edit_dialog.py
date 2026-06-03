@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from difra.gui.qt_compat import exec_dialog
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -318,7 +319,7 @@ class ArchiveSessionEditDialog(QDialog):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return None
 
         token_text = str(token_edit.text() or "").strip()

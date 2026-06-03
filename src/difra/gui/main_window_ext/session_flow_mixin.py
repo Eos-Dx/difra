@@ -1,5 +1,6 @@
 """Session lifecycle flow helpers for SessionMixin."""
 
+from difra.gui.qt_compat import exec_dialog
 import time
 
 import h5py
@@ -96,7 +97,7 @@ class SessionFlowMixin(SessionRestoreMixin):
         continue_btn = msg_box.addButton("No - Archive Normally", QMessageBox.NoRole)
         cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
         msg_box.setDefaultButton(cancel_btn)
-        msg_box.exec_()
+        exec_dialog(msg_box)
         clicked_button = msg_box.clickedButton()
 
         if clicked_button == cancel_btn:

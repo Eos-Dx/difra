@@ -1,5 +1,6 @@
 """Main zone points extension functionality."""
 
+from difra.gui.qt_compat import exec_dialog
 import logging
 from typing import Optional, Tuple
 
@@ -38,7 +39,7 @@ class ZonePointsSkipDeleteMixin:
         menu = QMenu(self.pointsTable)
         delete_action = menu.addAction("Delete Selected Point(s)")
         skip_action = menu.addAction("Mark Selected as Skipped...")
-        chosen = menu.exec_(self.pointsTable.viewport().mapToGlobal(pos))
+        chosen = exec_dialog(menu, self.pointsTable.viewport().mapToGlobal(pos))
         if chosen == delete_action:
             self.delete_selected_points()
         elif chosen == skip_action:

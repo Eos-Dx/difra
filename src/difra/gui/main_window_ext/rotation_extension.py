@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 from difra.gui.qt_compat import Qt
 from difra.gui.qt_compat import QAction, QLabel, QMenu, QPushButton, QToolButton
 
@@ -50,7 +51,7 @@ class RotatorToolButton(QToolButton):
         """
         if event.button() == Qt.RightButton:
             # Display the menu at the current global cursor position.
-            self.menu.exec_(event.globalPos())
+            exec_dialog(self.menu, event.globalPos())
         else:
             # For non-right clicks, process the event normally.
             super().mousePressEvent(event)

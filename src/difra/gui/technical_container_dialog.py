@@ -4,6 +4,7 @@ Dialog for selecting operator and confirming distance when generating
 a technical HDF5 container from auxiliary measurements.
 """
 
+from difra.gui.qt_compat import exec_dialog
 import logging
 import os
 import random
@@ -228,7 +229,7 @@ class TechnicalContainerDialog(QDialog):
         """Handle add new operator button."""
         dialog = NewOperatorDialog(self.operator_manager, self)
         
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             new_operator_id = dialog.get_operator_id()
             
             # Refresh combo box

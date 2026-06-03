@@ -1,5 +1,6 @@
 """State saver restoration and reconstruction responsibilities."""
 
+from difra.gui.qt_compat import exec_dialog
 import logging
 import binascii
 
@@ -557,7 +558,7 @@ class StateSaverRestoreMixin:
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.Yes)
 
-        result = msg.exec_()
+        result = exec_dialog(msg)
 
         if result == QMessageBox.Yes:
             # User wants to restore PONI files

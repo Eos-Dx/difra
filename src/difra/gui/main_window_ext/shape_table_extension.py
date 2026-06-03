@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import logging
 import uuid
 
@@ -196,7 +197,7 @@ class ShapeTableMixin(ShapeCalibrationMixin):
         editPhysicalSizeAct = menu.addAction("Edit Physical Size...")
         menu.addSeparator()
         deleteAct = menu.addAction("Delete")
-        action = menu.exec_(self.shapeTable.viewport().mapToGlobal(pos))
+        action = exec_dialog(menu, self.shapeTable.viewport().mapToGlobal(pos))
         if action == includeAct:
             self.update_shape_role(row, "include")
         elif action == excludeAct:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from difra.gui.qt_compat import exec_dialog
 from pathlib import Path
 
 from difra.gui.qt_compat import QEvent, QSettings, Qt
@@ -253,7 +254,7 @@ class NewSessionDialog(QDialog):
 
         dialog = NewOperatorDialog(self.operator_manager, self)
 
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             new_operator_id = dialog.get_operator_id()
             self._populate_operator_combo()
             for i in range(self.operator_combo.count()):
@@ -390,7 +391,7 @@ class NewSessionDialog(QDialog):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return None
 
         token_text = str(token_edit.text() or "").strip()

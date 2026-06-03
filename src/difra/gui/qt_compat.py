@@ -261,5 +261,5 @@ def exec_app(app: QtWidgets.QApplication) -> int:
     return int(app.exec() if hasattr(app, "exec") else app.exec_())
 
 
-def exec_dialog(dialog: QtWidgets.QDialog):
-    return dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+def exec_dialog(dialog: QtWidgets.QDialog, *args):
+    return dialog.exec(*args) if hasattr(dialog, "exec") else dialog.exec_(*args)

@@ -1,5 +1,6 @@
 """Session management tab for Zone Measurements."""
 
+from difra.gui.qt_compat import exec_dialog
 import hashlib
 import hmac
 import os
@@ -92,7 +93,7 @@ class SessionTabArchiveActionsMixin:
             container_paths=targets,
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return
 
         selection = dialog.get_selection()
@@ -316,7 +317,7 @@ class SessionTabArchiveActionsMixin:
             send_action.setEnabled(False)
         analyst_report_action = menu.addAction("Send Report to Analysts")
         old_format_action = menu.addAction("Generate Old Format")
-        selected = menu.exec_(table.viewport().mapToGlobal(pos))
+        selected = exec_dialog(menu, table.viewport().mapToGlobal(pos))
         if selected == load_action:
             self._open_session_container_path(container_path)
         elif selected == edit_action:

@@ -1,5 +1,6 @@
 """Technical H5 locking responsibilities: H5LockingLockWorkflowMixin."""
 
+from difra.gui.qt_compat import exec_dialog
 from difra.gui.main_window_ext.technical.h5_locking_common import *
 
 
@@ -61,7 +62,7 @@ class H5LockingLockWorkflowMixin:
             parent=self,
         )
         accepted_value = getattr(type(dialog), "Accepted", 1)
-        if dialog.exec_() != accepted_value:
+        if exec_dialog(dialog) != accepted_value:
             self._log_technical_event("Lock cancelled: PONI selection dialog cancelled")
             return False
 

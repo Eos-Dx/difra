@@ -1,3 +1,4 @@
+from difra.gui.qt_compat import exec_dialog
 import logging
 from pathlib import Path
 
@@ -441,7 +442,7 @@ class TechnicalPanelMixin:
             parent=self,
         )
 
-        if dialog.exec_() == tm.QDialog.Accepted:
+        if exec_dialog(dialog) == tm.QDialog.Accepted:
             previous_distances = getattr(self, "_detector_distances", {})
             distances = dialog.get_distances()
             self._detector_distances = distances

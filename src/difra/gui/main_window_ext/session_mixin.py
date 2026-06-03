@@ -3,6 +3,7 @@
 Integrates SessionManager for HDF5 container-based data storage.
 """
 
+from difra.gui.qt_compat import exec_dialog
 import hashlib
 import hmac
 import json
@@ -393,7 +394,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         """Show operator selection dialog on startup."""
         dialog = OperatorSelectionDialog(self.operator_manager, self)
         
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             operator_id = dialog.get_selected_operator_id()
             logger.info(f"Operator selected: {operator_id}")
             self._ensure_daily_report_email_password_after_operator_selection()
@@ -550,7 +551,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             initial=initial_info,
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog(dialog) != QDialog.Accepted:
             return
 
         params = dialog.get_parameters()
@@ -617,7 +618,7 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
             default_distance=self._default_session_distance_cm(),
         )
         
-        if dialog.exec_() == QDialog.Accepted:
+        if exec_dialog(dialog) == QDialog.Accepted:
             params = dialog.get_parameters()
             
             # Get session folder from config or file dialog
