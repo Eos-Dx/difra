@@ -3,18 +3,14 @@
 Integrates SessionManager for HDF5 container-based data storage.
 """
 
-import hashlib
-import hmac
-import json
 import logging
+import json
 from pathlib import Path
 
 from difra.gui.qt_compat import (
     QAction,
     QDialog,
     QFileDialog,
-    QInputDialog,
-    QLineEdit,
     QMessageBox,
 )
 
@@ -24,30 +20,29 @@ from difra.gui.container_api import (
     get_writer,
 )
 from difra.gui.main_window_ext.new_session_dialog import NewSessionDialog
-from difra.gui.main_window_ext.session_container_info_dialog import (
-    SessionContainerInfoDialog,
-)
 from difra.gui.main_window_ext import session_flow_actions
 from difra.gui.session_manager import SessionManager
 from difra.gui.operator_manager import OperatorManager, OperatorSelectionDialog
-
-logger = logging.getLogger(__name__)
-
-_CONTAINER_INFORMATION_EDIT_PASSWORD_HASH = (
-    "a3a6d0c20599d2b39da055a13bd4fa3ef70054cec584fc4ed1c46c4feab2a747"
+from difra.gui.main_window_ext.session_container_edit_mixin import (
+    SessionContainerEditMixin,
+    _verify_container_information_edit_password as _verify_container_information_edit_password,
+)
+from difra.gui.main_window_ext.session_runtime_state_mixin import (
+    SessionRuntimeStateMixin,
 )
 
-
-def _verify_container_information_edit_password(password: str) -> bool:
-    provided = hashlib.sha256(str(password or "").encode("utf-8")).hexdigest()
-    return hmac.compare_digest(provided, _CONTAINER_INFORMATION_EDIT_PASSWORD_HASH)
-
+logger = logging.getLogger(__name__)
 
 from difra.gui.main_window_ext.session_workspace_mixin import SessionWorkspaceMixin
 from difra.gui.main_window_ext.session_flow_mixin import SessionFlowMixin
 
 
-class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
+class SessionMixin(
+    SessionWorkspaceMixin,
+    SessionFlowMixin,
+    SessionContainerEditMixin,
+    SessionRuntimeStateMixin,
+):
     """Mixin for session management functionality."""
 
     @staticmethod
@@ -96,203 +91,6 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
     def _append_technical_log(self, message: str):
         self._append_compact_log("TECH", message)
 
-    def _default_session_distance_cm(self):
-        active_path = str(getattr(self, "_active_technical_container_path", "") or "").strip()
-        if active_path:
-            try:
-                import h5py
-
-                with h5py.File(active_path, "r") as h5f:
-                    distance = h5f.attrs.get("distance_cm")
-                    if distance is not None:
-                        return float(distance)
-            except Exception as exc:
-                logger.debug("Failed to read active technical distance: %s", exc, exc_info=True)
-        try:
-            distances = getattr(self, "_detector_distances", {}) or {}
-            if distances:
-                return float(next(iter(distances.values())))
-        except Exception as exc:
-            logger.debug("Failed to read default session distance: %s", exc, exc_info=True)
-        return None
-
-    def _current_measurement_output_folder(self) -> Path:
-        if (
-            hasattr(self, "session_manager")
-            and self.session_manager is not None
-            and self.session_manager.is_session_active()
-        ):
-            session_path = getattr(self.session_manager, "session_path", None)
-            if session_path:
-                try:
-                    session_parent = Path(session_path).parent
-                    if Path(session_path).exists():
-                        return session_parent
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to resolve active session parent folder: %s",
-                        exc,
-                        exc_info=True,
-                    )
-
-        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
-            folder_text = str(self.folderLineEdit.text() or "").strip()
-            if folder_text:
-                return Path(folder_text)
-
-        return self.get_session_folder()
-
-    def _is_measurement_output_folder_locked(self) -> bool:
-        if not hasattr(self, "session_manager") or self.session_manager is None:
-            return False
-        if not self.session_manager.is_session_active():
-            return False
-        session_path = getattr(self.session_manager, "session_path", None)
-        if not session_path:
-            return False
-        try:
-            return Path(session_path).exists()
-        except Exception as exc:
-            logger.debug(
-                "Failed to validate active session path existence: %s",
-                exc,
-                exc_info=True,
-            )
-            return False
-
-    def _refresh_measurement_output_folder_lock(self):
-        locked_folder = ""
-        if self._is_measurement_output_folder_locked():
-            try:
-                locked_folder = str(Path(self.session_manager.session_path).parent)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to resolve locked session folder path: %s",
-                    exc,
-                    exc_info=True,
-                )
-                locked_folder = ""
-
-        self._measurement_output_folder_locked_path = locked_folder
-
-        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
-            if locked_folder:
-                self.folderLineEdit.setText(locked_folder)
-            try:
-                self.folderLineEdit.setReadOnly(bool(locked_folder))
-            except Exception as exc:
-                logger.debug(
-                    "Failed to toggle folderLineEdit readonly state: %s",
-                    exc,
-                    exc_info=True,
-                )
-            try:
-                self.folderLineEdit.setToolTip(
-                    "Locked to the active session container folder."
-                    if locked_folder
-                    else "Measurement output folder for the current session workflow."
-                )
-            except Exception as exc:
-                logger.debug(
-                    "Failed to update folderLineEdit tooltip: %s",
-                    exc,
-                    exc_info=True,
-                )
-
-        if hasattr(self, "browseBtn") and self.browseBtn is not None:
-            self.browseBtn.setEnabled(not bool(locked_folder))
-            try:
-                self.browseBtn.setToolTip(
-                    "Cannot change folder while an active session container exists."
-                    if locked_folder
-                    else "Browse for measurement output folder."
-                )
-            except Exception as exc:
-                logger.debug(
-                    "Failed to update browseBtn tooltip: %s",
-                    exc,
-                    exc_info=True,
-                )
-
-    def _enforce_measurement_output_folder_lock(self, show_message: bool = False) -> bool:
-        if not self._is_measurement_output_folder_locked():
-            return True
-
-        locked_folder = str(getattr(self, "_measurement_output_folder_locked_path", "") or "").strip()
-        if not locked_folder:
-            self._refresh_measurement_output_folder_lock()
-            locked_folder = str(getattr(self, "_measurement_output_folder_locked_path", "") or "").strip()
-
-        if hasattr(self, "folderLineEdit") and self.folderLineEdit is not None:
-            current_folder = str(self.folderLineEdit.text() or "").strip()
-            if current_folder != locked_folder:
-                self.folderLineEdit.setText(locked_folder)
-                if show_message:
-                    QMessageBox.information(
-                        self,
-                        "Measurement Folder Locked",
-                        "Measurement output folder is locked to the active session container.\n\n"
-                        f"Folder: {locked_folder}",
-                    )
-        return True
-
-    def _is_active_session_loaded_from_archive(self) -> bool:
-        """Return True when the active session path points inside the archive tree."""
-        if not hasattr(self, "session_manager") or self.session_manager is None:
-            return False
-        if not self.session_manager.is_session_active():
-            return False
-
-        session_path = getattr(self.session_manager, "session_path", None)
-        if not session_path:
-            return False
-
-        try:
-            from difra.gui.session_lifecycle_service import SessionLifecycleService
-
-            measurements_folder = None
-            get_session_folder = getattr(self, "get_session_folder", None)
-            if callable(get_session_folder):
-                measurements_folder = get_session_folder()
-
-            archive_root = SessionLifecycleService.resolve_archive_folder(
-                config=self.config if hasattr(self, "config") else None,
-                measurements_folder=measurements_folder,
-            )
-            archive_root = Path(archive_root).resolve()
-            session_resolved = Path(session_path).resolve()
-            return archive_root == session_resolved or archive_root in session_resolved.parents
-        except Exception as exc:
-            logger.debug(
-                "Failed to determine whether active session came from archive: %s",
-                exc,
-                exc_info=True,
-            )
-            return False
-
-    def _can_replace_active_session_for_new_session(self) -> bool:
-        """Allow new-session flow to replace an archived read-only session."""
-        if not hasattr(self, "session_manager") or self.session_manager is None:
-            return False
-        if not self.session_manager.is_session_active():
-            return False
-
-        is_locked = getattr(self.session_manager, "is_locked", None)
-        if not callable(is_locked):
-            return False
-
-        try:
-            return bool(is_locked()) and SessionMixin._is_active_session_loaded_from_archive(
-                self
-            )
-        except Exception as exc:
-            logger.debug(
-                "Failed to evaluate active-session replacement policy: %s",
-                exc,
-                exc_info=True,
-            )
-            return False
-    
     def init_session_manager(self):
         """Initialize SessionManager and add UI actions."""
         logger.info("Initializing SessionManager")
@@ -435,159 +233,6 @@ class SessionMixin(SessionWorkspaceMixin, SessionFlowMixin):
         if result.get("required"):
             raise SystemExit(0)
 
-    def _active_session_container_information(self) -> dict:
-        """Read editable metadata from the active session container."""
-        if not self.session_manager.is_session_active():
-            return {}
-
-        schema = self.session_manager.schema
-        info = {
-            "specimenId": self.session_manager.sample_id or "",
-            "study_name": self.session_manager.study_name or "",
-            "project_id": "",
-            "operator_id": self.session_manager.operator_id or "",
-            "matadorProjectId": "",
-            "matadorProjectName": "",
-            "matadorStudyId": "",
-            "matadorMachineId": "",
-        }
-        session_path = Path(self.session_manager.session_path)
-        try:
-            import h5py
-
-            with h5py.File(session_path, "r") as h5f:
-                info["specimenId"] = self._decode_attr(
-                    h5f.attrs.get("specimenId", h5f.attrs.get(schema.ATTR_SAMPLE_ID, ""))
-                )
-                info["study_name"] = self._decode_attr(
-                    h5f.attrs.get(schema.ATTR_STUDY_NAME, "")
-                )
-                if hasattr(schema, "ATTR_PROJECT_ID"):
-                    info["project_id"] = self._decode_attr(
-                        h5f.attrs.get(schema.ATTR_PROJECT_ID, "")
-                    )
-                info["operator_id"] = self._decode_attr(
-                    h5f.attrs.get(schema.ATTR_OPERATOR_ID, info["operator_id"])
-                )
-                for key in (
-                    "matadorProjectId",
-                    "matadorProjectName",
-                    "matadorStudyId",
-                    "matadorMachineId",
-                ):
-                    info[key] = self._decode_attr(h5f.attrs.get(key, ""))
-        except Exception as exc:
-            logger.warning(
-                "Failed to read active session container information: %s",
-                exc,
-                exc_info=True,
-            )
-        return info
-
-    def _confirm_container_information_edit_allowed(self) -> tuple[bool, bool]:
-        """Require Ulster password once measurements have started."""
-        has_measurements = False
-        try:
-            has_measurements = bool(self.session_manager.has_point_measurements())
-        except Exception as exc:
-            logger.warning(
-                "Failed to check measurement state before metadata edit: %s",
-                exc,
-                exc_info=True,
-            )
-            has_measurements = True
-
-        if not has_measurements:
-            return True, False
-
-        password, accepted = QInputDialog.getText(
-            self,
-            "Password Required",
-            "Measurements have already started. Enter password to edit container information:",
-            QLineEdit.Password,
-        )
-        if not accepted:
-            return False, False
-        if _verify_container_information_edit_password(str(password or "")):
-            return True, True
-
-        QMessageBox.warning(
-            self,
-            "Wrong Password",
-            "Container information was not changed.",
-        )
-        self._append_session_log("Container information edit blocked: wrong password")
-        return False, False
-
-    def on_edit_session_container_information(self):
-        """Edit active session metadata, password-gated after measurement start."""
-        self._append_session_log("Container information edit requested")
-        if not self.session_manager.is_session_active():
-            QMessageBox.warning(
-                self,
-                "No Session Open",
-                "Open or create a session container first.",
-            )
-            return
-
-        if self.session_manager.is_locked():
-            QMessageBox.warning(
-                self,
-                "Session Locked",
-                "Locked/finalized session containers cannot be edited.",
-            )
-            self._append_session_log("Container information edit blocked: session locked")
-            return
-
-        initial_info = self._active_session_container_information()
-        old_specimen_id = str(initial_info.get("specimenId") or "").strip()
-        allowed, password_authorized = self._confirm_container_information_edit_allowed()
-        if not allowed:
-            return
-
-        dialog = SessionContainerInfoDialog(
-            operator_manager=self.operator_manager,
-            initial=initial_info,
-            parent=self,
-        )
-        if dialog.exec_() != QDialog.Accepted:
-            return
-
-        params = dialog.get_parameters()
-        updated = self.session_manager.update_container_information(
-            **params,
-            password_authorized=password_authorized,
-        )
-        if not updated:
-            QMessageBox.warning(
-                self,
-                "Update Failed",
-                "Container information was not updated.",
-            )
-            self._append_session_log("Container information update failed")
-            return
-
-        if hasattr(self, "fileNameLineEdit"):
-            self.fileNameLineEdit.setText(params["specimen_id"])
-        if hasattr(self, "update_session_status"):
-            self.update_session_status()
-        QMessageBox.information(
-            self,
-            "Container Information Updated",
-            "Container information updated successfully.",
-        )
-        new_specimen_id = str(params["specimen_id"] or "").strip()
-        if old_specimen_id != new_specimen_id:
-            password_note = " under password" if password_authorized else ""
-            self._append_session_log(
-                "Specimen ID changed"
-                f"{password_note}: {old_specimen_id or '<empty>'} -> {new_specimen_id}"
-            )
-        else:
-            self._append_session_log(
-                f"Updated container information for {new_specimen_id}"
-            )
-    
     def on_new_session(self):
         """Handle New Session action."""
         self._append_session_log("New session requested")

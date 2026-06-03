@@ -1,5 +1,4 @@
 import logging
-from math import ceil, floor, sqrt
 
 from difra.gui.qt_compat import QPointF, QRectF, Qt
 from difra.gui.qt_compat import QColor, QImage, QPixmap
@@ -12,6 +11,10 @@ from difra.gui.qt_compat import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+)
+from .shape_calibration_catch_auto_detection import (
+    build_catch_auto_contrast_rgba,
+    detect_catch_auto_outer_geometry,
 )
 
 
@@ -239,66 +242,7 @@ class ShapeCatchAutoMixin:
         source = rgba if rgba is not None else self._extract_workspace_rgba_array()
         if source is None:
             return None
-        try:
-            import numpy as np
-        except Exception:
-            logger.debug("Catch auto contrast preview requires numpy", exc_info=True)
-            return None
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            cv2 = None
-
-        arr = np.asarray(source, dtype=np.uint8)
-        rgb = arr[:, :, :3].astype(np.float32)
-        holder_color = np.array(holder_rgb, dtype=np.float32).reshape(1, 1, 3)
-        background_color = np.array(background_rgb, dtype=np.float32).reshape(1, 1, 3)
-        holder_distance = np.linalg.norm(rgb - holder_color, axis=2).astype(np.float32)
-        background_distance = np.linalg.norm(rgb - background_color, axis=2).astype(
-            np.float32
-        )
-        score = background_distance - holder_distance
-
-        if cv2 is not None and hasattr(cv2, "GaussianBlur"):
-            score = cv2.GaussianBlur(score, (7, 7), 0)
-
-        finite = np.isfinite(score)
-        if not np.any(finite):
-            return None
-        lo = float(np.percentile(score[finite], 5))
-        hi = float(np.percentile(score[finite], 95))
-        if hi - lo < 1e-6:
-            normalized = np.zeros_like(score, dtype=np.uint8)
-        else:
-            normalized = np.clip((score - lo) / (hi - lo), 0.0, 1.0)
-            normalized = (normalized * 255.0).astype(np.uint8)
-
-        rgba_out = np.zeros((arr.shape[0], arr.shape[1], 4), dtype=np.uint8)
-        rgba_out[:, :, 0] = normalized
-        rgba_out[:, :, 1] = normalized
-        rgba_out[:, :, 2] = normalized
-        rgba_out[:, :, 3] = 255
-
-        mask = normalized >= max(128, int(np.percentile(normalized, 70)))
-        edge_mask = None
-        if cv2 is not None and hasattr(cv2, "Canny"):
-            try:
-                edge_mask = cv2.Canny(normalized, 40, 120) > 0
-            except Exception:
-                edge_mask = None
-        if edge_mask is None:
-            grad_x = np.abs(np.diff(mask.astype(np.int8), axis=1, prepend=0))
-            grad_y = np.abs(np.diff(mask.astype(np.int8), axis=0, prepend=0))
-            edge_mask = (grad_x + grad_y) > 0
-
-        rgba_out[mask, 0] = np.maximum(rgba_out[mask, 0], 235)
-        rgba_out[mask, 1] = np.maximum(rgba_out[mask, 1], 215)
-        rgba_out[mask, 2] = np.maximum(rgba_out[mask, 2], 80)
-        rgba_out[edge_mask, 0] = 0
-        rgba_out[edge_mask, 1] = 255
-        rgba_out[edge_mask, 2] = 255
-        rgba_out[edge_mask, 3] = 255
-        return rgba_out
+        return build_catch_auto_contrast_rgba(source, holder_rgb, background_rgb)
 
     def _apply_catch_auto_preview_image(self, holder_rgb, background_rgb):
         image_view = getattr(self, "image_view", None)
@@ -700,150 +644,26 @@ class ShapeCatchAutoMixin:
         if image_rect is None or center_image is None or rgba is None:
             return None
 
-        try:
-            import numpy as np
-        except Exception:
-            logger.debug("Catch auto requires numpy", exc_info=True)
-            return None
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            cv2 = None
-
-        image_h, image_w = rgba.shape[:2]
-        left = max(0, int(floor(image_rect.left())))
-        top = max(0, int(floor(image_rect.top())))
-        right = min(image_w, int(ceil(image_rect.right())))
-        bottom = min(image_h, int(ceil(image_rect.bottom())))
-        if right - left < 12 or bottom - top < 12:
-            return None
-
-        rgb = rgba[top:bottom, left:right, :3].astype(np.float32)
-        roi_h, roi_w = rgb.shape[:2]
-        holder_color = np.array(holder_rgb, dtype=np.float32).reshape(1, 1, 3)
-        background_color = np.array(background_rgb, dtype=np.float32).reshape(1, 1, 3)
-        holder_distance = np.linalg.norm(rgb - holder_color, axis=2).astype(np.float32)
-        background_distance = np.linalg.norm(rgb - background_color, axis=2).astype(
-            np.float32
-        )
-        contrast = (background_distance - holder_distance).astype(np.float32)
-
-        if cv2 is not None and hasattr(cv2, "GaussianBlur"):
-            contrast_blurred = cv2.GaussianBlur(contrast, (7, 7), 0)
-        else:
-            kernel = np.ones((5, 5), dtype=np.float32) / 25.0
-            padded = np.pad(contrast, 2, mode="edge")
-            contrast_blurred = np.empty_like(contrast, dtype=np.float32)
-            for row in range(contrast.shape[0]):
-                for col in range(contrast.shape[1]):
-                    window = padded[row : row + 5, col : col + 5]
-                    contrast_blurred[row, col] = float((window * kernel).sum())
-
-        positive_values = contrast_blurred[contrast_blurred > 0.0]
-        if positive_values.size == 0:
-            return None
-        threshold = max(3.0, float(np.percentile(positive_values, 45)))
-        foreground = contrast_blurred >= threshold
-        if int(foreground.sum()) < 20:
-            return None
-
-        if (
-            cv2 is not None
-            and hasattr(cv2, "morphologyEx")
-            and hasattr(cv2, "MORPH_CLOSE")
-        ):
-            mask_u8 = foreground.astype(np.uint8) * 255
-            kernel = np.ones((5, 5), dtype=np.uint8)
-            mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
-            mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
-            foreground = mask_u8 > 0
-
-        if cv2 is not None and hasattr(cv2, "connectedComponentsWithStats"):
-            mask_u8 = foreground.astype(np.uint8)
-            count, labels, stats, centroids = cv2.connectedComponentsWithStats(
-                mask_u8, 8
-            )
-            best_idx = None
-            best_score = None
-            approx_x = float(center_image[0] - left)
-            approx_y = float(center_image[1] - top)
-            for idx in range(1, int(count)):
-                area = float(stats[idx, cv2.CC_STAT_AREA])
-                if area < 20:
-                    continue
-                cx = float(centroids[idx][0])
-                cy = float(centroids[idx][1])
-                distance = ((cx - approx_x) ** 2 + (cy - approx_y) ** 2) ** 0.5
-                score = area - 4.0 * distance
-                if best_score is None or score > best_score:
-                    best_score = score
-                    best_idx = idx
-            if best_idx is not None:
-                foreground = labels == best_idx
-
-        ys, xs = np.nonzero(foreground)
-        if xs.size < 20 or ys.size < 20:
-            return None
-
-        weights = contrast_blurred[foreground] + 1.0
         role = str((shape_info or {}).get("role", "") or "").lower()
+        geometry = detect_catch_auto_outer_geometry(
+            shape_role=role,
+            holder_role=self.ROLE_HOLDER_CIRCLE,
+            image_rect_bounds=(
+                float(image_rect.left()),
+                float(image_rect.top()),
+                float(image_rect.right()),
+                float(image_rect.bottom()),
+            ),
+            center_image_xy=(float(center_image[0]), float(center_image[1])),
+            rgba=rgba,
+            holder_rgb=holder_rgb,
+            background_rgb=background_rgb,
+        )
+        if geometry is None:
+            return None
 
-        bbox_left = float(xs.min())
-        bbox_right = float(xs.max())
-        bbox_top = float(ys.min())
-        bbox_bottom = float(ys.max())
-        bbox_width = max(10.0, bbox_right - bbox_left + 1.0)
-        bbox_height = max(10.0, bbox_bottom - bbox_top + 1.0)
-
-        if role == self.ROLE_HOLDER_CIRCLE:
-            center_x_local = float((xs * weights).sum() / weights.sum())
-            center_y_local = float((ys * weights).sum() / weights.sum())
-            var_x = float(
-                (((xs - center_x_local) ** 2) * weights).sum() / weights.sum()
-            )
-            var_y = float(
-                (((ys - center_y_local) ** 2) * weights).sum() / weights.sum()
-            )
-            fitted_width = max(10.0, min(float(roi_w), 4.0 * sqrt(max(var_x, 1.0))))
-            fitted_height = max(10.0, min(float(roi_h), 4.0 * sqrt(max(var_y, 1.0))))
-            outer_width = 0.7 * fitted_width + 0.3 * bbox_width
-            outer_height = 0.7 * fitted_height + 0.3 * bbox_height
-            outer_left = center_x_local - outer_width / 2.0
-            outer_right = center_x_local + outer_width / 2.0
-            outer_top = center_y_local - outer_height / 2.0
-            outer_bottom = center_y_local + outer_height / 2.0
-        else:
-            profile_x = foreground.astype(np.float32).mean(axis=0)
-            profile_y = foreground.astype(np.float32).mean(axis=1)
-            kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float32)
-            kernel /= float(kernel.sum())
-            profile_x = np.convolve(profile_x, kernel, mode="same")
-            profile_y = np.convolve(profile_y, kernel, mode="same")
-            mask_x = profile_x >= max(0.08, float(profile_x.max()) * 0.35)
-            mask_y = profile_y >= max(0.08, float(profile_y.max()) * 0.35)
-            if mask_x.any():
-                x_idx = np.nonzero(mask_x)[0]
-                outer_left = float(x_idx[0])
-                outer_right = float(x_idx[-1])
-            else:
-                outer_left = bbox_left
-                outer_right = bbox_right
-            if mask_y.any():
-                y_idx = np.nonzero(mask_y)[0]
-                outer_top = float(y_idx[0])
-                outer_bottom = float(y_idx[-1])
-            else:
-                outer_top = bbox_top
-                outer_bottom = bbox_bottom
-            center_x_local = (outer_left + outer_right) / 2.0
-            center_y_local = (outer_top + outer_bottom) / 2.0
-
-        center_x = center_x_local + left
-        center_y = center_y_local + top
-        outer_left += left
-        outer_right += left
-        outer_top += top
-        outer_bottom += top
+        center_x, center_y = geometry["center_image"]
+        outer_left, outer_top, outer_right, outer_bottom = geometry["rect_image"]
         scene_center = self._image_point_to_scene_point(center_x, center_y)
         scene_top_left = self._image_point_to_scene_point(outer_left, outer_top)
         scene_bottom_right = self._image_point_to_scene_point(outer_right, outer_bottom)

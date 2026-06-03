@@ -1,11 +1,19 @@
 import logging
 import os
-import shutil
 import time
 from collections import Counter
 from pathlib import Path
 
 from difra.gui.container_api import get_container_version
+from difra.gui.main_window_ext.zone_measurements.logic.process_capture_files import (
+    attenuation_capture_settings,
+    find_capture_dsc,
+    read_capture_raw_sidecars,
+)
+from difra.gui.technical.capture_io import (
+    _dsc_candidates,
+    _place_raw_capture_file,
+)
 
 
 def _pm():
@@ -17,103 +25,8 @@ def _pm():
 logger = logging.getLogger(__name__)
 
 
-def _dsc_candidates(path: Path):
-    path = Path(path)
-    candidates = [Path(str(path) + ".dsc"), path.with_suffix(".dsc")]
-    seen = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield candidate
-
-
-def _place_raw_capture_file(src_raw: str, target_txt: Path, allow_move: bool = True) -> None:
-    """Place raw detector output at target path, preferring move over copy."""
-    src_path = Path(src_raw)
-    target_txt = Path(target_txt)
-    target_txt.parent.mkdir(parents=True, exist_ok=True)
-    dst_dsc = Path(str(target_txt) + ".dsc")
-    src_dsc = next((path for path in _dsc_candidates(src_path) if path.exists()), None)
-
-    if src_path.resolve() == target_txt.resolve():
-        if src_dsc is not None and not dst_dsc.exists():
-            shutil.copy2(src_dsc, dst_dsc)
-        return
-
-    moved = False
-    if allow_move:
-        try:
-            shutil.move(str(src_path), str(target_txt))
-            moved = True
-        except (OSError, shutil.Error):
-            moved = False
-
-    if not moved:
-        shutil.copy2(src_path, target_txt)
-
-    if src_dsc is not None:
-        if moved:
-            try:
-                shutil.move(str(src_dsc), str(dst_dsc))
-            except (OSError, shutil.Error):
-                shutil.copy2(src_dsc, dst_dsc)
-        else:
-            shutil.copy2(src_dsc, dst_dsc)
-
-
-def _find_capture_dsc(folder: Path, *, base_name: str, alias: str, reference_path: Path) -> Path | None:
-    candidates = [
-        folder / f"{base_name}.txt.dsc",
-        folder / f"{base_name}.dsc",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    alias_token = str(alias or "").strip().upper()
-    nearby = []
-    for candidate in folder.glob("*.dsc"):
-        if alias_token and alias_token not in candidate.name.upper():
-            continue
-        nearby.append(candidate)
-    if not nearby:
-        return None
-
-    try:
-        reference_mtime = reference_path.stat().st_mtime
-    except (OSError, RuntimeError):
-        return sorted(nearby, key=lambda path: path.name)[0]
-    return min(nearby, key=lambda path: abs(path.stat().st_mtime - reference_mtime))
-
-
-def _read_capture_raw_sidecars(npy_file: str, alias: str) -> tuple[dict, dict]:
-    npy_path = Path(npy_file)
-    folder = npy_path.parent
-    base_name = npy_path.stem
-    raw_files = {}
-    raw_paths = {}
-
-    txt_path = next(
-        (path for path in (folder / f"{base_name}.txt", folder / base_name) if path.exists()),
-        None,
-    )
-    if txt_path is not None:
-        raw_files["raw_txt"] = txt_path.read_bytes()
-        raw_paths["raw_txt"] = str(txt_path)
-
-    dsc_path = _find_capture_dsc(
-        folder,
-        base_name=base_name,
-        alias=alias,
-        reference_path=npy_path,
-    )
-    if dsc_path is not None:
-        raw_files["raw_dsc"] = dsc_path.read_bytes()
-        raw_paths["raw_dsc"] = str(dsc_path)
-
-    return raw_files, raw_paths
+_find_capture_dsc = find_capture_dsc
+_read_capture_raw_sidecars = read_capture_raw_sidecars
 
 
 class ZoneMeasurementsProcessCaptureMixin:
@@ -584,33 +497,7 @@ class ZoneMeasurementsProcessCaptureMixin:
             return (None, None)
 
     def _get_attenuation_capture_settings(self):
-        att = {}
-        if isinstance(getattr(self, "config", None), dict):
-            raw_att = self.config.get("attenuation", {})
-            att = raw_att if isinstance(raw_att, dict) else {}
-
-        def _positive_int(value, default: int) -> int:
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError):
-                return int(default)
-            return max(parsed, 1)
-
-        def _positive_float(value, default: float) -> float:
-            try:
-                parsed = float(value)
-            except (TypeError, ValueError):
-                return float(default)
-            if parsed <= 0:
-                return float(default)
-            return parsed
-
-        frames = _positive_int(att.get("frames"), 100)
-        integration_time_s = _positive_float(
-            att.get("integration_time_s"),
-            0.000001,
-        )
-        return frames, integration_time_s
+        return attenuation_capture_settings(getattr(self, "config", None))
 
     def _capture_attenuation_background(self):
         pm = _pm()
