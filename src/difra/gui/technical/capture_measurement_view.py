@@ -18,6 +18,7 @@ from difra.gui.technical.capture_io import (
     _inspect_embedded_poni,
     _load_measurement_array,
 )
+from difra.gui.technical.pyfai_calibration_common import DEFAULT_DETECTOR_PIXEL_SIZE_UM
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +409,7 @@ def compute_hf_score_from_cake(
         # Fallback: manual integration parameters
         max_idx = np.unravel_index(np.argmax(data), data.shape)
         center_row, center_column = max_idx
-        pixel_size = 55e-6
+        pixel_size = DEFAULT_DETECTOR_PIXEL_SIZE_UM[0] * 1e-6
         wavelength = 1.54
         sample_distance_mm = 100.0
         ai = _capture_dependency(

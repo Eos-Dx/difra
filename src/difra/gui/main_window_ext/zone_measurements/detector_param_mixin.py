@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from difra.gui.technical.pyfai_calibration_common import detector_size_px, pixel_size_m
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +170,7 @@ class DetectorParamMixin:
         import random
         import time
 
-        # Get detector size or use defaults
-        size = detector_config.get("size", {"width": 256, "height": 256})
-        width = size.get("width", 256)
-        height = size.get("height", 256)
+        width, height = detector_size_px(detector_config)
 
         # Generate slightly different parameters for each detector
         random.seed(hash(alias))  # Consistent values based on alias
@@ -192,10 +190,7 @@ class DetectorParamMixin:
             poni1 = round(random.uniform(0.005, 0.010), 6)
             poni2 = round(random.uniform(0.0008, 0.0030), 6)
 
-        # Generate pixel sizes (typically 55um or 100um)
-        pixel_size = detector_config.get("pixel_size_um", [55, 55])
-        pixel1 = pixel_size[0] * 1e-6 if len(pixel_size) > 0 else 5.5e-05
-        pixel2 = pixel_size[1] * 1e-6 if len(pixel_size) > 1 else 5.5e-05
+        pixel1, pixel2 = pixel_size_m(detector_config)
 
         wavelength = 1.5406e-10  # Typical Cu Kα wavelength
 

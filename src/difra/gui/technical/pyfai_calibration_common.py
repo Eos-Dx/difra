@@ -12,6 +12,8 @@ from typing import Mapping, Sequence
 DEFAULT_CALIBRANT = "AgBh"
 DEFAULT_WAVELENGTH_M = 1.5406e-10
 DEFAULT_ENERGY_KEV = 8.04
+DEFAULT_DETECTOR_SIZE_PX = (256, 256)
+DEFAULT_DETECTOR_PIXEL_SIZE_UM = (55.0, 55.0)
 AGBH_D_SPACING_A = (
     58.38,
     29.19,
@@ -99,21 +101,40 @@ def detector_size_px(detector_config: Mapping | None) -> tuple[int, int]:
         and len(size) >= 2
     ):
         width, height = size[0], size[1]
-    width = int(_to_float(width, 256) or 256)
-    height = int(_to_float(height, 256) or 256)
+    width = int(
+        _to_float(width, DEFAULT_DETECTOR_SIZE_PX[0])
+        or DEFAULT_DETECTOR_SIZE_PX[0]
+    )
+    height = int(
+        _to_float(height, DEFAULT_DETECTOR_SIZE_PX[1])
+        or DEFAULT_DETECTOR_SIZE_PX[1]
+    )
     return max(1, width), max(1, height)
 
 
-def pixel_size_m(detector_config: Mapping | None) -> tuple[float, float]:
+def pixel_size_um(detector_config: Mapping | None) -> tuple[float, float]:
     cfg = detector_config if isinstance(detector_config, Mapping) else {}
-    raw = cfg.get("pixel_size_um", cfg.get("pixel_size", 55.0))
+    raw = cfg.get("pixel_size_um", cfg.get("pixel_size", DEFAULT_DETECTOR_PIXEL_SIZE_UM))
     if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
-        first = raw[0] if len(raw) >= 1 else 55.0
+        first = raw[0] if len(raw) >= 1 else DEFAULT_DETECTOR_PIXEL_SIZE_UM[0]
         second = raw[1] if len(raw) >= 2 else first
     else:
         first = second = raw
-    pixel1 = float(f"{(float(_to_float(first, 55.0) or 55.0) * 1e-6):.12g}")
-    pixel2 = float(f"{(float(_to_float(second, 55.0) or 55.0) * 1e-6):.12g}")
+    pixel1 = float(
+        _to_float(first, DEFAULT_DETECTOR_PIXEL_SIZE_UM[0])
+        or DEFAULT_DETECTOR_PIXEL_SIZE_UM[0]
+    )
+    pixel2 = float(
+        _to_float(second, DEFAULT_DETECTOR_PIXEL_SIZE_UM[1])
+        or DEFAULT_DETECTOR_PIXEL_SIZE_UM[1]
+    )
+    return pixel1, pixel2
+
+
+def pixel_size_m(detector_config: Mapping | None) -> tuple[float, float]:
+    pixel1_um, pixel2_um = pixel_size_um(detector_config)
+    pixel1 = float(f"{(pixel1_um * 1e-6):.12g}")
+    pixel2 = float(f"{(pixel2_um * 1e-6):.12g}")
     return pixel1, pixel2
 
 

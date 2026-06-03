@@ -9,6 +9,7 @@ from .poni_center_validation import (
 )
 from .poni_agbh_peak_qc import evaluate_agbh_peak_qc_for_aux_measurements
 from .poni_distance_validation import validate_poni_distances
+from difra.gui.technical.pyfai_calibration_common import detector_size_px, pixel_size_m
 
 json = _module.json
 logger = _module.logger
@@ -228,15 +229,8 @@ class H5GenerationMetaMixin:
             margin = random.uniform(-0.03, 0.03)
             fake_distance_m = (user_distance_cm / 100.0) * (1 + margin)
             
-            # Get detector size or use defaults
-            size = detector_config.get("size", {"width": 256, "height": 256})
-            width = size.get("width", 256)
-            height = size.get("height", 256)
-            
-            # Generate pixel sizes (typically 55um or 100um)
-            pixel_size = detector_config.get("pixel_size_um", [55, 55])
-            pixel1 = pixel_size[0] * 1e-6 if len(pixel_size) > 0 else 5.5e-05
-            pixel2 = pixel_size[1] * 1e-6 if len(pixel_size) > 1 else 5.5e-05
+            width, height = detector_size_px(detector_config)
+            pixel1, pixel2 = pixel_size_m(detector_config)
             row_px, col_px = self._resolve_fake_demo_center_px(alias, (width, height))
             poni1 = float(row_px) * float(pixel1)
             poni2 = float(col_px) * float(pixel2)

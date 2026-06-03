@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from difra.gui.technical.pyfai_calibration_common import pixel_size_um
+
 logger = logging.getLogger(__name__)
 
 
@@ -470,12 +472,7 @@ class TechnicalCaptureAutoPoniConfigMixin:
             layout.addLayout(energy_row)
 
             def _pixel_pair(detector_config):
-                pixel_cfg = detector_config.get("pixel_size_um", [55, 55])
-                if not isinstance(pixel_cfg, (list, tuple)):
-                    pixel_cfg = [pixel_cfg, pixel_cfg]
-                first = pixel_cfg[0] if len(pixel_cfg) >= 1 else 55
-                second = pixel_cfg[1] if len(pixel_cfg) >= 2 else first
-                return float(first), float(second)
+                return pixel_size_um(detector_config)
 
             for alias in aliases:
                 alias_key = str(alias or "").strip().upper()
