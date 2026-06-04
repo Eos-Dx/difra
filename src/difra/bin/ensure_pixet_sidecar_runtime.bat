@@ -130,7 +130,7 @@ if errorlevel 1 (
 )
 
 set PIXET_NUMPY_VERSION=
-"%SIDECAR_PY_EXE%" -c "import numpy; print(numpy.__version__)" > "%TEMP%\pixet_npver.txt" 2>nul
+"%SIDECAR_PY_EXE%" -c "import sys,platform,numpy; print(numpy.__version__)" > "%TEMP%\pixet_npver.txt" 2>nul
 set /p PIXET_NUMPY_VERSION=<"%TEMP%\pixet_npver.txt"
 del /q "%TEMP%\pixet_npver.txt" >nul 2>&1
 if "%PIXET_NUMPY_VERSION%"=="" (
