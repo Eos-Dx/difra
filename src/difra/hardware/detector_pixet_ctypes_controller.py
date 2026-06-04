@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from difra.hardware.detector_controller_base import DetectorController
-from difra.hardware.pixet_ctypes_api import PxcoreError, PixetCtypesAPI
+from difra.hardware.pixet_ctypes_api import PxcoreError, PixetCtypesAPI, get_process_api
 from difra.utils.logger import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -57,8 +57,7 @@ class PixetDetectorController(DetectorController):
             return False
 
         try:
-            self._api = PixetCtypesAPI(Path(pixet_sdk_path))
-            self._api.initialize()
+            self._api = get_process_api(Path(pixet_sdk_path))
             pixet_version = self._api.get_version()
             devices = self._api.list_devices()
         except Exception as e:
@@ -69,12 +68,14 @@ class PixetDetectorController(DetectorController):
                 error=str(e),
                 exc_info=True,
             )
-            self._safe_shutdown()
+            self._api = None
+            self.device_index = None
             return False
 
         if not devices:
             logger.error("No Pixet devices connected", detector=self.alias)
-            self._safe_shutdown()
+            self._api = None
+            self.device_index = None
             return False
 
         selected = None
@@ -153,20 +154,13 @@ class PixetDetectorController(DetectorController):
         return True
 
     def deinit_detector(self):
-        try:
-            if self._api is not None:
-                logger.info("Deinitializing Pixet detector", detector=self.alias)
-                self._api.shutdown()
-                logger.info("Pixet detector safely deinitialized", detector=self.alias)
-        except Exception as e:
-            logger.error(
-                "Error during Pixet detector deinitialization",
-                detector=self.alias,
-                error=str(e),
-            )
-        finally:
-            self._api = None
-            self.device_index = None
+        # Do NOT call self._api.shutdown(): pxcore is a process-level singleton
+        # shared across all detector controllers.  Calling pxcExit here would
+        # break every other active controller in the same sidecar process.
+        if self._api is not None:
+            logger.info("Deinitializing Pixet detector", detector=self.alias)
+        self._api = None
+        self.device_index = None
 
     def start_stream(self, callback, exposure=0.1, interval=0.0, frames=1):
         self.stop_stream()
@@ -246,14 +240,6 @@ class PixetDetectorController(DetectorController):
                 error=str(e),
             )
 
-    def _safe_shutdown(self) -> None:
-        if self._api is not None:
-            try:
-                self._api.shutdown()
-            except PxcoreError:
-                pass
-        self._api = None
-        self.device_index = None
 
     def convert_to_container_format(
         self,

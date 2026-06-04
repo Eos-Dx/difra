@@ -8,11 +8,28 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
+
+# pxcore.dll is a process-level singleton: pxcInitialize must be called exactly
+# once per process.  All PixetDetectorController instances share one API object.
+_process_api_lock: threading.Lock = threading.Lock()
+_process_api: Optional["PixetCtypesAPI"] = None
+
+
+def get_process_api(sdk_path: Path) -> "PixetCtypesAPI":
+    """Return the process-wide PixetCtypesAPI, initializing it on first call."""
+    global _process_api
+    with _process_api_lock:
+        if _process_api is None:
+            api = PixetCtypesAPI(sdk_path)
+            api.initialize()
+            _process_api = api
+        return _process_api
 
 PXC_TRG_NO = 0
 
