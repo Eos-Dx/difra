@@ -134,15 +134,7 @@ if [ -z "$GUI_ENV" ]; then
   GUI_ENV="eosdx13"
 fi
 
-SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-}"
-if [ -z "$SIDECAR_ENV" ]; then
-  if conda_env_available eosdx_pixet; then
-    SIDECAR_ENV="eosdx_pixet"
-  else
-    SIDECAR_ENV="$GUI_ENV"
-    echo "[INFO] Sidecar env eosdx_pixet not available; using GUI env $SIDECAR_ENV"
-  fi
-fi
+SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-eosdx_pixet}"
 if ! conda_env_available "$SIDECAR_ENV"; then
   echo "[ERROR] Sidecar env '$SIDECAR_ENV' is not available."
   echo "[ERROR] Install/create eosdx_pixet or set DIFRA_SIDECAR_ENV."
