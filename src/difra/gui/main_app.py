@@ -88,6 +88,16 @@ except ImportError as e:
         print(f"\nERROR: Failed to import Qt bindings: {error_msg}\n")
     sys.exit(1)
 
+# Set matplotlib backend before any module that imports matplotlib.pyplot is loaded.
+# realtime_mixin.py has a top-level 'import matplotlib.pyplot as plt'; if that
+# runs before QApplication exists, matplotlib falls back to non-interactive Agg
+# and plt.show() raises a UserWarning with no visible graph.
+try:
+    import matplotlib
+    matplotlib.use('Qt5Agg')
+except Exception:
+    pass
+
 from difra.gui.views.main_window import MainWindow
 from difra.gui.daily_report_app_scheduler import (
     start_previous_day_report_on_startup,
