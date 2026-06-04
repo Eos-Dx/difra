@@ -30,6 +30,9 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "python 3.12 x64" in bootstrap.lower()
     assert "PIXet_Pro_GUI_1.8.5_Windows_x64.zip" in bootstrap
     assert "https://advacam.com/content/uploads/2026/03/PIXet_Pro_GUI_1.8.5_Windows_x64.zip" in bootstrap
+    assert r"D:\API_PIXet_Pro_1.8.5_Windows_x64" in bootstrap
+    assert r"%LOCALAPPDATA%\DiFRA\pixet\API_PIXet_Pro_1.8.5_Windows_x64" in bootstrap
+    assert r"set PIXET_EXTRACT_ROOT=%PIXET_CACHE_ROOT%\sdk" in bootstrap
     assert "pxcore.dll" in bootstrap
     assert "conda_packages=python=3.12 pip numpy" in bootstrap.lower()
     assert "install -y -n %sidecar_env% %pixet_conda_packages%" in bootstrap.lower()

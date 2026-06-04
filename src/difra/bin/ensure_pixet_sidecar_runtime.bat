@@ -16,10 +16,16 @@ set PIXET_SDK_URL=%DIFRA_PIXET_SDK_URL%
 if "%PIXET_SDK_URL%"=="" set PIXET_SDK_URL=https://advacam.com/content/uploads/2026/03/PIXet_Pro_GUI_1.8.5_Windows_x64.zip
 
 set PIXET_CACHE_ROOT=%DIFRA_PIXET_CACHE_ROOT%
-if "%PIXET_CACHE_ROOT%"=="" set PIXET_CACHE_ROOT=%LOCALAPPDATA%\DiFRA\pixet
+if "%PIXET_CACHE_ROOT%"=="" (
+  if exist D:\ (
+    set PIXET_CACHE_ROOT=D:\API_PIXet_Pro_1.8.5_Windows_x64
+  ) else (
+    set PIXET_CACHE_ROOT=%LOCALAPPDATA%\DiFRA\pixet\API_PIXet_Pro_1.8.5_Windows_x64
+  )
+)
 
 set PIXET_DOWNLOAD_DIR=%PIXET_CACHE_ROOT%\downloads
-set PIXET_EXTRACT_ROOT=%PIXET_CACHE_ROOT%\sdk\PIXet_Pro_GUI_1.8.5_Windows_x64
+set PIXET_EXTRACT_ROOT=%PIXET_CACHE_ROOT%\sdk
 set PIXET_ZIP=%PIXET_DOWNLOAD_DIR%\PIXet_Pro_GUI_1.8.5_Windows_x64.zip
 set PIXET_ENV_YAML=%REPO_ROOT%\src\difra\environment-eosdx-pixet.yml
 set PIXET_CONDA_PACKAGES=python=3.12 pip numpy

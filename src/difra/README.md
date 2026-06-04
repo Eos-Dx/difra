@@ -40,7 +40,7 @@ The current launchers run DiFRA in a protocol-first layout:
 Sidecar runtime rule:
 - Windows PIXet sidecar defaults to `eosdx_pixet`.
 - `src\difra\bin\run_difra.bat` bootstraps this env from `environment-eosdx-pixet.yml`.
-- The launcher downloads/unpacks Advacam PIXet Pro GUI/API 1.8.5 x64 into `%LOCALAPPDATA%\DiFRA\pixet` and exports `PIXET_SDK_PATH`.
+- The launcher downloads/unpacks Advacam PIXet Pro GUI/API 1.8.5 x64 into `D:\API_PIXet_Pro_1.8.5_Windows_x64` when `D:\` exists, otherwise into `%LOCALAPPDATA%\DiFRA\pixet\API_PIXet_Pro_1.8.5_Windows_x64`, and exports `PIXET_SDK_PATH`.
 - Legacy `pypixet` can still be forced with `PIXET_SIDECAR_BACKEND=pypixet`.
 
 Default endpoints:
