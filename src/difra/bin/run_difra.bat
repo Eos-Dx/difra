@@ -164,9 +164,9 @@ for %%I in ("%DIFRA_SIDECAR_LOG_PATH%") do if not exist "%%~dpI" mkdir "%%~dpI"
 echo [INFO] Sidecar log: %DIFRA_SIDECAR_LOG_PATH%
 set "PATH=%SIDECAR_LAUNCH_PATH%"
 if "%LAUNCHER_PID%"=="" (
-  start "DiFRA Sidecar" /B "%SIDECAR_PY_EXE%" -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%
+  start "DiFRA Sidecar" /B "%SIDECAR_PY_EXE%" -u "%STARTUP_STDERR_FILTER%" -- "%SIDECAR_PY_EXE%" -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%
 ) else (
-  start "DiFRA Sidecar" /B "%SIDECAR_PY_EXE%" -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT% --owner-pid %LAUNCHER_PID%
+  start "DiFRA Sidecar" /B "%SIDECAR_PY_EXE%" -u "%STARTUP_STDERR_FILTER%" -- "%SIDECAR_PY_EXE%" -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT% --owner-pid %LAUNCHER_PID%
 )
 set "PATH=%ORIGINAL_PATH%"
 
