@@ -172,7 +172,15 @@ class PixetCtypesAPI:
             "pxcSetDirectories",
         )
         ini_path = str(self.sdk_path / "pixet.ini").encode("utf-8")
-        self._check_rc(self.lib.pxcInitialize(ini_path), "pxcInitialize")
+        # pxcore.dll resolves hwlib paths in pixet.ini relative to CWD, not the
+        # DLL's own directory.  chdir to the SDK dir so "hwlibs/minipix.dll" etc.
+        # resolve correctly, then restore the original directory.
+        _orig_cwd = os.getcwd()
+        try:
+            os.chdir(str(self.sdk_path))
+            self._check_rc(self.lib.pxcInitialize(ini_path), "pxcInitialize")
+        finally:
+            os.chdir(_orig_cwd)
         self.initialized = True
 
     def shutdown(self) -> None:
