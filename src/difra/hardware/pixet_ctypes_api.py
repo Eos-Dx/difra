@@ -49,7 +49,7 @@ class PixetCtypesAPI:
         self.lib.pxcSetDirectories.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         self.lib.pxcSetDirectories.restype = ctypes.c_int
 
-        self.lib.pxcInitialize.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+        self.lib.pxcInitialize.argtypes = [ctypes.c_char_p]
         self.lib.pxcInitialize.restype = ctypes.c_int
 
         self.lib.pxcExit.argtypes = []
@@ -171,7 +171,8 @@ class PixetCtypesAPI:
             ),
             "pxcSetDirectories",
         )
-        self._check_rc(self.lib.pxcInitialize(0, None), "pxcInitialize")
+        ini_path = str(self.sdk_path / "pixet.ini").encode("utf-8")
+        self._check_rc(self.lib.pxcInitialize(ini_path), "pxcInitialize")
         self.initialized = True
 
     def shutdown(self) -> None:
