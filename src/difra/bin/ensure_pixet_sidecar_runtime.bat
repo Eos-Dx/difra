@@ -109,7 +109,9 @@ if "%SIDECAR_PY_EXE%"=="" (
 )
 
 set SIDECAR_PY=
-for /f "usebackq delims=" %%V in (`"%SIDECAR_PY_EXE%" -c "import sys,platform; print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}')" 2^>nul`) do set SIDECAR_PY=%%V
+"%SIDECAR_PY_EXE%" -c "import sys,platform; print(str(sys.version_info[0])+'.'+str(sys.version_info[1])+' '+platform.architecture()[0])" > "%TEMP%\pixet_pyver.txt" 2>nul
+set /p SIDECAR_PY=<"%TEMP%\pixet_pyver.txt"
+del /q "%TEMP%\pixet_pyver.txt" >nul 2>&1
 if /I not "%SIDECAR_PY%"=="3.12 64bit" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.12 64-bit, found %SIDECAR_PY%.
   echo [ERROR] Python checked: %SIDECAR_PY_EXE%
@@ -128,7 +130,9 @@ if errorlevel 1 (
 )
 
 set PIXET_NUMPY_VERSION=
-for /f "usebackq delims=" %%V in (`"%SIDECAR_PY_EXE%" -c "import sys,platform,numpy; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'; print(numpy.__version__)" 2^>nul`) do set PIXET_NUMPY_VERSION=%%V
+"%SIDECAR_PY_EXE%" -c "import numpy; print(numpy.__version__)" > "%TEMP%\pixet_npver.txt" 2>nul
+set /p PIXET_NUMPY_VERSION=<"%TEMP%\pixet_npver.txt"
+del /q "%TEMP%\pixet_npver.txt" >nul 2>&1
 if "%PIXET_NUMPY_VERSION%"=="" (
   echo [ERROR] PIXet sidecar package verification failed in %SIDECAR_ENV%.
   exit /b 1
@@ -174,8 +178,16 @@ for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$ErrorActionP
 endlocal & set "%~1=%SIDE_ENV_VALUE%" & exit /b 0
 
 :resolve_env_python
-set ENV_NAME=%~1
-set OUT_VAR=%~2
-set "%OUT_VAR%="
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$conda='%CONDA_CMD%'; $conda=$conda.Trim('\"'); try { $payload=& $conda env list --json | ConvertFrom-Json } catch { exit 0 }; $target='%ENV_NAME%'.ToLowerInvariant(); foreach($p in ($payload.envs | Where-Object { $_ })) { if ([System.IO.Path]::GetFileName($p).ToLowerInvariant() -eq $target) { $py=Join-Path $p 'python.exe'; if(Test-Path $py){ Write-Output $py; break } } }"`) do set "%OUT_VAR%=%%P"
-exit /b 0
+setlocal
+set "TARGET_ENV=%~1"
+set "ENV_PATH="
+for /f "tokens=1,2,3*" %%A in ('%CONDA_CMD% info --envs 2^>nul') do (
+  if /I "%%A"=="%TARGET_ENV%" set "ENV_PATH=%%B"
+  if /I "%%B"=="*" if /I "%%A"=="%TARGET_ENV%" set "ENV_PATH=%%C"
+)
+if defined ENV_PATH (
+  if exist "%ENV_PATH%\python.exe" (
+    endlocal & set "%~2=%ENV_PATH%\python.exe" & exit /b 0
+  )
+)
+endlocal & set "%~2=" & exit /b 0
