@@ -43,6 +43,10 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "import sys,platform,numpy" in bootstrap
     assert "ensure_pixet_sidecar_runtime.bat" in launcher
     assert "ensure_pixet_sidecar_runtime.bat" in sidecar_launcher
+    assert launcher.index("call :auto_update_repo") < launcher.index("set GUI_ENV=")
+    assert launcher.index("call :auto_update_repo") < launcher.index(
+        "ensure_pixet_sidecar_runtime.bat"
+    )
     assert "filter_startup_stderr.py" in launcher
     assert "pixet_sidecar_server.py\" --host" in launcher
     assert "\"%startup_stderr_filter%\" -- \"%sidecar_py_exe%\" -u" in launcher.lower()

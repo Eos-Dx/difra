@@ -8,6 +8,9 @@ for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 set CONFIG_PATH=%REPO_ROOT%\src\difra\resources\config\global.json
 set MAIN_CONFIG_PATH=%REPO_ROOT%\src\difra\resources\config\main_win.json
 
+cd /d %REPO_ROOT%
+call :auto_update_repo
+
 set GUI_ENV=%DIFRA_GUI_ENV%
 if "%GUI_ENV%"=="" (
   for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "(Get-Content -Raw '%CONFIG_PATH%') | ConvertFrom-Json | Select-Object -ExpandProperty conda"`) do set GUI_ENV=%%E
@@ -121,8 +124,6 @@ set "GRPC_LAUNCH_PATH=%GRPC_ENV_ROOT%;%GRPC_ENV_ROOT%Library\mingw-w64\bin;%GRPC
 set "GUI_LAUNCH_PATH=%GUI_ENV_ROOT%;%GUI_ENV_ROOT%Library\mingw-w64\bin;%GUI_ENV_ROOT%Library\usr\bin;%GUI_ENV_ROOT%Library\bin;%GUI_ENV_ROOT%Scripts;%GUI_ENV_ROOT%bin;%ORIGINAL_PATH%"
 set "STARTUP_STDERR_FILTER=%REPO_ROOT%\src\difra\scripts\filter_startup_stderr.py"
 
-cd /d %REPO_ROOT%
-call :auto_update_repo
 set PYTHONPATH=%REPO_ROOT%\src;%PYTHONPATH%
 set PYTHONUNBUFFERED=1
 set PYTHONIOENCODING=utf-8
