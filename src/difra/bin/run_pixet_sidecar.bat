@@ -7,9 +7,7 @@ for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 set MAIN_CONFIG_PATH=%REPO_ROOT%\src\difra\resources\config\main_win.json
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" (
-  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
-)
+if "%SIDECAR_ENV%"=="" call :read_main_sidecar_env SIDECAR_ENV
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
@@ -77,5 +75,12 @@ for %%I in ("%DIFRA_SIDECAR_LOG_PATH%") do if not exist "%%~dpI" mkdir "%%~dpI"
 echo [INFO] Sidecar log: %DIFRA_SIDECAR_LOG_PATH%
 
 %CONDA_CMD% run --live-stream --no-capture-output -n %SIDECAR_ENV% python -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%
+set "SIDECAR_EXIT_CODE=%ERRORLEVEL%"
 
-endlocal
+endlocal & exit /b %SIDECAR_EXIT_CODE%
+
+:read_main_sidecar_env
+setlocal
+set "SIDE_ENV_VALUE="
+for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $p=$env:MAIN_CONFIG_PATH; if(Test-Path $p){ $j=Get-Content -Raw $p | ConvertFrom-Json; [string]$j.sidecar_conda }"`) do set "SIDE_ENV_VALUE=%%E"
+endlocal & set "%~1=%SIDE_ENV_VALUE%" & exit /b 0

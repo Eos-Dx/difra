@@ -11,9 +11,7 @@ for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 set MAIN_CONFIG_PATH=%REPO_ROOT%\src\difra\resources\config\main_win.json
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" (
-  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
-)
+if "%SIDECAR_ENV%"=="" call :read_main_sidecar_env SIDECAR_ENV
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set PIXET_SDK_URL=%DIFRA_PIXET_SDK_URL%
@@ -168,6 +166,12 @@ if "%PIXET_DLL%"=="" (
 
 echo [INFO] PIXet SDK path: %PIXET_DLL%
 endlocal & set "DIFRA_SIDECAR_ENV=%SIDECAR_ENV%" & set "PIXET_SDK_PATH=%PIXET_DLL%" & set "DIFRA_PIXET_SDK_URL=%PIXET_SDK_URL%" & exit /b 0
+
+:read_main_sidecar_env
+setlocal
+set "SIDE_ENV_VALUE="
+for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $p=$env:MAIN_CONFIG_PATH; if(Test-Path $p){ $j=Get-Content -Raw $p | ConvertFrom-Json; [string]$j.sidecar_conda }"`) do set "SIDE_ENV_VALUE=%%E"
+endlocal & set "%~1=%SIDE_ENV_VALUE%" & exit /b 0
 
 :resolve_env_python
 set ENV_NAME=%~1

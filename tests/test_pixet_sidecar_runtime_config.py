@@ -58,6 +58,12 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "sidecar_conda" in launcher
     assert "sidecar_conda" in bootstrap
     assert "sidecar_conda" in sidecar_launcher
+    assert "call :read_main_sidecar_env SIDECAR_ENV" in launcher
+    assert "call :read_main_sidecar_env SIDECAR_ENV" in bootstrap
+    assert "call :read_main_sidecar_env SIDECAR_ENV" in sidecar_launcher
+    assert "try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda" not in launcher
+    assert "try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda" not in bootstrap
+    assert "try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda" not in sidecar_launcher
     assert "3.12 64bit" in sidecar_launcher
 
 

@@ -18,9 +18,7 @@ if "%GUI_ENV%"=="" (
 if "%GUI_ENV%"=="" set GUI_ENV=eosdx13
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" (
-  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
-)
+if "%SIDECAR_ENV%"=="" call :read_main_sidecar_env SIDECAR_ENV
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
@@ -39,9 +37,7 @@ set GRPC_PORT=%DIFRA_GRPC_PORT%
 if "%GRPC_PORT%"=="" set GRPC_PORT=50061
 
 set GRPC_CONFIG=%DIFRA_GRPC_CONFIG%
-if "%GRPC_CONFIG%"=="" (
-  for /f "usebackq delims=" %%C in (`powershell -NoProfile -Command "$globalPath='%CONFIG_PATH%'; $mainPath='%MAIN_CONFIG_PATH%'; if (-not (Test-Path $mainPath)) { $mainPath='%REPO_ROOT%\src\difra\resources\config\main.json' }; $out=$mainPath; if (Test-Path $globalPath) { try { $g=(Get-Content -Raw $globalPath | ConvertFrom-Json); $setup=[string]$g.default_setup; if ($setup) { $setupPath=Join-Path (Join-Path (Split-Path -Parent $globalPath) 'setups') ($setup + '.json'); if (Test-Path $setupPath) { $out=$setupPath } } } catch {} }; Write-Output $out"`) do set GRPC_CONFIG=%%C
-)
+if "%GRPC_CONFIG%"=="" call :resolve_grpc_config GRPC_CONFIG
 
 if not "%HARDWARE_CLIENT_MODE%"=="" (
   if /I not "%HARDWARE_CLIENT_MODE%"=="grpc" (
@@ -86,9 +82,7 @@ if errorlevel 1 (
 call "%REPO_ROOT%\src\difra\bin\ensure_pixet_sidecar_runtime.bat"
 if errorlevel 1 exit /b 1
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" (
-  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
-)
+if "%SIDECAR_ENV%"=="" call :read_main_sidecar_env SIDECAR_ENV
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_PY_EXE=
@@ -149,21 +143,8 @@ if "%SIDECAR_OWNER_WATCHDOG%"=="1" (
   echo [INFO] Sidecar owner watchdog disabled on Windows ^(set DIFRA_SIDECAR_OWNER_WATCHDOG=1 to enable^).
 )
 
-if /I "%SIDECAR_HOST%"=="127.0.0.1" (
-  powershell -NoProfile -Command "$p=[int]'%SIDECAR_PORT%'; try { $ids=Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique; foreach($id in $ids){ try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host ('[INFO] Restarting detector sidecar: killed PID ' + $id + ' on port ' + $p) } catch {} } } catch {}"
-) else if /I "%SIDECAR_HOST%"=="localhost" (
-  powershell -NoProfile -Command "$p=[int]'%SIDECAR_PORT%'; try { $ids=Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique; foreach($id in $ids){ try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host ('[INFO] Restarting detector sidecar: killed PID ' + $id + ' on port ' + $p) } catch {} } } catch {}"
-) else (
-  echo [WARN] Detector sidecar host is non-local ^(%SIDECAR_HOST%^) - skipping forced restart.
-)
-
-if /I "%GRPC_HOST%"=="127.0.0.1" (
-  powershell -NoProfile -Command "$p=[int]'%GRPC_PORT%'; try { $ids=Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique; foreach($id in $ids){ try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host ('[INFO] Restarting gRPC server: killed PID ' + $id + ' on port ' + $p) } catch {} } } catch {}"
-) else if /I "%GRPC_HOST%"=="localhost" (
-  powershell -NoProfile -Command "$p=[int]'%GRPC_PORT%'; try { $ids=Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique; foreach($id in $ids){ try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host ('[INFO] Restarting gRPC server: killed PID ' + $id + ' on port ' + $p) } catch {} } } catch {}"
-) else (
-  echo [WARN] gRPC host is non-local ^(%GRPC_HOST%^) - skipping forced restart.
-)
+call :stop_local_listener "%SIDECAR_HOST%" "%SIDECAR_PORT%" "Detector sidecar"
+call :stop_local_listener "%GRPC_HOST%" "%GRPC_PORT%" "DiFRA gRPC server"
 
 echo [INFO] Starting sidecar env=%SIDECAR_ENV% endpoint=%SIDECAR_HOST%:%SIDECAR_PORT%
 if "%DIFRA_SIDECAR_LOG_PATH%"=="" set "DIFRA_SIDECAR_LOG_PATH=%LOCALAPPDATA%\DiFRA\logs\pixet_sidecar.log"
@@ -211,6 +192,18 @@ call :stop_local_listener "%SIDECAR_HOST%" "%SIDECAR_PORT%" "Detector sidecar"
 call :stop_local_listener "%GRPC_HOST%" "%GRPC_PORT%" "DiFRA gRPC server"
 
 endlocal & exit /b %GUI_EXIT_CODE%
+
+:read_main_sidecar_env
+setlocal
+set "SIDE_ENV_VALUE="
+for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $p=$env:MAIN_CONFIG_PATH; if(Test-Path $p){ $j=Get-Content -Raw $p | ConvertFrom-Json; [string]$j.sidecar_conda }"`) do set "SIDE_ENV_VALUE=%%E"
+endlocal & set "%~1=%SIDE_ENV_VALUE%" & exit /b 0
+
+:resolve_grpc_config
+setlocal
+set "GRPC_CONFIG_VALUE="
+for /f "usebackq delims=" %%C in (`powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $globalPath=$env:CONFIG_PATH; $mainPath=$env:MAIN_CONFIG_PATH; if(-not (Test-Path $mainPath)){ $mainPath=Join-Path $env:REPO_ROOT 'src\difra\resources\config\main.json' }; $out=$mainPath; if(Test-Path $globalPath){ $g=Get-Content -Raw $globalPath | ConvertFrom-Json; $setup=[string]$g.default_setup; if($setup){ $setupPath=Join-Path (Join-Path (Split-Path -Parent $globalPath) 'setups') ($setup + '.json'); if(Test-Path $setupPath){ $out=$setupPath } } }; Write-Output $out"`) do set "GRPC_CONFIG_VALUE=%%C"
+endlocal & set "%~1=%GRPC_CONFIG_VALUE%" & exit /b 0
 
 :auto_update_repo
 setlocal
