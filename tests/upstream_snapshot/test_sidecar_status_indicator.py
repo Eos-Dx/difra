@@ -58,7 +58,19 @@ def test_sidecar_default_pixet_backend_is_ctypes(monkeypatch):
     ) == "pixet_legacy"
 
 
-def test_sidecar_uses_bootstrap_sdk_over_detector_config(monkeypatch):
+def test_sidecar_expands_managed_sdk_config_path(monkeypatch):
+    monkeypatch.setenv(
+        "PIXET_SDK_PATH",
+        r"C:\Users\Ulster\AppData\Local\DiFRA\pixet\sdk\PIXet_Pro_GUI_1.8.5_Windows_x64",
+    )
+    normalized = pixet_sidecar_server._sidecar_pixet_config(
+        {"pixet_sdk_path": r"%PIXET_SDK_PATH%"}
+    )
+
+    assert normalized["pixet_sdk_path"].endswith("PIXet_Pro_GUI_1.8.5_Windows_x64")
+
+
+def test_sidecar_uses_bootstrap_sdk_over_mismatched_detector_config(monkeypatch):
     monkeypatch.setenv(
         "PIXET_SDK_PATH",
         r"C:\Users\Ulster\AppData\Local\DiFRA\pixet\sdk\PIXet_Pro_GUI_1.8.5_Windows_x64",

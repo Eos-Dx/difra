@@ -19,6 +19,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import socketserver
 import tempfile
 import threading
@@ -51,6 +52,7 @@ class SidecarState:
 
 STATE = SidecarState()
 LOGGER = logging.getLogger("difra.pixet_sidecar")
+_WINDOWS_ENV_VAR_PATTERN = re.compile(r"%([^%]+)%")
 
 
 def _default_sidecar_log_path() -> Path:
@@ -111,6 +113,16 @@ def _configure_sidecar_logging() -> Path:
     return log_path
 
 
+def _expand_env_vars(value: str) -> str:
+    expanded = os.path.expandvars(value)
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return os.environ.get(key, match.group(0))
+
+    return _WINDOWS_ENV_VAR_PATTERN.sub(_replace, expanded)
+
+
 def _require_alias(args: Dict[str, Any]) -> str:
     alias = str(args.get("alias", "")).strip()
     if not alias:
@@ -140,23 +152,27 @@ def _resolve_detector_kind(args: Dict[str, Any]) -> str:
 
 def _sidecar_pixet_config(config: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(config)
-    sdk_path = os.environ.get("PIXET_SDK_PATH", "").strip()
-    if sdk_path:
-        existing = str(normalized.get("pixet_sdk_path", "")).strip()
-        if existing and existing != sdk_path:
+    bootstrap_sdk_path = os.environ.get("PIXET_SDK_PATH", "").strip()
+    configured_sdk_path = str(normalized.get("pixet_sdk_path", "")).strip()
+    if configured_sdk_path:
+        normalized["pixet_sdk_path"] = _expand_env_vars(configured_sdk_path)
+
+    if bootstrap_sdk_path:
+        configured_resolved = os.path.normcase(
+            os.path.normpath(str(normalized.get("pixet_sdk_path", "")).strip())
+        )
+        bootstrap_resolved = os.path.normcase(os.path.normpath(bootstrap_sdk_path))
+        if configured_resolved and configured_resolved != bootstrap_resolved:
             LOGGER.warning(
-                "Ignoring detector config PIXet SDK path in sidecar; using bootstrap SDK",
+                "Detector config PIXet SDK path differs from bootstrap SDK; using bootstrap SDK",
                 extra={
-                    "configured_pixet_sdk_path": existing,
-                    "bootstrap_pixet_sdk_path": sdk_path,
+                    "configured_pixet_sdk_path": normalized.get("pixet_sdk_path"),
+                    "bootstrap_pixet_sdk_path": bootstrap_sdk_path,
                 },
             )
-        normalized["pixet_sdk_path"] = sdk_path
+        normalized["pixet_sdk_path"] = bootstrap_sdk_path
     else:
-        normalized.pop("pixet_sdk_path", None)
-        LOGGER.error(
-            "PIXET_SDK_PATH is not set; sidecar refuses detector config SDK path"
-        )
+        LOGGER.warning("PIXET_SDK_PATH is not set; using detector config SDK path")
     return normalized
 
 

@@ -43,7 +43,7 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "3.12 64bit" in sidecar_launcher
 
 
-def test_shipped_configs_do_not_reference_legacy_pixet_sdk():
+def test_shipped_configs_point_pixet_detectors_to_managed_sdk_env():
     config_dir = REPO_ROOT / "src" / "difra" / "resources" / "config"
     offenders = []
     for path in config_dir.rglob("*.json"):
@@ -52,3 +52,13 @@ def test_shipped_configs_do_not_reference_legacy_pixet_sdk():
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
 
     assert offenders == []
+
+    for path in (config_dir / "main.json", config_dir / "main_win.json"):
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        pixet_paths = [
+            detector.get("pixet_sdk_path")
+            for detector in payload.get("detectors", [])
+            if detector.get("type") == "Pixet"
+        ]
+        assert pixet_paths
+        assert set(pixet_paths) == {"%PIXET_SDK_PATH%"}
