@@ -101,6 +101,7 @@ auto_update_repo() {
 
 CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/global.json"
 MAIN_CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/main.json"
+STARTUP_STDERR_FILTER="$REPO_ROOT/src/difra/scripts/filter_startup_stderr.py"
 
 auto_update_repo
 
@@ -172,6 +173,14 @@ PY
   )
 fi
 
+export PIXET_BACKEND=sidecar
+export DETECTOR_BACKEND=sidecar
+export PIXET_SIDECAR_HOST="$SIDECAR_HOST"
+export PIXET_SIDECAR_PORT="$SIDECAR_PORT"
+export HARDWARE_CLIENT_MODE="$CLIENT_MODE"
+export DIFRA_GRPC_HOST="$GRPC_HOST"
+export DIFRA_GRPC_PORT="$GRPC_PORT"
+
 ensure_runtime_deps_for_env "$GUI_ENV"
 if [ "$GRPC_ENV" != "$GUI_ENV" ]; then
   ensure_runtime_deps_for_env "$GRPC_ENV"
@@ -240,6 +249,7 @@ SIDECAR_CMD=(
 )
 GRPC_CMD=(
   conda run --live-stream --no-capture-output -n "$GRPC_ENV" \
+  python -u "$STARTUP_STDERR_FILTER" -- \
   python -u "$REPO_ROOT/src/difra/grpc_server/server.py" \
   --host "$GRPC_HOST" --port "$GRPC_PORT" --config "$GRPC_CONFIG"
 )
@@ -271,13 +281,7 @@ trap cleanup EXIT INT TERM
 wait_for_port "$SIDECAR_HOST" "$SIDECAR_PORT" "Detector sidecar"
 wait_for_port "$GRPC_HOST" "$GRPC_PORT" "DiFRA gRPC server"
 
-export PIXET_BACKEND=sidecar
-export DETECTOR_BACKEND=sidecar
-export PIXET_SIDECAR_HOST="$SIDECAR_HOST"
-export PIXET_SIDECAR_PORT="$SIDECAR_PORT"
-export HARDWARE_CLIENT_MODE="$CLIENT_MODE"
-export DIFRA_GRPC_HOST="$GRPC_HOST"
-export DIFRA_GRPC_PORT="$GRPC_PORT"
-
 echo "[INFO] Starting DiFRA GUI env=$GUI_ENV mode=$HARDWARE_CLIENT_MODE grpc=${DIFRA_GRPC_HOST}:${DIFRA_GRPC_PORT} detector_backend=sidecar"
-conda run --live-stream --no-capture-output -n "$GUI_ENV" python -u "$REPO_ROOT/src/difra/gui/main_app.py" "$@"
+conda run --live-stream --no-capture-output -n "$GUI_ENV" \
+  python -u "$STARTUP_STDERR_FILTER" -- \
+  python -u "$REPO_ROOT/src/difra/gui/main_app.py" "$@"

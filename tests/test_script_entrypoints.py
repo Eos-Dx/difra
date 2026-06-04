@@ -167,6 +167,19 @@ def test_filter_startup_stderr_forces_utf8_child_io(monkeypatch):
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_dual_env_launcher_exports_grpc_backend_before_start():
+    launcher = (
+        REPO_ROOT / "src" / "difra" / "bin" / "run_difra_dual_env.sh"
+    ).read_text(encoding="utf-8")
+
+    export_index = launcher.index("export DETECTOR_BACKEND=sidecar")
+    grpc_cmd_index = launcher.index("GRPC_CMD=(")
+    assert export_index < grpc_cmd_index
+    assert 'python -u "$STARTUP_STDERR_FILTER" --' in launcher
+    assert 'python -u "$REPO_ROOT/src/difra/grpc_server/server.py"' in launcher
+    assert 'python -u "$REPO_ROOT/src/difra/gui/main_app.py"' in launcher
+
+
 def test_sync_archive_to_onedrive_parser_supports_overrides_and_dry_run():
     module = _load_module(
         REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
