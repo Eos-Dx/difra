@@ -118,6 +118,11 @@ ensure_runtime_deps_for_env() {
     --require container --require protocol --require xrdanalysis
 }
 
+conda_env_available() {
+  local env_name="$1"
+  conda run --no-capture-output -n "$env_name" python -c "import sys; sys.exit(0)" >/dev/null 2>&1
+}
+
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -129,10 +134,18 @@ if [ -z "$GUI_ENV" ]; then
   GUI_ENV="eosdx13"
 fi
 
-SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster38}"
-if ! conda run --live-stream --no-capture-output -n "$SIDECAR_ENV" python -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-}"
+if [ -z "$SIDECAR_ENV" ]; then
+  if conda_env_available eosdx_pixet; then
+    SIDECAR_ENV="eosdx_pixet"
+  else
+    SIDECAR_ENV="$GUI_ENV"
+    echo "[INFO] Sidecar env eosdx_pixet not available; using GUI env $SIDECAR_ENV"
+  fi
+fi
+if ! conda_env_available "$SIDECAR_ENV"; then
   echo "[ERROR] Sidecar env '$SIDECAR_ENV' is not available."
-  echo "[ERROR] Install/create the legacy env (expected: ulster38) or set DIFRA_SIDECAR_ENV."
+  echo "[ERROR] Install/create eosdx_pixet or set DIFRA_SIDECAR_ENV."
   exit 1
 fi
 SIDECAR_HOST="${PIXET_SIDECAR_HOST:-127.0.0.1}"

@@ -180,6 +180,17 @@ def test_dual_env_launcher_exports_grpc_backend_before_start():
     assert 'python -u "$REPO_ROOT/src/difra/gui/main_app.py"' in launcher
 
 
+def test_dual_env_launcher_does_not_default_to_legacy_sidecar_env():
+    launcher = (
+        REPO_ROOT / "src" / "difra" / "bin" / "run_difra_dual_env.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster38}"' not in launcher
+    assert "conda_env_available eosdx_pixet" in launcher
+    assert 'SIDECAR_ENV="$GUI_ENV"' in launcher
+    assert "Install/create eosdx_pixet" in launcher
+
+
 def test_sync_archive_to_onedrive_parser_supports_overrides_and_dry_run():
     module = _load_module(
         REPO_ROOT / "src" / "difra" / "scripts" / "sync_archive_to_onedrive.py",
