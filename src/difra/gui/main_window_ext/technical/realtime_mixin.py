@@ -1,8 +1,11 @@
 import logging
 import queue
 
-import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+from difra.gui.qt_compat import QDialog, QVBoxLayout
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,8 +33,6 @@ class TechnicalRealtimeMixin:
                 if msg_box is not None:
                     msg_box.warning(self, "Real-time", str(exc))
                 return
-            else:
-                self.rtBtn.setText("Stop RT")
         else:
             self._log_technical_event("Stopping real-time measurement display")
             self._stop_realtime()
@@ -77,7 +78,6 @@ class TechnicalRealtimeMixin:
         frames = max(frames, 1)
         self._rt_queue = queue.Queue()
 
-        plt.ion()
         detector_controllers = self._realtime_detector_controllers()
         self._rt_detector_controllers = detector_controllers
         detector_aliases = list(detector_controllers.keys())
@@ -85,33 +85,37 @@ class TechnicalRealtimeMixin:
         self._rt_img = {}
         self._rt_last_frame = {}
 
+        n_cols = max(n_det, 1)
+        fig = Figure(figsize=(5 * n_cols, 5))
+        canvas = FigureCanvas(fig)
+        self._rt_fig = fig
+        self._rt_canvas = canvas
+
         if n_det == 0:
-            fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+            ax = fig.add_subplot(1, 1, 1)
             ax.text(
-                0.5,
-                0.5,
-                "No detector initialized",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
+                0.5, 0.5, "No detector initialized",
+                ha="center", va="center", transform=ax.transAxes,
             )
             ax.set_axis_off()
-            self._rt_fig = fig
-            plt.show(block=False)
             self._log_technical_event("Real-time display opened without active detectors")
-            return
+        else:
+            for i, alias in enumerate(detector_aliases):
+                ax = fig.add_subplot(1, n_det, i + 1)
+                size = getattr(detector_controllers[alias], "size", (256, 256))
+                self._rt_img[alias] = ax.imshow(
+                    np.zeros(size), origin="lower", interpolation="none"
+                )
+                ax.set_title(alias)
 
-        fig, axes = plt.subplots(1, n_det, figsize=(5 * n_det, 5))
-        axes = np.atleast_1d(axes).ravel()
-
-        for ax, alias in zip(axes, detector_aliases):
-            size = getattr(detector_controllers[alias], "size", (256, 256))
-            self._rt_img[alias] = ax.imshow(
-                np.zeros(size), origin="lower", interpolation="none"
-            )
-            ax.set_title(alias)
-        self._rt_fig = fig
-        plt.show(block=False)
+        win = QDialog(self)
+        win.setWindowTitle("Real-time view")
+        layout = QVBoxLayout(win)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(canvas)
+        win.resize(int(5 * n_cols * 100), 500)
+        self._rt_win = win
+        win.show()
 
         self._plot_timer = tm.QTimer(self)
         self._plot_timer.setInterval(50)
@@ -143,7 +147,7 @@ class TechnicalRealtimeMixin:
             if frame is not None:
                 self._rt_img[alias].set_data(frame)
                 self._rt_img[alias].set_clim(frame.min(), frame.max())
-        self._rt_fig.canvas.draw_idle()
+        self._rt_canvas.draw_idle()
 
     def _stop_realtime(self):
         for controller in getattr(self, "_rt_detector_controllers", {}).values():
@@ -153,10 +157,12 @@ class TechnicalRealtimeMixin:
         if hasattr(self, "_plot_timer"):
             self._plot_timer.stop()
             del self._plot_timer
-        if hasattr(self, "_rt_fig"):
-            plt.close(self._rt_fig)
-            del self._rt_fig
+        if hasattr(self, "_rt_win"):
+            self._rt_win.close()
+            del self._rt_win
         for attr in (
+            "_rt_fig",
+            "_rt_canvas",
             "_rt_queue",
             "_rt_last_frame",
             "_rt_img",
