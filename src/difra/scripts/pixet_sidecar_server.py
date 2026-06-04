@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import logging.handlers
 import os
 import socketserver
 import tempfile
 import threading
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -28,7 +31,6 @@ import numpy as np
 # Allow running directly from repository root or arbitrary working directory.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src"
-import sys
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -48,6 +50,65 @@ class SidecarState:
 
 
 STATE = SidecarState()
+LOGGER = logging.getLogger("difra.pixet_sidecar")
+
+
+def _default_sidecar_log_path() -> Path:
+    explicit = os.environ.get("DIFRA_SIDECAR_LOG_PATH", "").strip()
+    if explicit:
+        return Path(explicit)
+
+    if os.name == "nt":
+        base = Path(
+            os.environ.get("LOCALAPPDATA")
+            or Path.home() / "AppData" / "Local"
+        )
+        return base / "DiFRA" / "logs" / "pixet_sidecar.log"
+
+    state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return state_root / "DiFRA" / "logs" / "pixet_sidecar.log"
+
+
+def _configure_sidecar_logging() -> Path:
+    log_path = _default_sidecar_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "_difra_pixet_sidecar", False):
+            root.removeHandler(handler)
+            handler.close()
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    console_formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler._difra_pixet_sidecar = True
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
+    console_handler._difra_pixet_sidecar = True
+
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+    root.setLevel(logging.DEBUG)
+
+    LOGGER.info("PIXet sidecar logging initialized", extra={"log_path": str(log_path)})
+    return log_path
 
 
 def _require_alias(args: Dict[str, Any]) -> str:
@@ -311,9 +372,7 @@ def _start_owner_watchdog(
         while not stop_event.wait(interval):
             if _pid_alive(owner_pid):
                 continue
-            print(
-                "[pixet-sidecar] owner pid %s is not alive; shutting down" % owner_pid
-            )
+            LOGGER.warning("Owner pid %s is not alive; shutting down", owner_pid)
             try:
                 _dispatch("shutdown", {})
             except Exception:
@@ -348,12 +407,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    log_path = _configure_sidecar_logging()
     args = parse_args()
     stop_event = threading.Event()
     with ThreadedTCPServer((args.host, int(args.port)), JsonLineHandler) as server:
-        print(
-            "[pixet-sidecar] listening on %s:%s pid=%s"
-            % (args.host, args.port, os.getpid())
+        LOGGER.info(
+            "PIXet sidecar listening on %s:%s pid=%s log=%s",
+            args.host,
+            args.port,
+            os.getpid(),
+            log_path,
         )
         _start_owner_watchdog(
             server=server,

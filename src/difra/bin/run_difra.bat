@@ -159,6 +159,9 @@ if /I "%GRPC_HOST%"=="127.0.0.1" (
 )
 
 echo [INFO] Starting sidecar env=%SIDECAR_ENV% endpoint=%SIDECAR_HOST%:%SIDECAR_PORT%
+if "%DIFRA_SIDECAR_LOG_PATH%"=="" set "DIFRA_SIDECAR_LOG_PATH=%LOCALAPPDATA%\DiFRA\logs\pixet_sidecar.log"
+for %%I in ("%DIFRA_SIDECAR_LOG_PATH%") do if not exist "%%~dpI" mkdir "%%~dpI"
+echo [INFO] Sidecar log: %DIFRA_SIDECAR_LOG_PATH%
 set "PATH=%SIDECAR_LAUNCH_PATH%"
 if "%LAUNCHER_PID%"=="" (
   start "DiFRA Sidecar" /B "%SIDECAR_PY_EXE%" -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%

@@ -36,5 +36,8 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "import sys,platform,numpy" in bootstrap
     assert "ensure_pixet_sidecar_runtime.bat" in launcher
     assert "ensure_pixet_sidecar_runtime.bat" in sidecar_launcher
+    assert "difra_sidecar_log_path" in launcher.lower()
+    assert "difra_sidecar_log_path" in sidecar_launcher.lower()
+    assert "pixet_sidecar.log" in launcher.lower()
     assert "eosdx_pixet" in launcher
     assert "3.12 64bit" in sidecar_launcher

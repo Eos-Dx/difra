@@ -68,6 +68,9 @@ if /I not "%SIDECAR_PY%"=="3.12 64bit" (
 echo [INFO] Starting PIXet sidecar in env: %SIDECAR_ENV%
 echo [INFO] Sidecar endpoint: %SIDECAR_HOST%:%SIDECAR_PORT%
 echo [INFO] PIXet SDK path: %PIXET_SDK_PATH%
+if "%DIFRA_SIDECAR_LOG_PATH%"=="" set "DIFRA_SIDECAR_LOG_PATH=%LOCALAPPDATA%\DiFRA\logs\pixet_sidecar.log"
+for %%I in ("%DIFRA_SIDECAR_LOG_PATH%") do if not exist "%%~dpI" mkdir "%%~dpI"
+echo [INFO] Sidecar log: %DIFRA_SIDECAR_LOG_PATH%
 
 %CONDA_CMD% run --live-stream --no-capture-output -n %SIDECAR_ENV% python -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%
 
