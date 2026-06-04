@@ -67,8 +67,14 @@ if errorlevel 1 (
 )
 
 echo [INFO] Ensuring PIXet sidecar env=%SIDECAR_ENV% ^(Python 3.12 x64^)
-%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'" >nul 2>&1
-if errorlevel 1 (
+set SIDECAR_PY_EXE=
+call :resolve_env_python "%SIDECAR_ENV%" SIDECAR_PY_EXE
+if not "%SIDECAR_PY_EXE%"=="" (
+  echo [INFO] Checking PIXet sidecar Python: %SIDECAR_PY_EXE%
+  "%SIDECAR_PY_EXE%" -c "import sys,platform; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'" >nul 2>&1
+)
+if "%SIDECAR_PY_EXE%"=="" (
+  echo [INFO] PIXet sidecar env %SIDECAR_ENV% is missing or has no python.exe.
   echo [INFO] Creating/updating %SIDECAR_ENV% from %PIXET_ENV_YAML%
   %CONDA_CMD% env list | findstr /I /R "\<%SIDECAR_ENV%\>" >nul 2>&1
   if errorlevel 1 (
@@ -80,29 +86,52 @@ if errorlevel 1 (
     echo [ERROR] Failed to create/update PIXet sidecar env %SIDECAR_ENV%.
     exit /b 1
   )
+) else (
+  "%SIDECAR_PY_EXE%" -c "import sys,platform; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'" >nul 2>&1
+  if errorlevel 1 (
+    echo [INFO] PIXet sidecar env %SIDECAR_ENV% exists but is not Python 3.12 x64.
+    echo [INFO] Creating/updating %SIDECAR_ENV% from %PIXET_ENV_YAML%
+    %CONDA_CMD% env update -n %SIDECAR_ENV% -f "%PIXET_ENV_YAML%" --prune
+    if errorlevel 1 (
+      echo [ERROR] Failed to update PIXet sidecar env %SIDECAR_ENV%.
+      exit /b 1
+    )
+  )
+)
+
+set SIDECAR_PY_EXE=
+call :resolve_env_python "%SIDECAR_ENV%" SIDECAR_PY_EXE
+if "%SIDECAR_PY_EXE%"=="" (
+  echo [ERROR] Could not resolve python.exe for PIXet sidecar env %SIDECAR_ENV%.
+  exit /b 1
 )
 
 set SIDECAR_PY=
-for /f "usebackq delims=" %%V in (`%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}')" 2^>nul`) do set SIDECAR_PY=%%V
+for /f "usebackq delims=" %%V in (`"%SIDECAR_PY_EXE%" -c "import sys,platform; print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}')" 2^>nul`) do set SIDECAR_PY=%%V
 if /I not "%SIDECAR_PY%"=="3.12 64bit" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.12 64-bit, found %SIDECAR_PY%.
+  echo [ERROR] Python checked: %SIDECAR_PY_EXE%
   exit /b 1
 )
 
 echo [INFO] Ensuring PIXet sidecar Python packages: %PIXET_CONDA_PACKAGES%
-%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import numpy" >nul 2>&1
+"%SIDECAR_PY_EXE%" -c "import numpy" >nul 2>&1
 if errorlevel 1 (
+  echo [INFO] Installing PIXet sidecar Python packages into %SIDECAR_ENV%...
   %CONDA_CMD% install -y -n %SIDECAR_ENV% %PIXET_CONDA_PACKAGES%
   if errorlevel 1 (
     echo [ERROR] Failed to install PIXet sidecar packages in %SIDECAR_ENV%.
     exit /b 1
   )
 )
-%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform,numpy; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'; print(numpy.__version__)" >nul 2>&1
-if errorlevel 1 (
+
+set PIXET_NUMPY_VERSION=
+for /f "usebackq delims=" %%V in (`"%SIDECAR_PY_EXE%" -c "import sys,platform,numpy; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'; print(numpy.__version__)" 2^>nul`) do set PIXET_NUMPY_VERSION=%%V
+if "%PIXET_NUMPY_VERSION%"=="" (
   echo [ERROR] PIXet sidecar package verification failed in %SIDECAR_ENV%.
   exit /b 1
 )
+echo [INFO] PIXet sidecar Python OK: %SIDECAR_PY%; numpy=%PIXET_NUMPY_VERSION%
 
 if not exist "%PIXET_DOWNLOAD_DIR%" mkdir "%PIXET_DOWNLOAD_DIR%"
 if not exist "%PIXET_ZIP%" (
@@ -135,3 +164,10 @@ if "%PIXET_DLL%"=="" (
 
 echo [INFO] PIXet SDK path: %PIXET_DLL%
 endlocal & set "DIFRA_SIDECAR_ENV=%SIDECAR_ENV%" & set "PIXET_SDK_PATH=%PIXET_DLL%" & set "DIFRA_PIXET_SDK_URL=%PIXET_SDK_URL%" & exit /b 0
+
+:resolve_env_python
+set ENV_NAME=%~1
+set OUT_VAR=%~2
+set "%OUT_VAR%="
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$conda='%CONDA_CMD%'; $conda=$conda.Trim('\"'); try { $payload=& $conda env list --json | ConvertFrom-Json } catch { exit 0 }; $target='%ENV_NAME%'.ToLowerInvariant(); foreach($p in ($payload.envs | Where-Object { $_ })) { if ([System.IO.Path]::GetFileName($p).ToLowerInvariant() -eq $target) { $py=Join-Path $p 'python.exe'; if(Test-Path $py){ Write-Output $py; break } } }"`) do set "%OUT_VAR%=%%P"
+exit /b 0
