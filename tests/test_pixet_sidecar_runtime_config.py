@@ -41,3 +41,14 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "pixet_sidecar.log" in launcher.lower()
     assert "eosdx_pixet" in launcher
     assert "3.12 64bit" in sidecar_launcher
+
+
+def test_shipped_configs_do_not_reference_legacy_pixet_sdk():
+    config_dir = REPO_ROOT / "src" / "difra" / "resources" / "config"
+    offenders = []
+    for path in config_dir.rglob("*.json"):
+        text = path.read_text(encoding="utf-8")
+        if "API_PIXet_Pro_1.8.3" in text or "1.8.3_Windows_x86_64" in text:
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+
+    assert offenders == []

@@ -138,6 +138,28 @@ def _resolve_detector_kind(args: Dict[str, Any]) -> str:
     return "pixet_ctypes"
 
 
+def _sidecar_pixet_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(config)
+    sdk_path = os.environ.get("PIXET_SDK_PATH", "").strip()
+    if sdk_path:
+        existing = str(normalized.get("pixet_sdk_path", "")).strip()
+        if existing and existing != sdk_path:
+            LOGGER.warning(
+                "Ignoring detector config PIXet SDK path in sidecar; using bootstrap SDK",
+                extra={
+                    "configured_pixet_sdk_path": existing,
+                    "bootstrap_pixet_sdk_path": sdk_path,
+                },
+            )
+        normalized["pixet_sdk_path"] = sdk_path
+    else:
+        normalized.pop("pixet_sdk_path", None)
+        LOGGER.error(
+            "PIXET_SDK_PATH is not set; sidecar refuses detector config SDK path"
+        )
+    return normalized
+
+
 def _get_or_create_controller(args: Dict[str, Any]):
     alias = _require_alias(args)
     with STATE.map_lock:
@@ -168,7 +190,7 @@ def _get_or_create_controller(args: Dict[str, Any]):
             ctrl = PixetDetectorController(
                 alias=alias,
                 size=(width, height),
-                config=config,
+                config=_sidecar_pixet_config(config),
             )
         STATE.controllers[alias] = ctrl
         STATE.controller_locks[alias] = threading.RLock()

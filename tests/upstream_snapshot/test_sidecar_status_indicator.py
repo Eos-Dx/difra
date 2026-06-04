@@ -58,6 +58,19 @@ def test_sidecar_default_pixet_backend_is_ctypes(monkeypatch):
     ) == "pixet_legacy"
 
 
+def test_sidecar_uses_bootstrap_sdk_over_detector_config(monkeypatch):
+    monkeypatch.setenv(
+        "PIXET_SDK_PATH",
+        r"C:\Users\Ulster\AppData\Local\DiFRA\pixet\sdk\PIXet_Pro_GUI_1.8.5_Windows_x64",
+    )
+    normalized = pixet_sidecar_server._sidecar_pixet_config(
+        {"pixet_sdk_path": r"D:\API_PIXet_Pro_1.8.3_Windows_x86_64"}
+    )
+
+    assert normalized["pixet_sdk_path"].endswith("PIXet_Pro_GUI_1.8.5_Windows_x64")
+    assert "1.8.3" not in normalized["pixet_sdk_path"]
+
+
 def test_sidecar_ping_probe_reports_alive():
     port = _free_tcp_port()
     proc = subprocess.Popen(
