@@ -36,6 +36,7 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "pxcore.dll" in bootstrap
     assert "conda_packages=python=3.12 pip numpy" in bootstrap.lower()
     assert "install -y -n %sidecar_env% %pixet_conda_packages%" in bootstrap.lower()
+    assert "env create -n %sidecar_env% -f" in bootstrap.lower()
     assert ":resolve_env_python" in bootstrap
     assert "Checking PIXet sidecar Python" in bootstrap
     assert "PIXet sidecar Python OK" in bootstrap

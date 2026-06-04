@@ -82,7 +82,7 @@ if "%SIDECAR_PY_EXE%"=="" (
   echo [INFO] Creating/updating %SIDECAR_ENV% from %PIXET_ENV_YAML%
   %CONDA_CMD% env list | findstr /I /R "\<%SIDECAR_ENV%\>" >nul 2>&1
   if errorlevel 1 (
-    %CONDA_CMD% env create -f "%PIXET_ENV_YAML%"
+    %CONDA_CMD% env create -n %SIDECAR_ENV% -f "%PIXET_ENV_YAML%"
   ) else (
     %CONDA_CMD% env update -n %SIDECAR_ENV% -f "%PIXET_ENV_YAML%" --prune
   )
