@@ -1,0 +1,11 @@
+name: eosdx_pixet
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+
+  # PIXet 1.8.5 runtime is downloaded/unpacked by
+  # src/difra/bin/ensure_pixet_sidecar_runtime.bat.
+  # Vendor DLLs are not committed to git.

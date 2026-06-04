@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""PIXet sidecar server (Python 3.7+) using plain TCP sockets + JSON lines.
+"""PIXet sidecar server (Python 3.12+) using plain TCP sockets + JSON lines.
 
 Development note:
-- Keep sidecar code compatible with legacy Python <= 3.8.
+- Ulster Windows sidecar runtime is `eosdx_pixet` with Python 3.12 x64.
+- Default PIXet backend uses the ctypes bridge to Advacam PIXet 1.8.5.
+- Set PIXET_SIDECAR_BACKEND=pypixet only for explicit legacy fallback.
 
 Protocol (request/response):
 - Request:  {"id": "...", "cmd": "...", "args": {...}}
@@ -33,6 +35,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from difra.hardware.detectors import (
     DummyDetectorController,
+    PixetDetectorController,
     PixetLegacyDetectorController,
 )
 
@@ -63,8 +66,15 @@ def _resolve_detector_kind(args: Dict[str, Any]) -> str:
     detector_type = detector_type.lower()
     if detector_type in {"dummydetector", "dummy"}:
         return "dummy"
-    # Default to legacy pixet path for physical detectors.
-    return "pixet_legacy"
+
+    backend = str(
+        os.environ.get("PIXET_SIDECAR_BACKEND")
+        or os.environ.get("PIXET_BACKEND")
+        or "ctypes"
+    ).strip().lower()
+    if backend in {"pypixet", "legacy", "pixet_legacy"}:
+        return "pixet_legacy"
+    return "pixet_ctypes"
 
 
 def _get_or_create_controller(args: Dict[str, Any]):
@@ -87,8 +97,14 @@ def _get_or_create_controller(args: Dict[str, Any]):
         kind = _resolve_detector_kind(args)
         if kind == "dummy":
             ctrl = DummyDetectorController(alias=alias, size=(width, height))
-        else:
+        elif kind == "pixet_legacy":
             ctrl = PixetLegacyDetectorController(
+                alias=alias,
+                size=(width, height),
+                config=config,
+            )
+        else:
+            ctrl = PixetDetectorController(
                 alias=alias,
                 size=(width, height),
                 config=config,

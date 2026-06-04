@@ -33,12 +33,15 @@ The current launchers run DiFRA in a protocol-first layout:
 
 1. GUI starts in modern env (`eosdx13`, Python 3.13).
 2. DiFRA gRPC server starts (default: same env as GUI).
-3. PIXet detector sidecar starts in legacy env (`ulster37`, Python 3.7).
+3. PIXet detector sidecar starts in `eosdx_pixet` (Python 3.12 x64).
 4. GUI hardware client runs in strict gRPC mode (`HARDWARE_CLIENT_MODE=grpc`, enforced by launchers).
 5. gRPC server handles stage directly and routes detector init/capture through sidecar (`DETECTOR_BACKEND=sidecar`).
 
-Sidecar development rule:
-- Any code added under the sidecar path must remain compatible with legacy Python `<=3.8` (target runtime is currently Python 3.7).
+Sidecar runtime rule:
+- Windows PIXet sidecar defaults to `eosdx_pixet`.
+- `src\difra\bin\run_difra.bat` bootstraps this env from `environment-eosdx-pixet.yml`.
+- The launcher downloads/unpacks Advacam PIXet Pro GUI/API 1.8.5 x64 into `%LOCALAPPDATA%\DiFRA\pixet` and exports `PIXET_SDK_PATH`.
+- Legacy `pypixet` can still be forced with `PIXET_SIDECAR_BACKEND=pypixet`.
 
 Default endpoints:
 - gRPC: `127.0.0.1:50061`
@@ -69,17 +72,18 @@ conda run -n eosdx13 python src/difra/scripts/motion_stop_drill.py --assert-part
 Detailed runbook:
 - `src/difra/REAL_HARDWARE_TEST_PLAN_2026-03-23.md`
 
-### Installing Python Dependencies (pip)
+### Installing Python Dependencies
 
 DiFRA now includes separate pip requirements files per runtime:
 
-- `src/difra/requirements-ulster37-38.txt` - legacy runtime (sidecar target: `ulster37`, Python 3.7)
+- `src/difra/environment-eosdx-pixet.yml` - Windows PIXet sidecar runtime (`eosdx_pixet`, Python 3.12 x64)
+- `src/difra/requirements-ulster37-38.txt` - legacy fallback runtime
 - `src/difra/requirements-eosdx13.txt` - modern runtime (`eosdx13`, Python 3.13)
 
 Install with:
 
 ```bash
-pip install -r src/difra/requirements-ulster37-38.txt
+conda env create -f src/difra/environment-eosdx-pixet.yml
 # or
 pip install -r src/difra/requirements-eosdx13.txt
 ```

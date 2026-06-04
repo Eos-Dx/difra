@@ -6,10 +6,15 @@ set SCRIPT_DIR=%~dp0
 for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 
 set DIFRA_DIR=%REPO_ROOT%\src\difra
+set YAML_PIXET=%DIFRA_DIR%\environment-eosdx-pixet.yml
 set YAML_38=%DIFRA_DIR%\environment-ulster38.yml
 set YAML_311=%DIFRA_DIR%\environment-ulster311.yml
 set STUBS_SCRIPT=%REPO_ROOT%\src\difra\scripts\regenerate_protocol_stubs.py
 
+if not exist "%YAML_PIXET%" (
+  echo [ERROR] Missing YAML file: %YAML_PIXET%
+  exit /b 1
+)
 if not exist "%YAML_38%" (
   echo [ERROR] Missing YAML file: %YAML_38%
   exit /b 1
@@ -30,12 +35,13 @@ echo.
 echo ======================================
 echo   DiFRA Conda Environment Installer
 echo ======================================
-echo 1. Install/Update ulster38  (Python 3.8)
-echo 2. Install/Update ulster311 (Python 3.11)
-echo 3. Install/Update both
+echo 1. Install/Update eosdx_pixet ^(Python 3.12 sidecar^)
+echo 2. Install/Update ulster38    ^(legacy Python 3.8^)
+echo 3. Install/Update ulster311   ^(Python 3.11^)
+echo 4. Install/Update all
 echo Q. Quit
 echo.
-set /p CHOICE=Choose option [1/2/3/Q]:
+set /p CHOICE=Choose option [1/2/3/4/Q]:
 
 if /I "%CHOICE%"=="Q" (
   echo [INFO] Cancelled by user.
@@ -43,14 +49,19 @@ if /I "%CHOICE%"=="Q" (
 )
 
 if "%CHOICE%"=="1" (
-  call :apply_env ulster38 "%YAML_38%" || exit /b 1
+  call :apply_env eosdx_pixet "%YAML_PIXET%" || exit /b 1
   goto :ask_regen
 )
 if "%CHOICE%"=="2" (
-  call :apply_env ulster311 "%YAML_311%" || exit /b 1
+  call :apply_env ulster38 "%YAML_38%" || exit /b 1
   goto :ask_regen
 )
 if "%CHOICE%"=="3" (
+  call :apply_env ulster311 "%YAML_311%" || exit /b 1
+  goto :ask_regen
+)
+if "%CHOICE%"=="4" (
+  call :apply_env eosdx_pixet "%YAML_PIXET%" || exit /b 1
   call :apply_env ulster38 "%YAML_38%" || exit /b 1
   call :apply_env ulster311 "%YAML_311%" || exit /b 1
   goto :ask_regen
@@ -65,11 +76,7 @@ set /p REGEN=Regenerate gRPC/protobuf stubs now? [y/N]:
 if /I not "%REGEN%"=="Y" goto :done
 
 if "%CHOICE%"=="1" (
-  call :regen_stubs ulster38 || exit /b 1
-  goto :done
-)
-if "%CHOICE%"=="2" (
-  call :regen_stubs ulster311 || exit /b 1
+  echo [INFO] eosdx_pixet is sidecar-only; skipping stub regeneration.
   goto :done
 )
 

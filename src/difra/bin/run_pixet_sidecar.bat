@@ -6,7 +6,7 @@ set SCRIPT_DIR=%~dp0
 for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
-if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=ulster38
+if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
 if "%SIDECAR_HOST%"=="" set SIDECAR_HOST=127.0.0.1
@@ -48,22 +48,26 @@ if errorlevel 1 (
 )
 
 cd /d %REPO_ROOT%
+call "%REPO_ROOT%\src\difra\bin\ensure_pixet_sidecar_runtime.bat"
+if errorlevel 1 exit /b 1
+
 set PYTHONPATH=%REPO_ROOT%\src;%PYTHONPATH%
 set PYTHONUNBUFFERED=1
 
 set SIDECAR_PY=
-for /f "usebackq delims=" %%V in (`%CONDA_CMD% run --live-stream --no-capture-output -n %SIDECAR_ENV% python -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2^>nul`) do set SIDECAR_PY=%%V
+for /f "usebackq delims=" %%V in (`%CONDA_CMD% run --live-stream --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}')" 2^>nul`) do set SIDECAR_PY=%%V
 if "%SIDECAR_PY%"=="" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' is not available.
   exit /b 1
 )
-if /I not "%SIDECAR_PY%"=="3.7" if /I not "%SIDECAR_PY%"=="3.8" (
-  echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.7 or 3.8, found %SIDECAR_PY%.
+if /I not "%SIDECAR_PY%"=="3.12 64bit" (
+  echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.12 64-bit, found %SIDECAR_PY%.
   exit /b 1
 )
 
 echo [INFO] Starting PIXet sidecar in env: %SIDECAR_ENV%
 echo [INFO] Sidecar endpoint: %SIDECAR_HOST%:%SIDECAR_PORT%
+echo [INFO] PIXet SDK path: %PIXET_SDK_PATH%
 
 %CONDA_CMD% run --live-stream --no-capture-output -n %SIDECAR_ENV% python -u "%REPO_ROOT%\src\difra\scripts\pixet_sidecar_server.py" --host %SIDECAR_HOST% --port %SIDECAR_PORT%
 

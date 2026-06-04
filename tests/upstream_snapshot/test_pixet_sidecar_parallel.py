@@ -75,7 +75,9 @@ def test_sidecar_capture_parallel_for_different_aliases(tmp_path: Path):
     sidecar._dispatch("shutdown", {})
 
 
-def test_sidecar_legacy_capture_parallel_for_different_aliases(tmp_path: Path):
+def test_sidecar_legacy_capture_parallel_for_different_aliases(
+    tmp_path: Path, monkeypatch
+):
     class _FakeLegacyDetector:
         def __init__(self, alias, size=(16, 16), config=None):
             self.alias = alias
@@ -92,6 +94,8 @@ def test_sidecar_legacy_capture_parallel_for_different_aliases(tmp_path: Path):
             time.sleep(float(Nseconds))
             Path(f"{filename_base}.txt").write_text("ok", encoding="utf-8")
             return True
+
+    monkeypatch.setenv("PIXET_SIDECAR_BACKEND", "pypixet")
 
     original_legacy = sidecar.PixetLegacyDetectorController
     sidecar.PixetLegacyDetectorController = _FakeLegacyDetector
@@ -131,7 +135,7 @@ def test_sidecar_legacy_capture_parallel_for_different_aliases(tmp_path: Path):
                         "Nframes": 1,
                         "Nseconds": 0.8,
                         "filename_base": str(tmp_path / alias),
-                        # Non-dummy type forces legacy branch in sidecar.
+                        # pypixet backend forces legacy branch in sidecar.
                         "detector_type": "Pixet",
                         "size": [16, 16],
                         "config": {"type": "Pixet"},

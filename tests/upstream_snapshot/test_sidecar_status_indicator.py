@@ -13,6 +13,7 @@ if SRC_ROOT not in sys.path:
 from difra.gui.main_window_ext.zone_measurements.logic.stage_control_mixin import (
     StageControlMixin,
 )
+from difra.scripts import pixet_sidecar_server
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +42,20 @@ def test_sidecar_required_only_for_pixet_detectors():
 
     assert StageControlMixin._is_sidecar_required_for_config(pixet_cfg) is True
     assert StageControlMixin._is_sidecar_required_for_config(dummy_cfg) is False
+
+
+def test_sidecar_default_pixet_backend_is_ctypes(monkeypatch):
+    monkeypatch.delenv("PIXET_SIDECAR_BACKEND", raising=False)
+    monkeypatch.delenv("PIXET_BACKEND", raising=False)
+
+    assert pixet_sidecar_server._resolve_detector_kind(
+        {"detector_type": "Pixet"}
+    ) == "pixet_ctypes"
+
+    monkeypatch.setenv("PIXET_SIDECAR_BACKEND", "pypixet")
+    assert pixet_sidecar_server._resolve_detector_kind(
+        {"detector_type": "Pixet"}
+    ) == "pixet_legacy"
 
 
 def test_sidecar_ping_probe_reports_alive():
