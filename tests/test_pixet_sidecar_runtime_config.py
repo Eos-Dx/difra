@@ -54,6 +54,9 @@ def test_windows_pixet_bootstrap_downloads_advacam_sdk():
     assert "difra_sidecar_log_path" in sidecar_launcher.lower()
     assert "pixet_sidecar.log" in launcher.lower()
     assert "eosdx_pixet" in launcher
+    assert "sidecar_conda" in launcher
+    assert "sidecar_conda" in bootstrap
+    assert "sidecar_conda" in sidecar_launcher
     assert "3.12 64bit" in sidecar_launcher
 
 
@@ -69,6 +72,7 @@ def test_shipped_configs_point_pixet_detectors_to_managed_sdk_env():
 
     for path in (config_dir / "main.json", config_dir / "main_win.json"):
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert payload["sidecar_conda"] == "eosdx_pixet"
         pixet_paths = [
             detector.get("pixet_sdk_path")
             for detector in payload.get("detectors", [])

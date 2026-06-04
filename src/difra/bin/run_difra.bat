@@ -18,6 +18,9 @@ if "%GUI_ENV%"=="" (
 if "%GUI_ENV%"=="" set GUI_ENV=eosdx13
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
+if "%SIDECAR_ENV%"=="" (
+  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
+)
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
@@ -83,6 +86,9 @@ if errorlevel 1 (
 call "%REPO_ROOT%\src\difra\bin\ensure_pixet_sidecar_runtime.bat"
 if errorlevel 1 exit /b 1
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
+if "%SIDECAR_ENV%"=="" (
+  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
+)
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_PY_EXE=

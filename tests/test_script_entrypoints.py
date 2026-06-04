@@ -186,7 +186,8 @@ def test_dual_env_launcher_does_not_default_to_legacy_sidecar_env():
     ).read_text(encoding="utf-8")
 
     assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster38}"' not in launcher
-    assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-eosdx_pixet}"' in launcher
+    assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-}"' in launcher
+    assert "sidecar_conda" in launcher
     assert 'SIDECAR_ENV="$GUI_ENV"' not in launcher
     assert "Install/create eosdx_pixet" in launcher
 

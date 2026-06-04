@@ -123,6 +123,24 @@ conda_env_available() {
   conda run --no-capture-output -n "$env_name" python -c "import sys; sys.exit(0)" >/dev/null 2>&1
 }
 
+read_json_config_value() {
+  local config_path="$1"
+  local key="$2"
+  python3 - "$config_path" "$key" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+if not path.exists():
+    sys.exit(0)
+value = json.loads(path.read_text(encoding="utf-8")).get(key)
+if value:
+    print(value)
+PY
+}
+
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -134,7 +152,13 @@ if [ -z "$GUI_ENV" ]; then
   GUI_ENV="eosdx13"
 fi
 
-SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-eosdx_pixet}"
+SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-}"
+if [ -z "$SIDECAR_ENV" ]; then
+  SIDECAR_ENV="$(read_json_config_value "$MAIN_CONFIG_PATH" "sidecar_conda")"
+fi
+if [ -z "$SIDECAR_ENV" ]; then
+  SIDECAR_ENV="eosdx_pixet"
+fi
 if ! conda_env_available "$SIDECAR_ENV"; then
   echo "[ERROR] Sidecar env '$SIDECAR_ENV' is not available."
   echo "[ERROR] Install/create eosdx_pixet or set DIFRA_SIDECAR_ENV."

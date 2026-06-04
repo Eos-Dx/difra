@@ -4,8 +4,12 @@ setlocal enabledelayedexpansion
 REM Determine repository root (three levels up: bin -> difra -> src -> root)
 set SCRIPT_DIR=%~dp0
 for %%I in ("%SCRIPT_DIR%..\..\..") do set REPO_ROOT=%%~fI
+set MAIN_CONFIG_PATH=%REPO_ROOT%\src\difra\resources\config\main_win.json
 
 set SIDECAR_ENV=%DIFRA_SIDECAR_ENV%
+if "%SIDECAR_ENV%"=="" (
+  for /f "usebackq delims=" %%E in (`powershell -NoProfile -Command "$p='%MAIN_CONFIG_PATH%'; if(Test-Path $p){ try { $v=(Get-Content -Raw $p | ConvertFrom-Json).sidecar_conda; if($v){ Write-Output $v } } catch {} }"`) do set SIDECAR_ENV=%%E
+)
 if "%SIDECAR_ENV%"=="" set SIDECAR_ENV=eosdx_pixet
 
 set SIDECAR_HOST=%PIXET_SIDECAR_HOST%
