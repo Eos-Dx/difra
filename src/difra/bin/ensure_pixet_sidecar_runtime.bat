@@ -22,6 +22,7 @@ set PIXET_DOWNLOAD_DIR=%PIXET_CACHE_ROOT%\downloads
 set PIXET_EXTRACT_ROOT=%PIXET_CACHE_ROOT%\sdk\PIXet_Pro_GUI_1.8.5_Windows_x64
 set PIXET_ZIP=%PIXET_DOWNLOAD_DIR%\PIXet_Pro_GUI_1.8.5_Windows_x64.zip
 set PIXET_ENV_YAML=%REPO_ROOT%\src\difra\environment-eosdx-pixet.yml
+set PIXET_CONDA_PACKAGES=python=3.12 pip numpy
 
 set CONDA_CMD=%DIFRA_CONDA_EXE%
 if "%CONDA_CMD%"=="" set CONDA_CMD=conda
@@ -60,7 +61,7 @@ if errorlevel 1 (
 )
 
 echo [INFO] Ensuring PIXet sidecar env=%SIDECAR_ENV% ^(Python 3.12 x64^)
-%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'; import numpy" >nul 2>&1
+%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'" >nul 2>&1
 if errorlevel 1 (
   echo [INFO] Creating/updating %SIDECAR_ENV% from %PIXET_ENV_YAML%
   %CONDA_CMD% env list | findstr /I /R "\<%SIDECAR_ENV%\>" >nul 2>&1
@@ -79,6 +80,21 @@ set SIDECAR_PY=
 for /f "usebackq delims=" %%V in (`%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform; print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}')" 2^>nul`) do set SIDECAR_PY=%%V
 if /I not "%SIDECAR_PY%"=="3.12 64bit" (
   echo [ERROR] Sidecar env '%SIDECAR_ENV%' must be Python 3.12 64-bit, found %SIDECAR_PY%.
+  exit /b 1
+)
+
+echo [INFO] Ensuring PIXet sidecar Python packages: %PIXET_CONDA_PACKAGES%
+%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import numpy" >nul 2>&1
+if errorlevel 1 (
+  %CONDA_CMD% install -y -n %SIDECAR_ENV% %PIXET_CONDA_PACKAGES%
+  if errorlevel 1 (
+    echo [ERROR] Failed to install PIXet sidecar packages in %SIDECAR_ENV%.
+    exit /b 1
+  )
+)
+%CONDA_CMD% run --no-capture-output -n %SIDECAR_ENV% python -c "import sys,platform,numpy; assert sys.version_info[:2]==(3,12); assert platform.architecture()[0]=='64bit'; print(numpy.__version__)" >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] PIXet sidecar package verification failed in %SIDECAR_ENV%.
   exit /b 1
 )
 
