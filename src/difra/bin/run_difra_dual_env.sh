@@ -101,6 +101,7 @@ auto_update_repo() {
 
 CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/global.json"
 MAIN_CONFIG_PATH="$REPO_ROOT/src/difra/resources/config/main.json"
+PIXET_ENV_YAML="$REPO_ROOT/src/difra/environment-eosdx-pixet.yml"
 STARTUP_STDERR_FILTER="$REPO_ROOT/src/difra/scripts/filter_startup_stderr.py"
 
 auto_update_repo
@@ -121,6 +122,36 @@ ensure_runtime_deps_for_env() {
 conda_env_available() {
   local env_name="$1"
   conda run --no-capture-output -n "$env_name" python -c "import sys; sys.exit(0)" >/dev/null 2>&1
+}
+
+conda_env_listed() {
+  local env_name="$1"
+  conda env list | awk '{print $1}' | grep -Fxq "$env_name"
+}
+
+ensure_sidecar_env() {
+  local env_name="$1"
+  if ! conda_env_available "$env_name"; then
+    echo "[INFO] Sidecar env '$env_name' is missing; creating/updating from $PIXET_ENV_YAML"
+    if conda_env_listed "$env_name"; then
+      conda env update -n "$env_name" -f "$PIXET_ENV_YAML" --prune
+    else
+      conda env create -n "$env_name" -f "$PIXET_ENV_YAML"
+    fi
+  fi
+
+  if ! conda run --no-capture-output -n "$env_name" python -c "import sys, numpy; assert sys.version_info[:2] == (3, 12)" >/dev/null 2>&1; then
+    echo "[INFO] Installing PIXet sidecar Python packages in env: $env_name"
+    conda install -y -n "$env_name" python=3.12 pip numpy
+  fi
+
+  local runtime_version
+  runtime_version="$(conda run --no-capture-output -n "$env_name" python -c "import sys, platform, numpy; assert sys.version_info[:2] == (3, 12); print(f'{sys.version_info[0]}.{sys.version_info[1]} {platform.architecture()[0]}; numpy={numpy.__version__}')" 2>/dev/null || true)"
+  if [ -z "$runtime_version" ]; then
+    echo "[ERROR] Sidecar env '$env_name' must be Python 3.12 with numpy."
+    exit 1
+  fi
+  echo "[INFO] PIXet sidecar Python OK: $runtime_version"
 }
 
 read_json_config_value() {
@@ -159,11 +190,7 @@ fi
 if [ -z "$SIDECAR_ENV" ]; then
   SIDECAR_ENV="eosdx_pixet"
 fi
-if ! conda_env_available "$SIDECAR_ENV"; then
-  echo "[ERROR] Sidecar env '$SIDECAR_ENV' is not available."
-  echo "[ERROR] Install/create eosdx_pixet or set DIFRA_SIDECAR_ENV."
-  exit 1
-fi
+ensure_sidecar_env "$SIDECAR_ENV"
 SIDECAR_HOST="${PIXET_SIDECAR_HOST:-127.0.0.1}"
 SIDECAR_PORT="${PIXET_SIDECAR_PORT:-51001}"
 GRPC_ENV="${DIFRA_GRPC_ENV:-$GUI_ENV}"

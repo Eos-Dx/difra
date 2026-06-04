@@ -188,8 +188,10 @@ def test_dual_env_launcher_does_not_default_to_legacy_sidecar_env():
     assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-ulster38}"' not in launcher
     assert 'SIDECAR_ENV="${DIFRA_SIDECAR_ENV:-}"' in launcher
     assert "sidecar_conda" in launcher
+    assert "conda env create -n \"$env_name\" -f \"$PIXET_ENV_YAML\"" in launcher
+    assert "python=3.12 pip numpy" in launcher
     assert 'SIDECAR_ENV="$GUI_ENV"' not in launcher
-    assert "Install/create eosdx_pixet" in launcher
+    assert "PIXet sidecar Python OK" in launcher
 
 
 def test_sync_archive_to_onedrive_parser_supports_overrides_and_dry_run():
