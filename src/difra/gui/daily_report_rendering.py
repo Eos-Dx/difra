@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib
 
 matplotlib.use("Agg")
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
 
 from difra.gui.daily_report_common import (
@@ -216,6 +217,82 @@ def render_report_images(
         plt.close(fig)
         images.append(image_path)
     return images
+
+
+def _overview_column(item: DetectorSeries) -> Tuple[str, str]:
+    range_name = str(item.range_name or "").upper()
+    detector_group = str(item.detector_group or item.detector_alias or "").upper()
+    range_key = "SAXS" if "SAXS" in range_name else "WAXS"
+    detector_key = "SECONDARY" if "SECONDARY" in detector_group else "PRIMARY"
+    return range_key, detector_key
+
+
+def render_report_overview_image(
+    series: Iterable[DetectorSeries],
+    output_path: Path,
+    *,
+    dpi: int = DEFAULT_DPI,
+) -> Path:
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    series_items = list(series)
+    grouped: Dict[str, List[DetectorSeries]] = {}
+    for item in series_items:
+        grouped.setdefault(item.specimen_id, []).append(item)
+
+    columns = [
+        ("WAXS", "PRIMARY", "2 cm / WAXS\nPRIMARY"),
+        ("WAXS", "SECONDARY", "2 cm / WAXS\nSECONDARY"),
+        ("SAXS", "PRIMARY", "17 cm / SAXS\nPRIMARY"),
+        ("SAXS", "SECONDARY", "17 cm / SAXS\nSECONDARY"),
+    ]
+    specimen_ids = sorted(grouped) or ["No data"]
+    nrows = len(specimen_ids)
+    fig, axes = plt.subplots(
+        nrows,
+        len(columns),
+        figsize=(18, max(3.0, 2.1 * nrows)),
+        dpi=dpi,
+        squeeze=False,
+    )
+    for row_index, specimen_id in enumerate(specimen_ids):
+        items = grouped.get(specimen_id, [])
+        for col_index, (range_key, detector_key, title) in enumerate(columns):
+            ax = axes[row_index][col_index]
+            if row_index == 0:
+                ax.set_title(title, fontsize=8)
+            if col_index == 0:
+                ax.set_ylabel(str(specimen_id), fontsize=7)
+            matching = [
+                item
+                for item in items
+                if _overview_column(item) == (range_key, detector_key)
+            ]
+            matching = sorted(matching, key=lambda item: item.source_dataset)
+            q_range = WAXS_RANGE if range_key == "WAXS" else SAXS_RANGE
+            if not matching:
+                ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, fontsize=7)
+                ax.set_xlim(q_range)
+                ax.set_yticks([])
+            else:
+                for index, item in enumerate(matching, start=1):
+                    ax.plot(item.q, item.intensity, linewidth=0.8, alpha=0.9, label=f"#{index}")
+                ax.set_xlim(tuple(matching[0].q_range))
+                if len(matching) <= 4:
+                    ax.legend(fontsize=5, loc="best")
+            ax.grid(True, alpha=0.22)
+            ax.tick_params(labelsize=6)
+            if row_index == nrows - 1:
+                ax.set_xlabel("q (nm^-1)", fontsize=7)
+
+    fig.suptitle("DiFRA Report Overview", fontsize=11)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.94, bottom=0.05, hspace=0.48, wspace=0.24)
+    fig.add_artist(
+        Line2D([0.515, 0.515], [0.05, 0.94], transform=fig.transFigure, color="black", linewidth=0.8, alpha=0.35)
+    )
+    fig.savefig(target, dpi=dpi)
+    plt.close(fig)
+    return target
 
 
 def create_zip(

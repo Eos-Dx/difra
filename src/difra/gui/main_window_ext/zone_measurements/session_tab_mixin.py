@@ -46,7 +46,10 @@ from difra.gui.archive_project_statistics import (
     collect_matador_project_sets,
 )
 from difra.gui.container_api import get_container_manager, get_schema
-from difra.gui.daily_valid_container_reporter import build_daily_report_for_containers
+from difra.gui.daily_valid_container_reporter import (
+    build_daily_report_for_containers,
+    build_report_overview_image_for_containers,
+)
 from difra.gui.main_window_ext.archive_session_edit_dialog import (
     ArchiveSessionEditDialog,
 )

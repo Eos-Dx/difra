@@ -315,7 +315,7 @@ class SessionTabArchiveActionsMixin:
         if transfer_status == "NOT_COMPLETE":
             send_action.setEnabled(False)
         analyst_report_action = menu.addAction("Send Report to Analysts")
-        report_folder_action = menu.addAction("Generate Report Folder")
+        report_action = menu.addAction("Generate Report...")
         old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
@@ -338,14 +338,30 @@ class SessionTabArchiveActionsMixin:
                     table, fallback_path=container_path
                 )
             )
-        elif selected == report_folder_action:
-            self._generate_selected_archived_report_folder(
+        elif selected == report_action:
+            self._generate_selected_archived_report(
                 self._selected_paths_from_archive_table(
                     table, fallback_path=container_path
                 )
             )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
+
+    def _generate_selected_archived_report(self, container_paths: List[Path]):
+        mode, accepted = QInputDialog.getItem(
+            self,
+            "Generate Report",
+            "Output:",
+            ["Full folder", "Overview image only"],
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        if str(mode) == "Overview image only":
+            self._generate_selected_archived_report_overview_image(container_paths)
+            return
+        self._generate_selected_archived_report_folder(container_paths)
 
     def _generate_selected_archived_report_folder(self, container_paths: List[Path]):
         targets = [Path(path) for path in container_paths if Path(path).exists()]
@@ -405,6 +421,66 @@ class SessionTabArchiveActionsMixin:
         QMessageBox.information(
             self,
             "Report Folder Generated",
+            "\n".join(summary),
+        )
+
+    def _generate_selected_archived_report_overview_image(self, container_paths: List[Path]):
+        targets = [Path(path) for path in container_paths if Path(path).exists()]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "Select archived session container(s) to report.",
+            )
+            return
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        base_folder = runtime_config.get("difra_base_folder") or Path.home() / "difra"
+        default_dir = Path(base_folder) / "daily_reports" / "manual_report_images"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        default_path = default_dir / "difra_report_overview.png"
+        file_path, _ = _session_tab_dependency("QFileDialog").getSaveFileName(
+            self,
+            "Save Report Overview Image",
+            str(default_path),
+            "PNG Images (*.png);;All Files (*)",
+        )
+        if not file_path:
+            return
+        output_path = Path(file_path)
+        if output_path.suffix.lower() != ".png":
+            output_path = output_path.with_suffix(".png")
+        try:
+            result = _session_tab_dependency("build_report_overview_image_for_containers")(
+                config=runtime_config,
+                container_paths=targets,
+                image_path=output_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate selected report overview image",
+                exc_info=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Report Failed",
+                f"Could not generate overview image:\n{exc}",
+            )
+            return
+
+        summary = [
+            f"Selected containers: {len(targets)}",
+            f"Valid containers: {result.valid_containers}",
+            f"Image: {output_path}",
+        ]
+        if result.skipped:
+            summary.append("")
+            summary.append("Skipped:")
+            summary.extend(result.skipped[:8])
+            if len(result.skipped) > 8:
+                summary.append(f"... and {len(result.skipped) - 8} more")
+        QMessageBox.information(
+            self,
+            "Report Image Generated",
             "\n".join(summary),
         )
 

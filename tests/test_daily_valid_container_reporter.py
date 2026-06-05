@@ -114,12 +114,13 @@ def test_build_daily_report_renders_one_combined_image_per_specimen(
     with zipfile.ZipFile(result.zip_path, "r") as archive:
         names = archive.namelist()
         manifest = reporter.json.loads(archive.read("manifest.json").decode("utf-8"))
-    png_names = [name for name in names if name.endswith(".png")]
-    assert png_names == ["SPEC_001_detectors.png"]
+    png_names = sorted(name for name in names if name.endswith(".png"))
+    assert png_names == ["SPEC_001_detectors.png", "overview_report.png"]
     assert "report_diagnostics.h5" in names
     assert any(name.startswith("poni/") and name.endswith(".poni") for name in names)
     assert manifest["projectIds"] == ["6701"]
     assert manifest["matadorUploaded"] == 1
+    assert manifest["overviewImage"] == "overview_report.png"
     assert manifest["images"][0]["imageFile"] == "SPEC_001_detectors.png"
     assert len(manifest["images"][0]["detectorPanels"]) == 2
     assert len(manifest["poniFiles"]) == 2
@@ -157,11 +158,13 @@ def test_build_selected_report_can_write_folder_without_zip(tmp_path, monkeypatc
     assert result.zip_path is None
     assert (output_dir / "manifest.json").exists()
     assert (output_dir / "report_diagnostics.h5").exists()
+    assert (output_dir / "overview_report.png").exists()
     assert (output_dir / "images" / "SPEC_001_detectors.png").exists()
     manifest = reporter.json.loads((output_dir / "manifest.json").read_text())
     assert manifest["selectedContainers"] == [str(container)]
     assert manifest["imageCount"] == 1
     assert manifest["diagnosticH5"] == "report_diagnostics.h5"
+    assert manifest["overviewImage"] == "overview_report.png"
     assert manifest["series"][0]["sourceContainer"] == str(container)
     with h5py.File(output_dir / "report_diagnostics.h5", "r") as h5f:
         assert h5f.attrs["kind"] == "difra_daily_report_diagnostics"
@@ -176,6 +179,33 @@ def test_build_selected_report_can_write_folder_without_zip(tmp_path, monkeypatc
         assert first["raw_data"].compression == "gzip"
         assert first["poni_text"][()].decode("utf-8") == "poni"
         assert first.attrs["poni_source"] == "test"
+
+
+def test_build_report_overview_image_for_containers(tmp_path, monkeypatch):
+    container = _create_container(tmp_path / "session_test.nxs.h5")
+
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (0.5, 24.0)), int(npt))
+        return q, np.full_like(q, float(np.asarray(data).mean()))
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+    monkeypatch.setattr(
+        reporter,
+        "_candidate_poni_infos",
+        lambda *_args, **_kwargs: [("poni", "test")],
+    )
+
+    image_path = tmp_path / "overview.png"
+    result = reporter.build_report_overview_image_for_containers(
+        config={},
+        container_paths=[container],
+        image_path=image_path,
+    )
+
+    assert result.valid_containers == 1
+    assert result.images == [image_path]
+    assert image_path.exists()
+    assert result.manifest["overviewImage"] == str(image_path)
 
 
 def test_collect_report_series_uses_container_distance_for_all_detector_ranges(

@@ -27,6 +27,7 @@ from difra.gui.daily_report_rendering import (
     build_report_manifest_diagnostics,
     create_zip,
     render_report_images,
+    render_report_overview_image,
     write_report_diagnostics_h5,
     write_report_manifest,
 )
@@ -89,6 +90,11 @@ def build_daily_report(
     out = Path(output_dir)
     image_dir = out / "images"
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
+    overview_image = (
+        render_report_overview_image(series, out / "overview_report.png", dpi=DEFAULT_DPI)
+        if series
+        else None
+    )
     poni_files = _write_report_poni_files(series, out)
     manifest = {
         "generatedAt": generated_at.isoformat(timespec="seconds"),
@@ -106,12 +112,16 @@ def build_daily_report(
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     manifest["diagnosticH5"] = "report_diagnostics.h5"
+    if overview_image is not None:
+        manifest["overviewImage"] = "overview_report.png"
     result.manifest = manifest
     diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
     write_report_manifest(out, manifest)
     if create_archive:
         extra_files = dict(poni_files)
         extra_files["report_diagnostics.h5"] = diagnostics_h5
+        if overview_image is not None:
+            extra_files["overview_report.png"] = overview_image
         result.zip_path = create_zip(
             out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             result.images,
@@ -169,6 +179,11 @@ def build_daily_report_for_containers(
     out = Path(output_dir)
     image_dir = out / "images"
     result.images = render_report_images(series, image_dir, dpi=DEFAULT_DPI)
+    overview_image = (
+        render_report_overview_image(series, out / "overview_report.png", dpi=DEFAULT_DPI)
+        if series
+        else None
+    )
     poni_files = _write_report_poni_files(series, out)
     report_day = report_date or generated_at.date()
     manifest = {
@@ -188,12 +203,16 @@ def build_daily_report_for_containers(
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     manifest["diagnosticH5"] = "report_diagnostics.h5"
+    if overview_image is not None:
+        manifest["overviewImage"] = "overview_report.png"
     result.manifest = manifest
     diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
     write_report_manifest(out, manifest)
     if create_archive:
         extra_files = dict(poni_files)
         extra_files["report_diagnostics.h5"] = diagnostics_h5
+        if overview_image is not None:
+            extra_files["overview_report.png"] = overview_image
         result.zip_path = create_zip(
             out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             result.images,
@@ -223,6 +242,31 @@ def build_daily_report_for_containers(
                     "skipped": False,
                     "message": f"{type(exc).__name__}: {exc}",
                 }
+    return result
+
+
+def build_report_overview_image_for_containers(
+    *,
+    config: Optional[Dict[str, Any]],
+    container_paths: Iterable[Path],
+    image_path: Path,
+) -> DailyReportResult:
+    paths = sorted({Path(path) for path in container_paths if Path(path).exists()})
+    result = DailyReportResult(scanned=len(paths))
+    series, skipped, valid_count = collect_report_series(paths, points=DEFAULT_POINTS)
+    result.skipped.extend(skipped)
+    result.valid_containers = valid_count
+    result.images = [
+        render_report_overview_image(series, Path(image_path), dpi=DEFAULT_DPI)
+    ]
+    result.manifest = {
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "scanned": result.scanned,
+        "validContainers": result.valid_containers,
+        "selectedContainers": [str(path) for path in paths],
+        "overviewImage": str(Path(image_path)),
+        "skipped": result.skipped[:200],
+    }
     return result
 
 

@@ -447,6 +447,66 @@ def test_generate_selected_archived_report_folder(qapp, tmp_path, monkeypatch):
     assert warning_messages == []
 
 
+def test_generate_selected_archived_report_overview_image(qapp, tmp_path, monkeypatch):
+    info_messages = []
+    warning_messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda _parent, title, text: info_messages.append((title, text))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda _parent, title, text: warning_messages.append((title, text))),
+    )
+    output_path = tmp_path / "overview.png"
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.QFileDialog.getSaveFileName",
+        staticmethod(lambda *_args, **_kwargs: (str(output_path), "PNG Images (*.png)")),
+    )
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+    archive_folder.mkdir(parents=True, exist_ok=True)
+    archived_path = _create_session_file(archive_folder, "SAMPLE_A", "STUDY_A")
+    calls = []
+
+    def _build_image_stub(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            valid_containers=1,
+            images=[output_path],
+            zip_path=None,
+            email_result={},
+            skipped=[],
+        )
+
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.build_report_overview_image_for_containers",
+        _build_image_stub,
+    )
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+            "difra_base_folder": str(tmp_path / "difra"),
+        },
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._generate_selected_archived_report_overview_image([archived_path])
+
+    assert calls
+    assert calls[0]["container_paths"] == [archived_path]
+    assert calls[0]["image_path"] == output_path
+    assert info_messages[-1][0] == "Report Image Generated"
+    assert str(output_path) in info_messages[-1][1]
+    assert warning_messages == []
+
+
 def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):
     measurements_folder = tmp_path / "measurements"
     measurements_folder.mkdir(parents=True, exist_ok=True)

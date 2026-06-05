@@ -323,6 +323,20 @@ def build_daily_report_for_containers(
     )
 
 
+def build_report_overview_image_for_containers(
+    *,
+    config: Optional[Dict[str, Any]],
+    container_paths: Iterable[Path],
+    image_path: Path,
+) -> DailyReportResult:
+    _sync_builder_impl_deps()
+    return _builder_impl.build_report_overview_image_for_containers(
+        config=config,
+        container_paths=container_paths,
+        image_path=image_path,
+    )
+
+
 def run_daily_report_from_config(
     *,
     config_path: Optional[Path] = None,
