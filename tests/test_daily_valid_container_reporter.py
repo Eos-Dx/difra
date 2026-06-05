@@ -116,6 +116,7 @@ def test_build_daily_report_renders_one_combined_image_per_specimen(
         manifest = reporter.json.loads(archive.read("manifest.json").decode("utf-8"))
     png_names = [name for name in names if name.endswith(".png")]
     assert png_names == ["SPEC_001_detectors.png"]
+    assert "report_diagnostics.h5" in names
     assert any(name.startswith("poni/") and name.endswith(".poni") for name in names)
     assert manifest["projectIds"] == ["6701"]
     assert manifest["matadorUploaded"] == 1
@@ -155,11 +156,26 @@ def test_build_selected_report_can_write_folder_without_zip(tmp_path, monkeypatc
 
     assert result.zip_path is None
     assert (output_dir / "manifest.json").exists()
+    assert (output_dir / "report_diagnostics.h5").exists()
     assert (output_dir / "images" / "SPEC_001_detectors.png").exists()
     manifest = reporter.json.loads((output_dir / "manifest.json").read_text())
     assert manifest["selectedContainers"] == [str(container)]
     assert manifest["imageCount"] == 1
+    assert manifest["diagnosticH5"] == "report_diagnostics.h5"
     assert manifest["series"][0]["sourceContainer"] == str(container)
+    with h5py.File(output_dir / "report_diagnostics.h5", "r") as h5f:
+        assert h5f.attrs["kind"] == "difra_daily_report_diagnostics"
+        h5_manifest = reporter.json.loads(h5f["manifest/json"][()].decode("utf-8"))
+        assert h5_manifest["diagnosticH5"] == "report_diagnostics.h5"
+        first = h5f["series/00000"]
+        assert first.attrs["specimen_id"] == "SPEC_001"
+        assert first.attrs["source_container"] == str(container)
+        assert first["q_nm^-1"].shape == (reporter.DEFAULT_POINTS,)
+        assert first["intensity"].shape == (reporter.DEFAULT_POINTS,)
+        assert first["raw_data"].shape == (8, 8)
+        assert first["raw_data"].compression == "gzip"
+        assert first["poni_text"][()].decode("utf-8") == "poni"
+        assert first.attrs["poni_source"] == "test"
 
 
 def test_collect_report_series_uses_container_distance_for_all_detector_ranges(

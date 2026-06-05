@@ -351,6 +351,7 @@ def collect_report_series(
                                     source_data_min=signal_min,
                                     source_data_median=signal_median,
                                     source_data_max=signal_max,
+                                    source_data=np.asarray(signal),
                                     integration_backend=integration_backend,
                                     source_container=path,
                                     source_dataset=signal_ds.name,

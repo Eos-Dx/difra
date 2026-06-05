@@ -32,6 +32,7 @@ class DetectorSeries:
     source_data_min: float
     source_data_median: float
     source_data_max: float
+    source_data: np.ndarray
     integration_backend: str
     source_container: Path
     source_dataset: str

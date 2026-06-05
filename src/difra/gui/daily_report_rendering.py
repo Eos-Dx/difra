@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 import zipfile
 
+import h5py
 import numpy as np
 
 import matplotlib
@@ -242,6 +243,67 @@ def write_report_manifest(output_dir: Path, manifest: Dict[str, Any]) -> Path:
     target = Path(output_dir) / "manifest.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    return target
+
+
+def _write_h5_string(group: h5py.Group, name: str, value: str) -> None:
+    dtype = h5py.string_dtype(encoding="utf-8")
+    group.create_dataset(name, data=str(value or ""), dtype=dtype)
+
+
+def _set_h5_attr(group: h5py.Group, name: str, value: Any) -> None:
+    if value is None:
+        group.attrs[name] = ""
+    elif isinstance(value, (str, int, float, bool, np.integer, np.floating)):
+        group.attrs[name] = value
+    else:
+        group.attrs[name] = json.dumps(value, default=str)
+
+
+def write_report_diagnostics_h5(
+    output_dir: Path,
+    series: Iterable[DetectorSeries],
+    *,
+    manifest: Dict[str, Any],
+    filename: str = "report_diagnostics.h5",
+) -> Path:
+    target = Path(output_dir) / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    compression = {"compression": "gzip", "compression_opts": 9, "shuffle": True}
+    series_items = list(series)
+    with h5py.File(target, "w") as h5f:
+        h5f.attrs["kind"] = "difra_daily_report_diagnostics"
+        h5f.attrs["version"] = "1"
+        _write_h5_string(h5f.require_group("manifest"), "json", json.dumps(manifest, indent=2, default=str))
+        series_root = h5f.require_group("series")
+        for index, item in enumerate(series_items):
+            group = series_root.require_group(f"{index:05d}")
+            for key, value in (
+                ("specimen_id", item.specimen_id),
+                ("detector_group", item.detector_group),
+                ("detector_alias", item.detector_alias),
+                ("detector_name", item.detector_name),
+                ("detector_side", item.detector_side),
+                ("range_name", item.range_name),
+                ("range_label", item.range_label),
+                ("range_assignment", item.range_assignment),
+                ("q_range_nm^-1", list(item.q_range)),
+                ("source_container", str(item.source_container)),
+                ("source_dataset", item.source_dataset),
+                ("source_data_sha256", item.source_data_sha256),
+                ("source_data_shape", list(item.source_data_shape)),
+                ("source_data_min", item.source_data_min),
+                ("source_data_median", item.source_data_median),
+                ("source_data_max", item.source_data_max),
+                ("integration_backend", item.integration_backend),
+                ("poni_source", item.poni_source),
+                ("poni_sha256", item.poni_sha256),
+            ):
+                _set_h5_attr(group, key, value)
+            group.create_dataset("q_nm^-1", data=np.asarray(item.q, dtype=np.float64), **compression)
+            group.create_dataset("intensity", data=np.asarray(item.intensity, dtype=np.float64), **compression)
+            group.create_dataset("raw_data", data=np.asarray(item.source_data), **compression)
+            _write_h5_string(group, "poni_text", item.poni_text)
     return target
 
 

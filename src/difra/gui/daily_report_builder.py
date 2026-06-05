@@ -27,6 +27,7 @@ from difra.gui.daily_report_rendering import (
     build_report_manifest_diagnostics,
     create_zip,
     render_report_images,
+    write_report_diagnostics_h5,
     write_report_manifest,
 )
 
@@ -104,14 +105,18 @@ def build_daily_report(
         "skipped": result.skipped[:200],
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
+    manifest["diagnosticH5"] = "report_diagnostics.h5"
     result.manifest = manifest
+    diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
     write_report_manifest(out, manifest)
     if create_archive:
+        extra_files = dict(poni_files)
+        extra_files["report_diagnostics.h5"] = diagnostics_h5
         result.zip_path = create_zip(
             out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             result.images,
             manifest=manifest,
-            extra_files=poni_files,
+            extra_files=extra_files,
         )
     if send_email:
         if not result.images:
@@ -182,14 +187,18 @@ def build_daily_report_for_containers(
         "skipped": result.skipped[:200],
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
+    manifest["diagnosticH5"] = "report_diagnostics.h5"
     result.manifest = manifest
+    diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
     write_report_manifest(out, manifest)
     if create_archive:
+        extra_files = dict(poni_files)
+        extra_files["report_diagnostics.h5"] = diagnostics_h5
         result.zip_path = create_zip(
             out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
             result.images,
             manifest=manifest,
-            extra_files=poni_files,
+            extra_files=extra_files,
         )
     if send_email:
         if not result.images:
