@@ -64,40 +64,58 @@ class _FakeAxes:
 
 
 class _FakeCanvas:
+    def __init__(self, figure):
+        self.figure = figure
+        self.drawn = False
+
     def draw_idle(self):
         self.drawn = True
 
 
 class _FakeFigure:
-    def __init__(self):
-        self.canvas = _FakeCanvas()
+    def __init__(self, figsize=None):
+        self.figsize = figsize
+        self.axes = []
+
+    def add_subplot(self, *args):
+        axes = _FakeAxes()
+        axes.subplot_args = args
+        self.axes.append(axes)
+        return axes
 
 
-class _FakePyplot:
-    def __init__(self):
-        self.show_calls = []
-        self.closed = []
-        self.subplots_calls = []
-        self.last_axes = None
+class _FakeDialog:
+    def __init__(self, parent):
+        self.parent = parent
+        self.title = None
+        self.size = None
+        self.shown = False
+        self.closed = False
 
-    def ion(self):
-        return None
+    def setWindowTitle(self, title):
+        self.title = title
 
-    def subplots(self, rows, cols, figsize=None):
-        self.subplots_calls.append((rows, cols, figsize))
-        fig = _FakeFigure()
-        if cols == 1:
-            axes = _FakeAxes()
-        else:
-            axes = [_FakeAxes() for _ in range(cols)]
-        self.last_axes = axes
-        return fig, axes
+    def resize(self, width, height):
+        self.size = (width, height)
 
-    def show(self, **kwargs):
-        self.show_calls.append(kwargs)
+    def show(self):
+        self.shown = True
 
-    def close(self, fig):
-        self.closed.append(fig)
+    def close(self):
+        self.closed = True
+
+
+class _FakeLayout:
+    def __init__(self, parent):
+        self.parent = parent
+        self.margins = None
+        self.widgets = []
+
+    def setContentsMargins(self, *margins):
+        self.margins = margins
+
+    def addWidget(self, widget):
+        self.widgets.append(widget)
 
 
 class _FakeController:
@@ -138,18 +156,42 @@ class _Harness(TechnicalRealtimeMixin):
 
 
 def _patch_runtime(monkeypatch):
-    fake_plt = _FakePyplot()
-    monkeypatch.setattr(realtime_mixin, "plt", fake_plt)
+    runtime = SimpleNamespace(figures=[], canvases=[], dialogs=[], layouts=[])
+
+    def fake_figure(*args, **kwargs):
+        figure = _FakeFigure(*args, **kwargs)
+        runtime.figures.append(figure)
+        return figure
+
+    def fake_canvas(figure):
+        canvas = _FakeCanvas(figure)
+        runtime.canvases.append(canvas)
+        return canvas
+
+    def fake_dialog(parent):
+        dialog = _FakeDialog(parent)
+        runtime.dialogs.append(dialog)
+        return dialog
+
+    def fake_layout(parent):
+        layout = _FakeLayout(parent)
+        runtime.layouts.append(layout)
+        return layout
+
+    monkeypatch.setattr(realtime_mixin, "Figure", fake_figure)
+    monkeypatch.setattr(realtime_mixin, "FigureCanvas", fake_canvas)
+    monkeypatch.setattr(realtime_mixin, "QDialog", fake_dialog)
+    monkeypatch.setattr(realtime_mixin, "QVBoxLayout", fake_layout)
     monkeypatch.setattr(
         realtime_mixin,
         "_tm",
         lambda: SimpleNamespace(QTimer=_FakeTimer, QMessageBox=None),
     )
-    return fake_plt
+    return runtime
 
 
 def test_realtime_initializes_detector_mirror_without_technical_container(monkeypatch):
-    fake_plt = _patch_runtime(monkeypatch)
+    runtime = _patch_runtime(monkeypatch)
     controller = _FakeController()
     owner = _Harness()
     owner.hardware_client = _FakeHardwareClient({"PRIMARY": controller})
@@ -160,27 +202,30 @@ def test_realtime_initializes_detector_mirror_without_technical_container(monkey
     assert owner.detector_controller == {"PRIMARY": controller}
     assert controller.start_calls[0]["exposure"] == 0.2
     assert controller.start_calls[0]["frames"] == 3
-    assert fake_plt.subplots_calls == [(1, 1, (5, 5))]
-    assert fake_plt.show_calls == [{"block": False}]
+    assert runtime.figures[0].figsize == (5, 5)
+    assert runtime.figures[0].axes[0].subplot_args == (1, 1, 1)
+    assert runtime.figures[0].axes[0].title == "PRIMARY"
+    assert runtime.dialogs[0].shown is True
+    assert runtime.layouts[0].widgets == [runtime.canvases[0]]
 
     owner._stop_realtime()
 
     assert controller.stop_calls == 1
-    assert len(fake_plt.closed) == 1
+    assert runtime.dialogs[0].closed is True
 
 
 def test_realtime_opens_placeholder_when_no_detectors_are_available(monkeypatch):
-    fake_plt = _patch_runtime(monkeypatch)
+    runtime = _patch_runtime(monkeypatch)
     owner = _Harness()
 
     owner._start_realtime()
 
-    assert fake_plt.subplots_calls == [(1, 1, (5, 5))]
-    assert fake_plt.show_calls == [{"block": False}]
-    assert fake_plt.last_axes.text_calls
-    assert "No detector initialized" in fake_plt.last_axes.text_calls[0][0]
+    assert runtime.figures[0].figsize == (5, 5)
+    assert runtime.figures[0].axes[0].subplot_args == (1, 1, 1)
+    assert runtime.figures[0].axes[0].text_calls
+    assert "No detector initialized" in runtime.figures[0].axes[0].text_calls[0][0]
     assert owner.logged == ["Real-time display opened without active detectors"]
 
     owner._stop_realtime()
 
-    assert len(fake_plt.closed) == 1
+    assert runtime.dialogs[0].closed is True
