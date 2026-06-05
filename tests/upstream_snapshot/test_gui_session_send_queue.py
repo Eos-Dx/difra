@@ -385,6 +385,68 @@ def test_send_selected_archived_report_to_analysts(qapp, tmp_path, monkeypatch):
     assert warning_messages == []
 
 
+def test_generate_selected_archived_report_folder(qapp, tmp_path, monkeypatch):
+    info_messages = []
+    warning_messages = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda _parent, title, text: info_messages.append((title, text))),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda _parent, title, text: warning_messages.append((title, text))),
+    )
+    output_dir = tmp_path / "chosen_report_folder"
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.QFileDialog.getExistingDirectory",
+        staticmethod(lambda *_args, **_kwargs: str(output_dir)),
+    )
+    measurements_folder = tmp_path / "measurements"
+    measurements_folder.mkdir(parents=True, exist_ok=True)
+    archive_folder = tmp_path / "archive" / "measurements"
+    archive_folder.mkdir(parents=True, exist_ok=True)
+    archived_path = _create_session_file(archive_folder, "SAMPLE_A", "STUDY_A")
+    calls = []
+
+    def _build_report_stub(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            valid_containers=1,
+            images=[output_dir / "images" / "image.png"],
+            zip_path=None,
+            email_result={},
+            skipped=[],
+        )
+
+    monkeypatch.setattr(
+        "difra.gui.main_window_ext.zone_measurements.session_tab_mixin.build_daily_report_for_containers",
+        _build_report_stub,
+    )
+    harness = _SessionQueueHarness(
+        config={
+            "measurements_folder": str(measurements_folder),
+            "measurements_archive_folder": str(archive_folder),
+            "difra_base_folder": str(tmp_path / "difra"),
+        },
+        session_manager=_FakeSessionManager(),
+    )
+    harness.show()
+    qapp.processEvents()
+
+    harness._generate_selected_archived_report_folder([archived_path])
+
+    assert calls
+    assert calls[0]["container_paths"] == [archived_path]
+    assert calls[0]["output_dir"] == output_dir
+    assert calls[0]["send_email"] is False
+    assert calls[0]["create_archive"] is False
+    assert info_messages[-1][0] == "Report Folder Generated"
+    assert str(output_dir / "manifest.json") in info_messages[-1][1]
+    assert warning_messages == []
+
+
 def test_session_tab_shows_single_group_with_expected_buttons(qapp, tmp_path):
     measurements_folder = tmp_path / "measurements"
     measurements_folder.mkdir(parents=True, exist_ok=True)

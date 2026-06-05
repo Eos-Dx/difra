@@ -315,6 +315,7 @@ class SessionTabArchiveActionsMixin:
         if transfer_status == "NOT_COMPLETE":
             send_action.setEnabled(False)
         analyst_report_action = menu.addAction("Send Report to Analysts")
+        report_folder_action = menu.addAction("Generate Report Folder")
         old_format_action = menu.addAction("Generate Old Format")
         selected = menu.exec_(table.viewport().mapToGlobal(pos))
         if selected == load_action:
@@ -337,8 +338,75 @@ class SessionTabArchiveActionsMixin:
                     table, fallback_path=container_path
                 )
             )
+        elif selected == report_folder_action:
+            self._generate_selected_archived_report_folder(
+                self._selected_paths_from_archive_table(
+                    table, fallback_path=container_path
+                )
+            )
         elif selected == old_format_action:
             self._generate_old_format_for_container(container_path)
+
+    def _generate_selected_archived_report_folder(self, container_paths: List[Path]):
+        targets = [Path(path) for path in container_paths if Path(path).exists()]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "No Containers",
+                "Select archived session container(s) to report.",
+            )
+            return
+        runtime_config = dict(getattr(self, "config", {}) or {})
+        base_folder = runtime_config.get("difra_base_folder") or Path.home() / "difra"
+        default_dir = Path(base_folder) / "daily_reports" / "manual_report_folders"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        chosen_dir = _session_tab_dependency("QFileDialog").getExistingDirectory(
+            self,
+            "Select Report Folder",
+            str(default_dir),
+        )
+        if not chosen_dir:
+            return
+        output_dir = Path(chosen_dir)
+        try:
+            result = _session_tab_dependency("build_daily_report_for_containers")(
+                config=runtime_config,
+                container_paths=targets,
+                output_dir=output_dir,
+                send_email=False,
+                allow_interactive_setup=False,
+                create_archive=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate selected report folder",
+                exc_info=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Report Failed",
+                f"Could not generate report folder:\n{exc}",
+            )
+            return
+
+        summary = [
+            f"Selected containers: {len(targets)}",
+            f"Valid containers: {result.valid_containers}",
+            f"Images: {len(result.images)}",
+            f"Folder: {output_dir}",
+            f"Manifest: {output_dir / 'manifest.json'}",
+        ]
+        if result.skipped:
+            summary.append("")
+            summary.append("Skipped:")
+            summary.extend(result.skipped[:8])
+            if len(result.skipped) > 8:
+                summary.append(f"... and {len(result.skipped) - 8} more")
+        QMessageBox.information(
+            self,
+            "Report Folder Generated",
+            "\n".join(summary),
+        )
 
     def _send_selected_archived_report_to_analysts(self, container_paths: List[Path]):
         targets = [Path(path) for path in container_paths if Path(path).exists()]

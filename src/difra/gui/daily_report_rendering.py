@@ -238,6 +238,13 @@ def create_zip(
     return target
 
 
+def write_report_manifest(output_dir: Path, manifest: Dict[str, Any]) -> Path:
+    target = Path(output_dir) / "manifest.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    return target
+
+
 def create_simple_test_image_zip(output_dir: Path, *, dpi: int = DEFAULT_DPI) -> Path:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)

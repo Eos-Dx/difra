@@ -284,6 +284,7 @@ def build_daily_report(
     tracking_started_at: Optional[str] = None,
     send_email: bool = False,
     allow_interactive_setup: bool = False,
+    create_archive: bool = True,
 ) -> DailyReportResult:
     _sync_builder_impl_deps()
     return _builder_impl.build_daily_report(
@@ -294,6 +295,7 @@ def build_daily_report(
         tracking_started_at=tracking_started_at,
         send_email=send_email,
         allow_interactive_setup=allow_interactive_setup,
+        create_archive=create_archive,
     )
 
 
@@ -306,6 +308,7 @@ def build_daily_report_for_containers(
     allow_interactive_setup: bool = False,
     report_date: Optional[date] = None,
     tracking_started_at: Optional[str] = None,
+    create_archive: bool = True,
 ) -> DailyReportResult:
     _sync_builder_impl_deps()
     return _builder_impl.build_daily_report_for_containers(
@@ -316,6 +319,7 @@ def build_daily_report_for_containers(
         allow_interactive_setup=allow_interactive_setup,
         report_date=report_date,
         tracking_started_at=tracking_started_at,
+        create_archive=create_archive,
     )
 
 

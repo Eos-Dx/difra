@@ -27,6 +27,7 @@ from difra.gui.daily_report_rendering import (
     build_report_manifest_diagnostics,
     create_zip,
     render_report_images,
+    write_report_manifest,
 )
 
 
@@ -66,6 +67,7 @@ def build_daily_report(
     tracking_started_at: Optional[str] = None,
     send_email: bool = False,
     allow_interactive_setup: bool = False,
+    create_archive: bool = True,
 ) -> DailyReportResult:
     cfg = dict(config or {})
     generated_at = datetime.now()
@@ -103,15 +105,23 @@ def build_daily_report(
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     result.manifest = manifest
-    result.zip_path = create_zip(
-        out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-        result.images,
-        manifest=manifest,
-        extra_files=poni_files,
-    )
+    write_report_manifest(out, manifest)
+    if create_archive:
+        result.zip_path = create_zip(
+            out / f"difra_daily_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            result.images,
+            manifest=manifest,
+            extra_files=poni_files,
+        )
     if send_email:
         if not result.images:
             result.email_result = _no_report_images_email_result()
+        elif not result.zip_path:
+            result.email_result = {
+                "sent": False,
+                "skipped": False,
+                "message": "ZIP archive was not created",
+            }
         else:
             try:
                 result.email_result = send_daily_report_email(
@@ -138,6 +148,7 @@ def build_daily_report_for_containers(
     allow_interactive_setup: bool = False,
     report_date: Optional[date] = None,
     tracking_started_at: Optional[str] = None,
+    create_archive: bool = True,
 ) -> DailyReportResult:
     cfg = dict(config or {})
     generated_at = datetime.now()
@@ -172,15 +183,23 @@ def build_daily_report_for_containers(
     }
     manifest.update(build_report_manifest_diagnostics(series, poni_files=poni_files))
     result.manifest = manifest
-    result.zip_path = create_zip(
-        out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-        result.images,
-        manifest=manifest,
-        extra_files=poni_files,
-    )
+    write_report_manifest(out, manifest)
+    if create_archive:
+        result.zip_path = create_zip(
+            out / f"difra_selected_valid_container_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            result.images,
+            manifest=manifest,
+            extra_files=poni_files,
+        )
     if send_email:
         if not result.images:
             result.email_result = _no_report_images_email_result()
+        elif not result.zip_path:
+            result.email_result = {
+                "sent": False,
+                "skipped": False,
+                "message": "ZIP archive was not created",
+            }
         else:
             try:
                 result.email_result = send_daily_report_email(

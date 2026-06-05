@@ -130,6 +130,38 @@ def test_build_daily_report_renders_one_combined_image_per_specimen(
     assert container.name in str(container)
 
 
+def test_build_selected_report_can_write_folder_without_zip(tmp_path, monkeypatch):
+    container = _create_container(tmp_path / "session_test.nxs.h5")
+
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (0.5, 24.0)), int(npt))
+        return q, np.full_like(q, float(np.asarray(data).mean()))
+
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+    monkeypatch.setattr(
+        reporter,
+        "_candidate_poni_infos",
+        lambda *_args, **_kwargs: [("poni", "test")],
+    )
+
+    output_dir = tmp_path / "report_folder"
+    result = reporter.build_daily_report_for_containers(
+        config={},
+        container_paths=[container],
+        output_dir=output_dir,
+        send_email=False,
+        create_archive=False,
+    )
+
+    assert result.zip_path is None
+    assert (output_dir / "manifest.json").exists()
+    assert (output_dir / "images" / "SPEC_001_detectors.png").exists()
+    manifest = reporter.json.loads((output_dir / "manifest.json").read_text())
+    assert manifest["selectedContainers"] == [str(container)]
+    assert manifest["imageCount"] == 1
+    assert manifest["series"][0]["sourceContainer"] == str(container)
+
+
 def test_collect_report_series_uses_container_distance_for_all_detector_ranges(
     tmp_path, monkeypatch
 ):
