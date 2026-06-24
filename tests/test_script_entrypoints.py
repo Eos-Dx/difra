@@ -14,6 +14,7 @@ def _load_module(path: Path, name: str):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules.pop(name, None)
+    sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
         return module

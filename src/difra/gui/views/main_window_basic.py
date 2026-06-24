@@ -22,7 +22,7 @@ from difra.hardware.camera_capture_dialog import CameraCaptureDialog
 from difra.gui.main_window_ext import session_flow_actions
 from difra.scripts.sync_archive_to_onedrive import (
     resolve_sync_roots_from_config,
-    sync_archive_tree,
+    start_archive_zip_sync_process,
 )
 from difra.utils.logger import get_module_logger
 
@@ -93,6 +93,7 @@ class MainWindowBasic(QMainWindow):
         self.update_dev_visuals()
 
         # Keep OneDrive archive mirror warm in the background.
+        self._archive_mirror_sync_process = None
         self._archive_mirror_sync_running = False
         self._archive_mirror_sync_timer = None
 
@@ -241,7 +242,8 @@ class MainWindowBasic(QMainWindow):
         return f"{amount:.1f} {unit}"
 
     def _run_archive_mirror_sync(self) -> None:
-        if getattr(self, "_archive_mirror_sync_running", False):
+        existing = getattr(self, "_archive_mirror_sync_process", None)
+        if existing is not None and existing.poll() is None:
             return
         self._archive_mirror_sync_running = True
         append_session_log = getattr(self, "_append_session_log", None)
@@ -255,46 +257,27 @@ class MainWindowBasic(QMainWindow):
             return
 
         try:
-            destination_root = Path(mirror_root) / Path(source_root).name
+            destination_root = Path(mirror_root) / "Archive"
             if callable(append_session_log):
                 append_session_log(
-                    f"Archive sync started: from {source_root} to {destination_root}"
+                    f"Archive zip sync started: from {source_root} to {destination_root}"
                 )
-            summary = sync_archive_tree(
+            process = start_archive_zip_sync_process(
                 source_root=source_root,
                 mirror_root=mirror_root,
                 dry_run=False,
             )
-            transferred_files = int(summary.copied_files) + int(summary.updated_files)
-            completion_message = (
-                "Archive sync completed: "
-                f"from {summary.source_root} to {summary.destination_root}; "
-                f"scanned {summary.scanned_files} file(s), "
-                f"{transferred_files} file(s) transferred "
-                f"({summary.copied_files} new, {summary.updated_files} updated), "
-                f"{summary.skipped_files} skipped, "
-                f"volume {self._format_archive_sync_bytes(summary.transferred_bytes)}."
+            self._archive_mirror_sync_process = process
+            logger.info(
+                "Archive zip sync process started",
+                source_root=str(source_root),
+                destination_root=str(destination_root),
+                pid=getattr(process, "pid", None),
             )
-            if summary.copied_files or summary.updated_files:
-                logger.info(
-                    "Archive mirror sync copied files",
-                    source_root=str(summary.source_root),
-                    destination_root=str(summary.destination_root),
-                    copied_files=summary.copied_files,
-                    updated_files=summary.updated_files,
-                    skipped_files=summary.skipped_files,
-                    transferred_bytes=summary.transferred_bytes,
-                )
-            else:
-                logger.debug(
-                    "Archive mirror sync checked with no new files",
-                    source_root=str(summary.source_root),
-                    destination_root=str(summary.destination_root),
-                    scanned_files=summary.scanned_files,
-                    skipped_files=summary.skipped_files,
-                )
             if callable(append_session_log):
-                append_session_log(completion_message)
+                append_session_log(
+                    f"Archive zip sync process started: pid={getattr(process, 'pid', 'unknown')}"
+                )
         except Exception as exc:
             logger.warning("Archive mirror sync failed: %s", exc, exc_info=True)
             append_session_log = getattr(self, "_append_session_log", None)

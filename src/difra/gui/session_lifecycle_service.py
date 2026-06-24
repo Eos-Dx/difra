@@ -241,7 +241,7 @@ class SessionLifecycleService:
         archive_kind: str = "measurements",
         day_token: Optional[str] = None,
     ) -> Optional[Path]:
-        """Copy one archived file/folder into the optional secondary archive root."""
+        """Request background OneDrive ZIP export for archive content."""
         source = Path(source_path)
         if not source.exists():
             return None
@@ -253,21 +253,29 @@ class SessionLifecycleService:
         if mirror_root is None:
             return None
 
-        destination_root = (
-            mirror_root
+        try:
+            from difra.scripts.sync_archive_to_onedrive import (
+                resolve_sync_roots_from_config,
+                start_archive_zip_sync_process,
+            )
+
+            source_root, resolved_mirror_root = resolve_sync_roots_from_config(
+                config or {}
+            )
+            start_archive_zip_sync_process(
+                source_root=source_root,
+                mirror_root=resolved_mirror_root,
+                dry_run=False,
+            )
+        except Exception as exc:
+            logger.warning("Failed to start OneDrive archive ZIP sync: %s", exc)
+            return None
+
+        return (
+            Path(mirror_root)
             / "Archive"
             / str(archive_kind or "measurements").strip().lower()
         )
-        destination_root.mkdir(parents=True, exist_ok=True)
-        destination = destination_root / source.name
-
-        if source.is_dir():
-            shutil.copytree(str(source), str(destination), dirs_exist_ok=True)
-        else:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(source), str(destination))
-
-        return destination
 
     @staticmethod
     def lock_container_if_needed(
