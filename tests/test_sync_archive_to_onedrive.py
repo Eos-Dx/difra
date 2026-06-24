@@ -118,9 +118,59 @@ def test_sync_archive_tree_skips_existing_matching_artifacts(tmp_path):
     second = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
 
     assert first.copied_files > 0
+    assert first.created_zip_files == 1
+    assert second.created_zip_files == 0
     assert second.copied_files == 0
     assert second.updated_files == 0
     assert second.skipped_files >= 1
+
+
+def test_sync_archive_tree_does_not_reopen_zip_for_unchanged_day(monkeypatch, tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_no_zip_rebuild")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    day = source_root / "measurements" / "SESSION_A_20260622_115300"
+    day.mkdir(parents=True)
+    (day / "capture.txt").write_text("capture", encoding="utf-8")
+
+    module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    def _raise_zip_open(*_args, **_kwargs):
+        raise AssertionError("zip should not be rebuilt for unchanged day")
+
+    monkeypatch.setattr(module.zipfile, "ZipFile", _raise_zip_open)
+
+    summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert summary.created_zip_files == 0
+
+
+def test_sync_archive_tree_rebuilds_changed_day_from_fingerprint(tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_changed_day")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    day = source_root / "measurements" / "SESSION_A_20260622_115300"
+    day.mkdir(parents=True)
+    capture = day / "capture.txt"
+    capture.write_text("capture-v1", encoding="utf-8")
+
+    first = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+    capture.write_text("capture-v2", encoding="utf-8")
+    second = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert first.created_zip_files == 1
+    assert second.created_zip_files == 1
+    assert second.updated_files >= 1
+    with zipfile.ZipFile(
+        mirror_root / "Archive" / "measurements" / "measurements_20260622.zip",
+        "r",
+    ) as archive:
+        assert (
+            archive.read("20260622/SESSION_A_20260622_115300/capture.txt")
+            == b"capture-v2"
+        )
 
 
 def test_sync_archive_tree_does_not_delete_extra_items_after_manifest_exists(tmp_path):

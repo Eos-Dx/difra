@@ -32,6 +32,7 @@ class DayZipRecord:
     zip_name: str
     manifest_name: str
     source_items: list[Path]
+    source_fingerprints: list[dict[str, str]] = field(default_factory=list)
     h5_summaries: list[dict[str, str]] = field(default_factory=list)
     zip_bytes: int = 0
     zip_sha256: str = ""
@@ -300,6 +301,17 @@ def _add_to_zip(zf: zipfile.ZipFile, item: Path, *, arc_prefix: str) -> int:
     return written
 
 
+def _source_files(items: Iterable[Path]) -> list[Path]:
+    files = []
+    for item in items:
+        if item.is_file():
+            files.append(item)
+            continue
+        if item.is_dir():
+            files.extend(path for path in item.rglob("*") if path.is_file())
+    return sorted(files)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -314,6 +326,74 @@ def _same_file_hash(left: Path, right: Path) -> bool:
     if left.stat().st_size != right.stat().st_size:
         return False
     return _sha256(left) == _sha256(right)
+
+
+def _source_file_fingerprints(
+    items: Iterable[Path],
+    *,
+    source_root: Path,
+) -> list[dict[str, str]]:
+    fingerprints = []
+    for file_path in _source_files(items):
+        try:
+            rel = file_path.relative_to(source_root).as_posix()
+        except Exception:
+            rel = str(file_path)
+        try:
+            size = str(int(file_path.stat().st_size))
+            digest = _sha256(file_path)
+        except Exception:
+            continue
+        fingerprints.append({"path": rel, "size": size, "sha256": digest})
+    return sorted(fingerprints, key=lambda item: item["path"])
+
+
+def _parse_key_value_line(line: str) -> dict[str, str]:
+    text = str(line or "").strip()
+    if text.startswith("- "):
+        text = text[2:].strip()
+    payload = {}
+    for part in text.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        payload[key.strip()] = value.strip()
+    return payload
+
+
+def _manifest_fingerprints(manifest_path: Path) -> list[dict[str, str]]:
+    if not manifest_path.exists():
+        return []
+    in_section = False
+    fingerprints = []
+    for line in manifest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped == "Source file fingerprints:":
+            in_section = True
+            continue
+        if in_section and not stripped:
+            break
+        if not in_section or not stripped.startswith("- "):
+            continue
+        parsed = _parse_key_value_line(stripped)
+        if {"path", "size", "sha256"} <= set(parsed):
+            fingerprints.append(
+                {
+                    "path": parsed["path"],
+                    "size": parsed["size"],
+                    "sha256": parsed["sha256"],
+                }
+            )
+    return sorted(fingerprints, key=lambda item: item["path"])
+
+
+def _read_manifest_value(manifest_path: Path, prefix: str) -> str:
+    if not manifest_path.exists():
+        return ""
+    for line in manifest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def _manifest_text(record: DayZipRecord, *, source_root: Path) -> str:
@@ -339,6 +419,16 @@ def _manifest_text(record: DayZipRecord, *, source_root: Path) -> str:
         lines.append("- " + "; ".join(parts))
     if not record.h5_summaries:
         lines.append("- none found")
+    lines.extend(["", "Source file fingerprints:"])
+    for fingerprint in record.source_fingerprints:
+        lines.append(
+            "- "
+            f"path={fingerprint.get('path', '')}; "
+            f"size={fingerprint.get('size', '')}; "
+            f"sha256={fingerprint.get('sha256', '')}"
+        )
+    if not record.source_fingerprints:
+        lines.append("- none")
     lines.append("")
     return "\n".join(lines)
 
@@ -373,51 +463,85 @@ def _global_manifest_text(records: list[DayZipRecord], *, kind: str) -> str:
     return "\n".join(lines)
 
 
-def _build_day_records(source_root: Path, kind: str, staging_root: Path) -> tuple[list[DayZipRecord], int]:
+def _group_source_items_by_day(source_root: Path, kind: str) -> tuple[dict[str, list[Path]], int]:
     grouped: dict[str, list[Path]] = {}
     scanned_files = 0
     for item in _source_items_by_kind(source_root, kind):
         day = _day_token_for_item(item)
         grouped.setdefault(day, []).append(item)
         scanned_files += _count_files(item)
+    return grouped, scanned_files
 
-    records = []
-    for day, items in sorted(grouped.items()):
-        zip_name = f"{kind}_{day}.zip"
-        manifest_name = f"{kind}_{day}.txt"
-        zip_path = staging_root / kind / zip_name
-        zip_path.parent.mkdir(parents=True, exist_ok=True)
-        h5_summaries = []
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for item in items:
-                _add_to_zip(zf, item, arc_prefix=day)
-                h5_candidates: Iterable[Path]
-                if item.is_file() and item.suffix.lower() in {".h5", ".nxs"}:
-                    h5_candidates = [item]
-                elif item.is_dir():
-                    h5_candidates = [*item.rglob("*.nxs.h5"), *item.rglob("*.h5")]
-                else:
-                    h5_candidates = []
-                for h5_path in sorted(h5_candidates):
-                    summary = _h5_summary(h5_path)
-                    try:
-                        summary["path"] = h5_path.relative_to(source_root).as_posix()
-                    except Exception:
-                        summary["path"] = str(h5_path)
-                    h5_summaries.append(summary)
-        records.append(
-            DayZipRecord(
-                kind=kind,
-                day_token=day,
-                zip_name=zip_name,
-                manifest_name=manifest_name,
-                source_items=items,
-                h5_summaries=h5_summaries,
-                zip_bytes=zip_path.stat().st_size,
-                zip_sha256=_sha256(zip_path),
-            )
-        )
-    return records, scanned_files
+
+def _h5_summaries_for_items(
+    items: Iterable[Path],
+    *,
+    source_root: Path,
+) -> list[dict[str, str]]:
+    h5_summaries = []
+    for item in items:
+        h5_candidates: Iterable[Path]
+        if item.is_file() and item.suffix.lower() in {".h5", ".nxs"}:
+            h5_candidates = [item]
+        elif item.is_dir():
+            h5_candidates = [*item.rglob("*.nxs.h5"), *item.rglob("*.h5")]
+        else:
+            h5_candidates = []
+        for h5_path in sorted(h5_candidates):
+            summary = _h5_summary(h5_path)
+            try:
+                summary["path"] = h5_path.relative_to(source_root).as_posix()
+            except Exception:
+                summary["path"] = str(h5_path)
+            h5_summaries.append(summary)
+    return h5_summaries
+
+
+def _day_record_from_sources(
+    *,
+    source_root: Path,
+    kind: str,
+    day: str,
+    items: list[Path],
+    destination_manifest: Path,
+) -> DayZipRecord:
+    zip_name = f"{kind}_{day}.zip"
+    manifest_name = f"{kind}_{day}.txt"
+    zip_bytes = _read_manifest_value(destination_manifest, "ZIP bytes:")
+    zip_sha256 = _read_manifest_value(destination_manifest, "ZIP sha256:")
+    return DayZipRecord(
+        kind=kind,
+        day_token=day,
+        zip_name=zip_name,
+        manifest_name=manifest_name,
+        source_items=items,
+        source_fingerprints=_source_file_fingerprints(
+            items,
+            source_root=source_root,
+        ),
+        h5_summaries=_h5_summaries_for_items(items, source_root=source_root),
+        zip_bytes=int(zip_bytes) if zip_bytes.isdigit() else 0,
+        zip_sha256=zip_sha256,
+    )
+
+
+def _build_day_zip(
+    *,
+    record: DayZipRecord,
+    staging_root: Path,
+) -> Path:
+    zip_path = staging_root / record.kind / record.zip_name
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for item in record.source_items:
+            _add_to_zip(zf, item, arc_prefix=record.day_token)
+    record.zip_bytes = int(zip_path.stat().st_size)
+    record.zip_sha256 = _sha256(zip_path)
+    return zip_path
+
+
+def _day_manifest_is_current(manifest_path: Path, fingerprints: list[dict[str, str]]) -> bool:
+    return bool(manifest_path.exists()) and _manifest_fingerprints(manifest_path) == fingerprints
 
 
 def _clean_destination_kind(kind_root: Path, *, bootstrap: bool, dry_run: bool) -> int:
@@ -469,9 +593,8 @@ def sync_archive_tree(
     with tempfile.TemporaryDirectory(prefix="difra_onedrive_zip_") as tmp_dir:
         staging_root = Path(tmp_dir)
         for kind in ARCHIVE_KINDS:
-            records, kind_scanned = _build_day_records(source, kind, staging_root)
+            grouped, kind_scanned = _group_source_items_by_day(source, kind)
             scanned_files += kind_scanned
-            created_zip_files += len(records)
             kind_root = destination_root / kind
             bootstrap = not (kind_root / f"{kind}_manifest.txt").exists()
             if not dry_run:
@@ -482,8 +605,33 @@ def sync_archive_tree(
                 dry_run=dry_run,
             )
 
-            for record in records:
-                zip_source = staging_root / kind / record.zip_name
+            records = []
+            for day, items in sorted(grouped.items()):
+                destination_manifest = kind_root / f"{kind}_{day}.txt"
+                record = _day_record_from_sources(
+                    source_root=source,
+                    kind=kind,
+                    day=day,
+                    items=items,
+                    destination_manifest=destination_manifest,
+                )
+                records.append(record)
+                if (
+                    not bootstrap
+                    and (kind_root / record.zip_name).exists()
+                    and _day_manifest_is_current(
+                        destination_manifest,
+                        record.source_fingerprints,
+                    )
+                ):
+                    skipped_files += 2
+                    continue
+
+                zip_source = _build_day_zip(
+                    record=record,
+                    staging_root=staging_root,
+                )
+                created_zip_files += 1
                 manifest_source = staging_root / kind / record.manifest_name
                 manifest_source.write_text(
                     _manifest_text(record, source_root=source),
