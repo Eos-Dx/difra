@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -640,10 +641,22 @@ def _clean_destination_kind(
         if dry_run:
             continue
         if child.is_dir():
-            shutil.rmtree(child)
+            shutil.rmtree(child, onerror=_retry_remove_readonly)
         else:
-            child.unlink()
+            try:
+                child.unlink()
+            except PermissionError:
+                _retry_remove_readonly(os.unlink, child, sys.exc_info())
     return removed
+
+
+def _retry_remove_readonly(remove, path, exc_info) -> None:
+    """Retry a failed removal after clearing a Windows read-only attribute."""
+    error = exc_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    remove(path)
 
 
 def _copy_artifact(

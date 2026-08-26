@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -262,6 +263,29 @@ def test_sync_archive_tree_preserves_legacy_mirror_when_zip_build_fails(
     assert not (
         mirror_root / "Archive" / "measurements" / "measurements_manifest.txt"
     ).exists()
+
+
+def test_clean_destination_kind_removes_readonly_legacy_content(tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_readonly_cleanup")
+
+    kind_root = tmp_path / "measurements"
+    legacy_folder = kind_root / "legacy_raw"
+    legacy_folder.mkdir(parents=True)
+    nested_file = legacy_folder / "capture.nxs.h5"
+    loose_file = kind_root / "old.txt"
+    nested_file.write_text("legacy", encoding="utf-8")
+    loose_file.write_text("legacy", encoding="utf-8")
+    nested_file.chmod(stat.S_IREAD)
+    loose_file.chmod(stat.S_IREAD)
+
+    removed = module._clean_destination_kind(
+        kind_root,
+        bootstrap=True,
+        dry_run=False,
+    )
+
+    assert removed == 2
+    assert list(kind_root.iterdir()) == []
 
 
 def test_h5_manifest_lists_nexus_container_once(tmp_path):
