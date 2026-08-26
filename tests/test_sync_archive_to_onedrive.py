@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,6 +148,40 @@ def test_sync_archive_tree_does_not_reopen_zip_for_unchanged_day(monkeypatch, tm
     assert summary.created_zip_files == 0
 
 
+def test_sync_archive_tree_dry_run_never_builds_a_staging_zip(monkeypatch, tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_dry_run_no_zip")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    day = source_root / "measurements" / "SESSION_A_20260622_115300"
+    day.mkdir(parents=True)
+    (day / "capture.txt").write_text("capture", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "_build_day_zip",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run must not create a ZIP")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_sha256",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run must not hash archive payloads")
+        ),
+    )
+
+    summary = module.sync_archive_tree(
+        source_root=source_root,
+        mirror_root=mirror_root,
+        dry_run=True,
+    )
+
+    assert summary.created_zip_files == 1
+    assert mirror_root.exists() is False
+
+
 def test_sync_archive_tree_rebuilds_changed_day_from_fingerprint(tmp_path):
     module = _sync_module("test_sync_archive_to_onedrive_changed_day")
 
@@ -171,6 +207,104 @@ def test_sync_archive_tree_rebuilds_changed_day_from_fingerprint(tmp_path):
             archive.read("20260622/SESSION_A_20260622_115300/capture.txt")
             == b"capture-v2"
         )
+
+
+def test_sync_archive_tree_rebuilds_corrupt_destination_zip(tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_corrupt_zip")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    day = source_root / "measurements" / "SESSION_A_20260622_115300"
+    day.mkdir(parents=True)
+    (day / "capture.txt").write_text("capture", encoding="utf-8")
+
+    module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+    zip_path = (
+        mirror_root / "Archive" / "measurements" / "measurements_20260622.zip"
+    )
+    corrupt_payload = bytearray(zip_path.read_bytes())
+    corrupt_payload[len(corrupt_payload) // 2] ^= 0xFF
+    zip_path.write_bytes(corrupt_payload)
+
+    summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert summary.created_zip_files == 1
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        assert archive.read("20260622/SESSION_A_20260622_115300/capture.txt") == b"capture"
+
+
+def test_sync_archive_tree_preserves_legacy_mirror_when_zip_build_fails(
+    monkeypatch,
+    tmp_path,
+):
+    module = _sync_module("test_sync_archive_to_onedrive_safe_migration")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    day = source_root / "measurements" / "SESSION_A_20260622_115300"
+    day.mkdir(parents=True)
+    (day / "capture.txt").write_text("capture", encoding="utf-8")
+    legacy_folder = mirror_root / "Archive" / "measurements" / "legacy_raw"
+    legacy_folder.mkdir(parents=True)
+    legacy_file = legacy_folder / "capture.txt"
+    legacy_file.write_text("legacy-backup", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "_build_day_zip",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated ZIP failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated ZIP failure"):
+        module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert legacy_file.read_text(encoding="utf-8") == "legacy-backup"
+    assert not (
+        mirror_root / "Archive" / "measurements" / "measurements_manifest.txt"
+    ).exists()
+
+
+def test_h5_manifest_lists_nexus_container_once(tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_unique_h5")
+
+    source_root = tmp_path / "Archive"
+    item = source_root / "measurements" / "SESSION_A_20260622_115300"
+    item.mkdir(parents=True)
+    (item / "sample.nxs.h5").write_text("not-real-h5", encoding="utf-8")
+
+    summaries = module._h5_summaries_for_items([item], source_root=source_root)
+
+    assert len(summaries) == 1
+    assert summaries[0]["file"] == "sample.nxs.h5"
+
+
+def test_sync_archive_tree_removes_each_staging_zip_after_copy(monkeypatch, tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_bounded_staging")
+
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    for day_token in ("20260622", "20260623"):
+        day = source_root / "measurements" / f"SESSION_A_{day_token}_115300"
+        day.mkdir(parents=True)
+        (day / "capture.txt").write_text(day_token, encoding="utf-8")
+
+    built_paths = []
+    original_build = module._build_day_zip
+
+    def _tracked_build(**kwargs):
+        if built_paths:
+            assert built_paths[-1].exists() is False
+        built_path = original_build(**kwargs)
+        built_paths.append(built_path)
+        return built_path
+
+    monkeypatch.setattr(module, "_build_day_zip", _tracked_build)
+
+    summary = module.sync_archive_tree(source_root=source_root, mirror_root=mirror_root)
+
+    assert summary.created_zip_files == 2
+    assert len(built_paths) == 2
+    assert all(path.exists() is False for path in built_paths)
 
 
 def test_sync_archive_tree_does_not_delete_extra_items_after_manifest_exists(tmp_path):
@@ -226,6 +360,76 @@ def test_main_reports_dry_run_without_copying(monkeypatch, capsys, tmp_path):
     assert "Dry run only" in out
     assert "Created day ZIPs:" in out
     assert (mirror_root / "Archive" / "technical").exists() is False
+
+
+def test_start_archive_zip_sync_process_reuses_running_process(monkeypatch, tmp_path):
+    module = _sync_module("test_sync_archive_to_onedrive_process_reuse")
+    created = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    def _popen(*_args, **_kwargs):
+        process = FakeProcess()
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(module.subprocess, "Popen", _popen)
+
+    kwargs = {
+        "source_root": tmp_path / "Archive",
+        "mirror_root": tmp_path / "OneDrive",
+    }
+    first = module.start_archive_zip_sync_process(**kwargs)
+    second = module.start_archive_zip_sync_process(**kwargs)
+    first.returncode = 0
+    third = module.start_archive_zip_sync_process(**kwargs)
+
+    assert first is second
+    assert third is not first
+    assert len(created) == 2
+
+
+def test_finalize_workflow_requests_only_one_full_archive_sync(monkeypatch, tmp_path):
+    from difra.gui.session_finalize_workflow import SessionFinalizeWorkflow
+    from difra.gui.session_lifecycle_service import SessionLifecycleService
+
+    archive_folder = tmp_path / "Archive" / "measurements" / "SESSION_A_20260622"
+    archive_folder.mkdir(parents=True)
+    bundle_path = archive_folder.with_suffix(".zip")
+    bundle_path.write_bytes(b"bundle")
+    calls = []
+    expected_destination = tmp_path / "OneDrive" / "Archive" / "measurements"
+
+    monkeypatch.setattr(
+        SessionLifecycleService,
+        "copy_archive_item_to_mirror",
+        lambda source_path, **kwargs: calls.append((source_path, kwargs))
+        or expected_destination,
+    )
+
+    destination = SessionFinalizeWorkflow.mirror_archive_outputs(
+        archive_folder,
+        config={"measurements_archive_mirror_folder": str(tmp_path / "OneDrive")},
+        bundle_path=bundle_path,
+    )
+
+    assert destination == expected_destination
+    assert calls == [
+        (
+            archive_folder,
+            {
+                "config": {
+                    "measurements_archive_mirror_folder": str(tmp_path / "OneDrive")
+                },
+                "archive_kind": "measurements",
+            },
+        )
+    ]
 
 
 def test_lifecycle_mirror_request_starts_zip_sync_without_raw_copy(monkeypatch, tmp_path):

@@ -243,10 +243,25 @@ class MainWindowBasic(QMainWindow):
 
     def _run_archive_mirror_sync(self) -> None:
         existing = getattr(self, "_archive_mirror_sync_process", None)
-        if existing is not None and existing.poll() is None:
-            return
-        self._archive_mirror_sync_running = True
         append_session_log = getattr(self, "_append_session_log", None)
+        if existing is not None:
+            return_code = existing.poll()
+            if return_code is None:
+                return
+            self._archive_mirror_sync_process = None
+            if int(return_code) == 0:
+                if callable(append_session_log):
+                    append_session_log("Archive zip sync completed successfully.")
+            else:
+                logger.warning(
+                    "Archive zip sync process failed",
+                    return_code=int(return_code),
+                )
+                if callable(append_session_log):
+                    append_session_log(
+                        f"Archive zip sync failed: process exit code {int(return_code)}"
+                    )
+        self._archive_mirror_sync_running = True
         try:
             source_root, mirror_root = resolve_sync_roots_from_config(self.config)
         except Exception as exc:

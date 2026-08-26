@@ -289,18 +289,12 @@ class SessionFinalizeWorkflow:
         bundle_path: Optional[Path] = None,
         logger: Optional[Any] = None,
     ) -> Optional[Path]:
-        """Copy archived folder and optional ZIP into the configured secondary archive root."""
+        """Request one background ZIP sync for the completed archive outputs."""
         mirror_folder = SessionLifecycleService.copy_archive_item_to_mirror(
             archive_folder,
             config=config,
             archive_kind="measurements",
         )
-        if bundle_path is not None and Path(bundle_path).exists():
-            SessionLifecycleService.copy_archive_item_to_mirror(
-                bundle_path,
-                config=config,
-                archive_kind="measurements",
-            )
         if logger and mirror_folder is not None:
             logger.info(
                 "Mirrored archived session payload",

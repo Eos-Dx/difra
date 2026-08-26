@@ -11,8 +11,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
 import zipfile
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
@@ -23,6 +26,8 @@ DEFAULT_CONFIG_PATH = (
     REPO_ROOT / "src" / "difra" / "resources" / "config" / "main_win.json"
 )
 ARCHIVE_KINDS = ("measurements", "technical")
+_ACTIVE_SYNC_PROCESSES: dict[tuple[str, str, bool], subprocess.Popen] = {}
+_ACTIVE_SYNC_PROCESSES_LOCK = threading.Lock()
 
 
 @dataclass
@@ -36,6 +41,7 @@ class DayZipRecord:
     h5_summaries: list[dict[str, str]] = field(default_factory=list)
     zip_bytes: int = 0
     zip_sha256: str = ""
+    zip_mtime_ns: int = 0
 
 
 class SyncSummary:
@@ -194,17 +200,28 @@ def start_archive_zip_sync_process(
     mirror_root: Path,
     dry_run: bool = False,
 ) -> subprocess.Popen:
-    return subprocess.Popen(
-        archive_zip_sync_command(
-            source_root=source_root,
-            mirror_root=mirror_root,
-            dry_run=dry_run,
-        ),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        close_fds=os.name != "nt",
+    key = (
+        str(Path(source_root).resolve()).casefold(),
+        str(Path(mirror_root).resolve()).casefold(),
+        bool(dry_run),
     )
+    with _ACTIVE_SYNC_PROCESSES_LOCK:
+        existing = _ACTIVE_SYNC_PROCESSES.get(key)
+        if existing is not None and existing.poll() is None:
+            return existing
+        process = subprocess.Popen(
+            archive_zip_sync_command(
+                source_root=source_root,
+                mirror_root=mirror_root,
+                dry_run=dry_run,
+            ),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=os.name != "nt",
+        )
+        _ACTIVE_SYNC_PROCESSES[key] = process
+        return process
 
 
 def _day_token_from_text(text: str) -> str | None:
@@ -260,7 +277,10 @@ def _day_token_for_item(item: Path) -> str:
     if item.is_file() and item.suffix.lower() in {".h5", ".nxs"}:
         h5_files = [item]
     elif item.is_dir():
-        h5_files = sorted(item.rglob("*.nxs.h5")) + sorted(item.rglob("*.h5"))
+        h5_files = sorted(
+            {*item.rglob("*.nxs.h5"), *item.rglob("*.h5")},
+            key=lambda path: str(path),
+        )
     for h5_path in h5_files:
         summary = _h5_summary(h5_path)
         for key in ("acquisition_date", "creation_timestamp"):
@@ -332,19 +352,42 @@ def _source_file_fingerprints(
     items: Iterable[Path],
     *,
     source_root: Path,
+    previous: Iterable[dict[str, str]] = (),
+    hash_changed: bool = True,
 ) -> list[dict[str, str]]:
+    previous_by_path = {
+        str(item.get("path") or ""): item
+        for item in previous
+        if str(item.get("path") or "")
+    }
     fingerprints = []
     for file_path in _source_files(items):
         try:
             rel = file_path.relative_to(source_root).as_posix()
         except Exception:
             rel = str(file_path)
-        try:
-            size = str(int(file_path.stat().st_size))
+        source_stat = file_path.stat()
+        size = str(int(source_stat.st_size))
+        mtime_ns = str(int(source_stat.st_mtime_ns))
+        previous_item = previous_by_path.get(rel, {})
+        if (
+            previous_item.get("size") == size
+            and previous_item.get("mtime_ns") == mtime_ns
+            and previous_item.get("sha256")
+        ):
+            digest = str(previous_item["sha256"])
+        elif not hash_changed:
+            digest = ""
+        else:
             digest = _sha256(file_path)
-        except Exception:
-            continue
-        fingerprints.append({"path": rel, "size": size, "sha256": digest})
+        fingerprints.append(
+            {
+                "path": rel,
+                "size": size,
+                "mtime_ns": mtime_ns,
+                "sha256": digest,
+            }
+        )
     return sorted(fingerprints, key=lambda item: item["path"])
 
 
@@ -377,13 +420,14 @@ def _manifest_fingerprints(manifest_path: Path) -> list[dict[str, str]]:
             continue
         parsed = _parse_key_value_line(stripped)
         if {"path", "size", "sha256"} <= set(parsed):
-            fingerprints.append(
-                {
-                    "path": parsed["path"],
-                    "size": parsed["size"],
-                    "sha256": parsed["sha256"],
-                }
-            )
+            fingerprint = {
+                "path": parsed["path"],
+                "size": parsed["size"],
+                "sha256": parsed["sha256"],
+            }
+            if parsed.get("mtime_ns"):
+                fingerprint["mtime_ns"] = parsed["mtime_ns"]
+            fingerprints.append(fingerprint)
     return sorted(fingerprints, key=lambda item: item["path"])
 
 
@@ -404,6 +448,7 @@ def _manifest_text(record: DayZipRecord, *, source_root: Path) -> str:
         f"ZIP: {record.zip_name}",
         f"ZIP bytes: {record.zip_bytes}",
         f"ZIP sha256: {record.zip_sha256}",
+        f"ZIP mtime ns: {record.zip_mtime_ns}",
         "",
         "Source items:",
     ]
@@ -425,6 +470,7 @@ def _manifest_text(record: DayZipRecord, *, source_root: Path) -> str:
             "- "
             f"path={fingerprint.get('path', '')}; "
             f"size={fingerprint.get('size', '')}; "
+            f"mtime_ns={fingerprint.get('mtime_ns', '')}; "
             f"sha256={fingerprint.get('sha256', '')}"
         )
     if not record.source_fingerprints:
@@ -484,7 +530,10 @@ def _h5_summaries_for_items(
         if item.is_file() and item.suffix.lower() in {".h5", ".nxs"}:
             h5_candidates = [item]
         elif item.is_dir():
-            h5_candidates = [*item.rglob("*.nxs.h5"), *item.rglob("*.h5")]
+            h5_candidates = sorted(
+                {*item.rglob("*.nxs.h5"), *item.rglob("*.h5")},
+                key=lambda path: str(path),
+            )
         else:
             h5_candidates = []
         for h5_path in sorted(h5_candidates):
@@ -504,11 +553,14 @@ def _day_record_from_sources(
     day: str,
     items: list[Path],
     destination_manifest: Path,
+    calculate_hashes: bool = True,
 ) -> DayZipRecord:
     zip_name = f"{kind}_{day}.zip"
     manifest_name = f"{kind}_{day}.txt"
     zip_bytes = _read_manifest_value(destination_manifest, "ZIP bytes:")
     zip_sha256 = _read_manifest_value(destination_manifest, "ZIP sha256:")
+    zip_mtime_ns = _read_manifest_value(destination_manifest, "ZIP mtime ns:")
+    previous_fingerprints = _manifest_fingerprints(destination_manifest)
     return DayZipRecord(
         kind=kind,
         day_token=day,
@@ -518,10 +570,13 @@ def _day_record_from_sources(
         source_fingerprints=_source_file_fingerprints(
             items,
             source_root=source_root,
+            previous=previous_fingerprints,
+            hash_changed=calculate_hashes,
         ),
         h5_summaries=_h5_summaries_for_items(items, source_root=source_root),
         zip_bytes=int(zip_bytes) if zip_bytes.isdigit() else 0,
         zip_sha256=zip_sha256,
+        zip_mtime_ns=int(zip_mtime_ns) if zip_mtime_ns.isdigit() else 0,
     )
 
 
@@ -537,18 +592,50 @@ def _build_day_zip(
             _add_to_zip(zf, item, arc_prefix=record.day_token)
     record.zip_bytes = int(zip_path.stat().st_size)
     record.zip_sha256 = _sha256(zip_path)
+    record.zip_mtime_ns = int(zip_path.stat().st_mtime_ns)
     return zip_path
 
 
-def _day_manifest_is_current(manifest_path: Path, fingerprints: list[dict[str, str]]) -> bool:
-    return bool(manifest_path.exists()) and _manifest_fingerprints(manifest_path) == fingerprints
+def _day_archive_is_current(
+    *,
+    zip_path: Path,
+    manifest_path: Path,
+    record: DayZipRecord,
+) -> bool:
+    if not zip_path.exists() or not manifest_path.exists():
+        return False
+    if _manifest_fingerprints(manifest_path) != record.source_fingerprints:
+        return False
+    if record.zip_bytes <= 0 or len(record.zip_sha256) != 64:
+        return False
+    try:
+        zip_stat = zip_path.stat()
+    except OSError:
+        return False
+    if int(zip_stat.st_size) != int(record.zip_bytes):
+        return False
+    if record.zip_mtime_ns and int(zip_stat.st_mtime_ns) == int(record.zip_mtime_ns):
+        return True
+    try:
+        return _sha256(zip_path) == record.zip_sha256
+    except OSError:
+        return False
 
 
-def _clean_destination_kind(kind_root: Path, *, bootstrap: bool, dry_run: bool) -> int:
+def _clean_destination_kind(
+    kind_root: Path,
+    *,
+    bootstrap: bool,
+    dry_run: bool,
+    keep_names: Iterable[str] = (),
+) -> int:
     removed = 0
     if not bootstrap or not kind_root.exists():
         return 0
+    keep = {str(name) for name in keep_names}
     for child in sorted(kind_root.iterdir()):
+        if child.name in keep:
+            continue
         removed += 1
         if dry_run:
             continue
@@ -559,14 +646,30 @@ def _clean_destination_kind(kind_root: Path, *, bootstrap: bool, dry_run: bool) 
     return removed
 
 
-def _copy_artifact(source: Path, destination: Path, *, dry_run: bool) -> tuple[str, int]:
+def _copy_artifact(
+    source: Path,
+    destination: Path,
+    *,
+    dry_run: bool,
+    force: bool = False,
+) -> tuple[str, int]:
     destination_exists = destination.exists()
-    if _same_file_hash(source, destination):
+    if not force and _same_file_hash(source, destination):
         return "skipped", 0
     size = int(source.stat().st_size)
     if not dry_run:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        temporary_destination = destination.with_name(
+            f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            shutil.copy2(source, temporary_destination)
+            os.replace(temporary_destination, destination)
+        finally:
+            try:
+                temporary_destination.unlink(missing_ok=True)
+            except OSError:
+                pass
     return ("updated" if destination_exists else "copied"), size
 
 
@@ -590,20 +693,21 @@ def sync_archive_tree(
     transferred_bytes = removed_destination_items = created_zip_files = 0
     removed_staging_files = 0
 
-    with tempfile.TemporaryDirectory(prefix="difra_onedrive_zip_") as tmp_dir:
-        staging_root = Path(tmp_dir)
+    staging_context = (
+        nullcontext(None)
+        if dry_run
+        else tempfile.TemporaryDirectory(prefix="difra_onedrive_zip_")
+    )
+    with staging_context as tmp_dir:
+        staging_root = Path(tmp_dir) if tmp_dir is not None else None
         for kind in ARCHIVE_KINDS:
             grouped, kind_scanned = _group_source_items_by_day(source, kind)
             scanned_files += kind_scanned
             kind_root = destination_root / kind
-            bootstrap = not (kind_root / f"{kind}_manifest.txt").exists()
+            global_manifest_name = f"{kind}_manifest.txt"
+            bootstrap = not (kind_root / global_manifest_name).exists()
             if not dry_run:
                 kind_root.mkdir(parents=True, exist_ok=True)
-            removed_destination_items += _clean_destination_kind(
-                kind_root,
-                bootstrap=bootstrap,
-                dry_run=dry_run,
-            )
 
             records = []
             for day, items in sorted(grouped.items()):
@@ -614,56 +718,125 @@ def sync_archive_tree(
                     day=day,
                     items=items,
                     destination_manifest=destination_manifest,
+                    calculate_hashes=not dry_run,
                 )
                 records.append(record)
-                if (
-                    not bootstrap
-                    and (kind_root / record.zip_name).exists()
-                    and _day_manifest_is_current(
-                        destination_manifest,
-                        record.source_fingerprints,
-                    )
+                if _day_archive_is_current(
+                    zip_path=kind_root / record.zip_name,
+                    manifest_path=destination_manifest,
+                    record=record,
                 ):
                     skipped_files += 2
                     continue
 
+                created_zip_files += 1
+                if dry_run:
+                    copied_files += int(not (kind_root / record.zip_name).exists())
+                    updated_files += int((kind_root / record.zip_name).exists())
+                    copied_files += int(not destination_manifest.exists())
+                    updated_files += int(destination_manifest.exists())
+                    continue
+
+                assert staging_root is not None
                 zip_source = _build_day_zip(
                     record=record,
                     staging_root=staging_root,
                 )
-                created_zip_files += 1
                 manifest_source = staging_root / kind / record.manifest_name
-                manifest_source.write_text(
-                    _manifest_text(record, source_root=source),
-                    encoding="utf-8",
-                )
-                for artifact_source in (zip_source, manifest_source):
+                destination_zip = kind_root / record.zip_name
+                try:
                     status, size = _copy_artifact(
-                        artifact_source,
-                        kind_root / artifact_source.name,
-                        dry_run=dry_run,
+                        zip_source,
+                        destination_zip,
+                        dry_run=False,
+                        force=True,
                     )
                     copied_files += int(status == "copied")
                     updated_files += int(status == "updated")
                     skipped_files += int(status == "skipped")
                     transferred_bytes += size
+                    destination_stat = destination_zip.stat()
+                    if int(destination_stat.st_size) != int(record.zip_bytes):
+                        raise OSError(
+                            f"ZIP copy size mismatch for {destination_zip}: "
+                            f"expected {record.zip_bytes}, got {destination_stat.st_size}"
+                        )
+                    record.zip_mtime_ns = int(destination_stat.st_mtime_ns)
+                    manifest_source.write_text(
+                        _manifest_text(record, source_root=source),
+                        encoding="utf-8",
+                    )
+                    status, size = _copy_artifact(
+                        manifest_source,
+                        kind_root / manifest_source.name,
+                        dry_run=False,
+                    )
+                    copied_files += int(status == "copied")
+                    updated_files += int(status == "updated")
+                    skipped_files += int(status == "skipped")
+                    transferred_bytes += size
+                finally:
+                    for staging_path in (zip_source, manifest_source):
+                        try:
+                            staging_path.unlink(missing_ok=True)
+                            removed_staging_files += 1
+                        except OSError:
+                            pass
 
-            global_manifest = staging_root / kind / f"{kind}_manifest.txt"
-            global_manifest.parent.mkdir(parents=True, exist_ok=True)
-            global_manifest.write_text(
-                _global_manifest_text(records, kind=kind),
-                encoding="utf-8",
-            )
-            status, size = _copy_artifact(
-                global_manifest,
-                kind_root / global_manifest.name,
+            keep_names = {
+                global_manifest_name,
+                *(record.zip_name for record in records),
+                *(record.manifest_name for record in records),
+            }
+            removed_destination_items += _clean_destination_kind(
+                kind_root,
+                bootstrap=bootstrap and bool(records),
                 dry_run=dry_run,
+                keep_names=keep_names,
             )
-            copied_files += int(status == "copied")
-            updated_files += int(status == "updated")
-            skipped_files += int(status == "skipped")
-            transferred_bytes += size
-            removed_staging_files += len(list((staging_root / kind).glob("*")))
+
+            global_manifest_text = _global_manifest_text(records, kind=kind)
+            global_destination = kind_root / global_manifest_name
+            if dry_run:
+                encoded_size = len(global_manifest_text.encode("utf-8"))
+                if global_destination.exists():
+                    try:
+                        current_text = global_destination.read_text(
+                            encoding="utf-8",
+                            errors="replace",
+                        )
+                    except OSError:
+                        current_text = ""
+                    if current_text == global_manifest_text:
+                        skipped_files += 1
+                    else:
+                        updated_files += 1
+                        transferred_bytes += encoded_size
+                else:
+                    copied_files += 1
+                    transferred_bytes += encoded_size
+                continue
+
+            assert staging_root is not None
+            global_manifest = staging_root / kind / global_manifest_name
+            global_manifest.parent.mkdir(parents=True, exist_ok=True)
+            global_manifest.write_text(global_manifest_text, encoding="utf-8")
+            try:
+                status, size = _copy_artifact(
+                    global_manifest,
+                    global_destination,
+                    dry_run=False,
+                )
+                copied_files += int(status == "copied")
+                updated_files += int(status == "updated")
+                skipped_files += int(status == "skipped")
+                transferred_bytes += size
+            finally:
+                try:
+                    global_manifest.unlink(missing_ok=True)
+                    removed_staging_files += 1
+                except OSError:
+                    pass
 
     return SyncSummary(
         source_root=source,
@@ -700,7 +873,11 @@ def main() -> int:
     print(f"Source archive root: {summary.source_root}")
     print(f"Destination archive root: {summary.destination_root}")
     print(f"Scanned source files: {summary.scanned_files}")
-    print(f"Created day ZIPs: {summary.created_zip_files}")
+    if args.dry_run:
+        print("Created day ZIPs: 0")
+        print(f"Day ZIPs requiring creation/update: {summary.created_zip_files}")
+    else:
+        print(f"Created day ZIPs: {summary.created_zip_files}")
     print(f"New artifacts: {summary.copied_files}")
     print(f"Updated artifacts: {summary.updated_files}")
     print(f"Skipped artifacts: {summary.skipped_files}")

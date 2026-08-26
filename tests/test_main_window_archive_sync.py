@@ -104,6 +104,36 @@ def test_archive_mirror_sync_skips_when_background_process_running(monkeypatch, 
     assert calls == []
 
 
+def test_archive_mirror_sync_reports_failed_process_before_retry(monkeypatch, tmp_path):
+    module = _load_main_window_basic_module()
+    source_root = tmp_path / "Archive"
+    mirror_root = tmp_path / "OneDriveRoot"
+    logs = []
+    replacement = SimpleNamespace(pid=4321, poll=lambda: None)
+
+    owner = SimpleNamespace(
+        config={},
+        _archive_mirror_sync_running=False,
+        _archive_mirror_sync_process=SimpleNamespace(poll=lambda: 2),
+        _append_session_log=logs.append,
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_sync_roots_from_config",
+        lambda _config: (source_root, mirror_root),
+    )
+    monkeypatch.setattr(
+        module,
+        "start_archive_zip_sync_process",
+        lambda **_kwargs: replacement,
+    )
+
+    module.MainWindowBasic._run_archive_mirror_sync(owner)
+
+    assert logs[0] == "Archive zip sync failed: process exit code 2"
+    assert owner._archive_mirror_sync_process is replacement
+
+
 def test_archive_mirror_sync_logs_when_not_configured():
     module = _load_main_window_basic_module()
     session_logs = []
