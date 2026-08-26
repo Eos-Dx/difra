@@ -77,6 +77,21 @@ def _container_distance_cm(h5f: h5py.File) -> Optional[float]:
     return None
 
 
+def _container_operator_id(h5f: h5py.File) -> str:
+    for attr_name in (
+        "operator_id",
+        "operatorId",
+        "created_by",
+        "createdBy",
+        "uploaded_by",
+        "uploadedBy",
+    ):
+        value = _as_text(h5f.attrs.get(attr_name), "")
+        if value:
+            return value
+    return "unknown"
+
+
 def _detector_group(alias: str, detector_name: str) -> str:
     token = f"{alias} {detector_name}".upper()
     if any(item in token for item in ("PRIMARY", "SAXS", "DET_PRIMARY", "DET_SAXS")):
@@ -248,6 +263,7 @@ def collect_report_series(
                     h5f.attrs.get("specimenId", h5f.attrs.get("sample_id", "unknown")),
                     "unknown",
                 )
+                operator_id = _container_operator_id(h5f)
                 distance_cm = _container_distance_cm(h5f)
                 measurements_group = h5f.get("/entry/measurements")
                 for point_name in sorted(measurements_group.keys()):
@@ -355,6 +371,7 @@ def collect_report_series(
                                     integration_backend=integration_backend,
                                     source_container=path,
                                     source_dataset=signal_ds.name,
+                                    operator_id=operator_id,
                                 )
                             )
         except Exception as exc:

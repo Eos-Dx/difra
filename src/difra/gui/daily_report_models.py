@@ -36,6 +36,7 @@ class DetectorSeries:
     integration_backend: str
     source_container: Path
     source_dataset: str
+    operator_id: str = ""
 
     @property
     def detector_key(self) -> str:
@@ -66,3 +67,25 @@ class DailyReportResult:
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     tracking_started_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PoniQcPanel:
+    operator_id: str
+    source_container: Path
+    source_dataset: str
+    detector_group: str
+    detector_alias: str
+    detector_name: str
+    detector_side: str
+    distance_key: str
+    distance_cm: float
+    poni_distance_cm: float
+    poni_text: str
+    poni_source: str
+    data: np.ndarray
+    q: np.ndarray
+    intensity: np.ndarray
+    cake_q: np.ndarray
+    cake_chi: np.ndarray
+    cake_intensity: np.ndarray

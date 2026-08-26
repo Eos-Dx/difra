@@ -181,6 +181,48 @@ def test_build_selected_report_can_write_folder_without_zip(tmp_path, monkeypatc
         assert first.attrs["poni_source"] == "test"
 
 
+def test_selected_report_email_uses_compact_analyst_zip_without_full_zip(tmp_path, monkeypatch):
+    container = _create_container(tmp_path / "session_test.nxs.h5")
+    with h5py.File(container, "a") as h5f:
+        h5f.attrs["operator_id"] = "alice"
+
+    def _fake_integrate(data, poni_text, *, npt=400, q_range=None):
+        q = np.linspace(*(q_range or (0.5, 24.0)), int(npt))
+        return q, np.full_like(q, float(np.asarray(data).mean()))
+
+    calls = []
+    monkeypatch.setattr(reporter, "integrate_detector_signal", _fake_integrate)
+    monkeypatch.setattr(
+        reporter,
+        "_candidate_poni_infos",
+        lambda *_args, **_kwargs: [("poni", "test")],
+    )
+    monkeypatch.setattr(
+        reporter,
+        "send_daily_report_email",
+        lambda **kwargs: calls.append(kwargs) or {"sent": True, "skipped": False, "message": "ok"},
+    )
+
+    result = reporter.build_daily_report_for_containers(
+        config={},
+        container_paths=[container],
+        output_dir=tmp_path / "report_folder",
+        send_email=True,
+        create_archive=False,
+    )
+
+    assert result.zip_path is None
+    assert result.email_result["sent"] is True
+    assert calls
+    email_zip = Path(calls[0]["zip_path"])
+    assert email_zip.name.startswith("difra_selected_analyst_report_")
+    assert email_zip.suffix == ".zip"
+    with zipfile.ZipFile(email_zip, "r") as archive:
+        names = archive.namelist()
+    assert "manifest.json" in names
+    assert "analyst/analyst_overview_alice.png" in names
+
+
 def test_build_report_overview_image_for_containers(tmp_path, monkeypatch):
     container = _create_container(tmp_path / "session_test.nxs.h5")
 

@@ -12,7 +12,7 @@ import smtplib
 import socket
 import sys
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from difra.gui.daily_report_common import (
     DEFAULT_DPI,
@@ -297,6 +297,7 @@ def build_daily_report_email(
     config: Optional[Dict[str, Any]],
     zip_path: Path,
     manifest: Dict[str, Any],
+    attachment_paths: Optional[Iterable[Path]] = None,
     test: bool = False,
 ) -> EmailMessage:
     recipients = _as_email_recipients(
@@ -352,7 +353,8 @@ def build_daily_report_email(
             f"Successfully uploaded to Matador: {manifest.get('matadorUploaded', 0)}",
             f"Images: {manifest.get('imageCount', 0)}",
             "",
-            "Attached ZIP contains 200 dpi PNG files and manifest.json.",
+            f"ZIP report: {manifest.get('analystZip') or Path(zip_path).name}",
+            "ZIP contains overview PNG, PONI QC PNG, and manifest.json.",
         ]
     )
 
@@ -361,13 +363,17 @@ def build_daily_report_email(
     message["From"] = sender
     message["Subject"] = subject
     message.set_content(body)
-    payload = Path(zip_path).read_bytes()
-    message.add_attachment(
-        payload,
-        maintype="application",
-        subtype="zip",
-        filename=Path(zip_path).name,
-    )
+    attachments = [Path(path) for path in (attachment_paths or []) if Path(path).exists()]
+    if not attachments and zip_path:
+        attachments = [Path(zip_path)]
+    for attachment in attachments:
+        payload = attachment.read_bytes()
+        message.add_attachment(
+            payload,
+            maintype="application",
+            subtype="zip" if attachment.suffix.lower() == ".zip" else "octet-stream",
+            filename=attachment.name,
+        )
     return message
 
 
@@ -376,6 +382,7 @@ def send_daily_report_email(
     config: Optional[Dict[str, Any]],
     zip_path: Path,
     manifest: Dict[str, Any],
+    attachment_paths: Optional[Iterable[Path]] = None,
     test: bool = False,
     allow_interactive_setup: bool = False,
 ) -> Dict[str, Any]:
@@ -487,6 +494,7 @@ def send_daily_report_email(
         config=config,
         zip_path=Path(zip_path),
         manifest=manifest,
+        attachment_paths=attachment_paths,
         test=test,
     )
     with smtplib.SMTP(smtp_host, smtp_port, timeout=timeout_sec) as smtp:

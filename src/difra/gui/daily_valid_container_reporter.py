@@ -73,6 +73,12 @@ from difra.gui.daily_report_rendering import (  # noqa: E402
     create_simple_test_image_zip,
     create_zip,
     render_report_images,
+    render_report_overview_image,
+)
+from difra.gui.daily_report_poni_qc import (  # noqa: E402
+    build_poni_qc_manifest,
+    collect_poni_qc_panels,
+    render_poni_qc_images_by_operator,
 )
 from difra.gui import daily_report_email as _email_impl  # noqa: E402
 from difra.gui import daily_report_builder as _builder_impl  # noqa: E402
@@ -240,12 +246,14 @@ def build_daily_report_email(
     config: Optional[Dict[str, Any]],
     zip_path: Path,
     manifest: Dict[str, Any],
+    attachment_paths: Optional[Iterable[Path]] = None,
     test: bool = False,
 ) -> Any:
     return _email_impl.build_daily_report_email(
         config=config,
         zip_path=zip_path,
         manifest=manifest,
+        attachment_paths=attachment_paths,
         test=test,
     )
 
@@ -255,6 +263,7 @@ def send_daily_report_email(
     config: Optional[Dict[str, Any]],
     zip_path: Path,
     manifest: Dict[str, Any],
+    attachment_paths: Optional[Iterable[Path]] = None,
     test: bool = False,
     allow_interactive_setup: bool = False,
 ) -> Dict[str, Any]:
@@ -263,6 +272,7 @@ def send_daily_report_email(
         config=config,
         zip_path=zip_path,
         manifest=manifest,
+        attachment_paths=attachment_paths,
         test=test,
         allow_interactive_setup=allow_interactive_setup,
     )
@@ -273,6 +283,10 @@ def _sync_builder_impl_deps() -> None:
     _builder_impl.summarize_valid_containers = summarize_valid_containers
     _builder_impl.send_daily_report_email = send_daily_report_email
     _builder_impl._no_report_images_email_result = _no_report_images_email_result
+    _builder_impl.collect_poni_qc_panels = collect_poni_qc_panels
+    _builder_impl.render_poni_qc_images_by_operator = render_poni_qc_images_by_operator
+    _builder_impl.build_poni_qc_manifest = build_poni_qc_manifest
+    _builder_impl.render_report_overview_image = render_report_overview_image
 
 
 def build_daily_report(

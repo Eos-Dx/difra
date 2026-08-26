@@ -18,10 +18,16 @@ from difra.gui.daily_report_common import (
     _load_report_state,
     _parse_report_datetime,
     _report_state_path,
+    _safe_token,
     _write_report_state,
     load_report_config,
 )
 from difra.gui.daily_report_models import DailyReportResult, DetectorSeries
+from difra.gui.daily_report_poni_qc import (
+    build_poni_qc_manifest,
+    collect_poni_qc_panels,
+    render_poni_qc_images_by_operator,
+)
 from difra.gui.daily_report_rendering import (
     _write_report_poni_files,
     build_report_manifest_diagnostics,
@@ -50,6 +56,7 @@ def send_daily_report_email(
     config: Optional[Dict[str, Any]],
     zip_path: Path,
     manifest: Dict[str, Any],
+    attachment_paths: Optional[Iterable[Path]] = None,
     test: bool = False,
     allow_interactive_setup: bool = False,
 ) -> Dict[str, Any]:
@@ -58,6 +65,62 @@ def send_daily_report_email(
 
 def _no_report_images_email_result() -> Dict[str, Any]:
     raise RuntimeError("_no_report_images_email_result dependency was not injected")
+
+
+def _relative_output(path: Path, output_dir: Path) -> str:
+    try:
+        return str(Path(path).relative_to(Path(output_dir)))
+    except Exception:
+        return str(path)
+
+
+def _render_operator_overviews(
+    series: Iterable[DetectorSeries],
+    output_dir: Path,
+) -> Dict[str, Path]:
+    grouped: Dict[str, List[DetectorSeries]] = {}
+    for item in series:
+        grouped.setdefault(item.operator_id or "unknown", []).append(item)
+    target_dir = Path(output_dir) / "analyst"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    images: Dict[str, Path] = {}
+    for operator_id, items in sorted(grouped.items()):
+        path = target_dir / f"analyst_overview_{_safe_token(operator_id, 'operator')}.png"
+        images[operator_id] = render_report_overview_image(
+            items,
+            path,
+            dpi=DEFAULT_DPI,
+        )
+    return images
+
+
+def _create_analyst_zip(
+    output_dir: Path,
+    manifest: Dict[str, Any],
+    attachment_paths: Iterable[Path],
+    *,
+    prefix: str,
+) -> Optional[Path]:
+    paths = [Path(path) for path in attachment_paths if Path(path).exists()]
+    if not paths:
+        return None
+    target = (
+        Path(output_dir)
+        / "analyst"
+        / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    extra_files = {
+        _relative_output(path, Path(output_dir)): path
+        for path in paths
+        if Path(path).name != "manifest.json"
+    }
+    return create_zip(
+        target,
+        [],
+        manifest=manifest,
+        extra_files=extra_files,
+    )
 
 
 def build_daily_report(
@@ -95,6 +158,14 @@ def build_daily_report(
         if series
         else None
     )
+    analyst_overviews = _render_operator_overviews(series, out) if series else {}
+    poni_qc_panels = collect_poni_qc_panels(containers, config=cfg)
+    poni_qc_images = render_poni_qc_images_by_operator(
+        poni_qc_panels,
+        out / "analyst",
+        config=cfg,
+        dpi=DEFAULT_DPI,
+    )
     poni_files = _write_report_poni_files(series, out)
     manifest = {
         "generatedAt": generated_at.isoformat(timespec="seconds"),
@@ -114,9 +185,47 @@ def build_daily_report(
     manifest["diagnosticH5"] = "report_diagnostics.h5"
     if overview_image is not None:
         manifest["overviewImage"] = "overview_report.png"
+    manifest["analystOverviewImages"] = [
+        {
+            "operatorId": operator_id,
+            "imageFile": _relative_output(path, out),
+        }
+        for operator_id, path in sorted(analyst_overviews.items())
+    ]
+    manifest["poniQcImages"] = [
+        {
+            "operatorId": operator_id,
+            "imageFile": _relative_output(path, out),
+        }
+        for operator_id, path in sorted(poni_qc_images.items())
+    ]
+    manifest["poniQc"] = build_poni_qc_manifest(poni_qc_panels)
+    analyst_attachment_paths = [
+        *analyst_overviews.values(),
+        *poni_qc_images.values(),
+    ]
+    if analyst_attachment_paths:
+        analyst_attachment_paths.append(out / "manifest.json")
+    manifest["analystAttachments"] = [
+        _relative_output(path, out) for path in analyst_attachment_paths
+    ]
     result.manifest = manifest
     diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
-    write_report_manifest(out, manifest)
+    manifest_path = write_report_manifest(out, manifest)
+    analyst_attachment_paths = [
+        path if path != out / "manifest.json" else manifest_path
+        for path in analyst_attachment_paths
+    ]
+    analyst_zip = _create_analyst_zip(
+        out,
+        manifest,
+        analyst_attachment_paths,
+        prefix="difra_analyst_report",
+    )
+    if analyst_zip is not None:
+        manifest["analystZip"] = _relative_output(analyst_zip, out)
+        result.manifest = manifest
+        write_report_manifest(out, manifest)
     if create_archive:
         extra_files = dict(poni_files)
         extra_files["report_diagnostics.h5"] = diagnostics_h5
@@ -131,17 +240,17 @@ def build_daily_report(
     if send_email:
         if not result.images:
             result.email_result = _no_report_images_email_result()
-        elif not result.zip_path:
+        elif not result.zip_path and analyst_zip is None:
             result.email_result = {
                 "sent": False,
                 "skipped": False,
-                "message": "ZIP archive was not created",
+                "message": "No report attachments were created",
             }
         else:
             try:
                 result.email_result = send_daily_report_email(
                     config=cfg,
-                    zip_path=result.zip_path,
+                    zip_path=analyst_zip or result.zip_path or Path(""),
                     manifest=manifest,
                     allow_interactive_setup=allow_interactive_setup,
                 )
@@ -184,6 +293,14 @@ def build_daily_report_for_containers(
         if series
         else None
     )
+    analyst_overviews = _render_operator_overviews(series, out) if series else {}
+    poni_qc_panels = collect_poni_qc_panels(paths, config=cfg)
+    poni_qc_images = render_poni_qc_images_by_operator(
+        poni_qc_panels,
+        out / "analyst",
+        config=cfg,
+        dpi=DEFAULT_DPI,
+    )
     poni_files = _write_report_poni_files(series, out)
     report_day = report_date or generated_at.date()
     manifest = {
@@ -205,9 +322,47 @@ def build_daily_report_for_containers(
     manifest["diagnosticH5"] = "report_diagnostics.h5"
     if overview_image is not None:
         manifest["overviewImage"] = "overview_report.png"
+    manifest["analystOverviewImages"] = [
+        {
+            "operatorId": operator_id,
+            "imageFile": _relative_output(path, out),
+        }
+        for operator_id, path in sorted(analyst_overviews.items())
+    ]
+    manifest["poniQcImages"] = [
+        {
+            "operatorId": operator_id,
+            "imageFile": _relative_output(path, out),
+        }
+        for operator_id, path in sorted(poni_qc_images.items())
+    ]
+    manifest["poniQc"] = build_poni_qc_manifest(poni_qc_panels)
+    analyst_attachment_paths = [
+        *analyst_overviews.values(),
+        *poni_qc_images.values(),
+    ]
+    if analyst_attachment_paths:
+        analyst_attachment_paths.append(out / "manifest.json")
+    manifest["analystAttachments"] = [
+        _relative_output(path, out) for path in analyst_attachment_paths
+    ]
     result.manifest = manifest
     diagnostics_h5 = write_report_diagnostics_h5(out, series, manifest=manifest)
-    write_report_manifest(out, manifest)
+    manifest_path = write_report_manifest(out, manifest)
+    analyst_attachment_paths = [
+        path if path != out / "manifest.json" else manifest_path
+        for path in analyst_attachment_paths
+    ]
+    analyst_zip = _create_analyst_zip(
+        out,
+        manifest,
+        analyst_attachment_paths,
+        prefix="difra_selected_analyst_report",
+    )
+    if analyst_zip is not None:
+        manifest["analystZip"] = _relative_output(analyst_zip, out)
+        result.manifest = manifest
+        write_report_manifest(out, manifest)
     if create_archive:
         extra_files = dict(poni_files)
         extra_files["report_diagnostics.h5"] = diagnostics_h5
@@ -222,17 +377,17 @@ def build_daily_report_for_containers(
     if send_email:
         if not result.images:
             result.email_result = _no_report_images_email_result()
-        elif not result.zip_path:
+        elif not result.zip_path and analyst_zip is None:
             result.email_result = {
                 "sent": False,
                 "skipped": False,
-                "message": "ZIP archive was not created",
+                "message": "No report attachments were created",
             }
         else:
             try:
                 result.email_result = send_daily_report_email(
                     config=cfg,
-                    zip_path=result.zip_path,
+                    zip_path=analyst_zip or result.zip_path or Path(""),
                     manifest=manifest,
                     allow_interactive_setup=allow_interactive_setup,
                 )
